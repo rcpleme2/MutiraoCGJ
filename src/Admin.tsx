@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Lock, Unlock, Plus, Trash2, Check, Pencil, Download, Sparkles, LogOut, Radio, Archive, RotateCcw } from 'lucide-react';
+import { Lock, Unlock, Plus, Trash2, Check, Pencil, Download, Sparkles, LogOut, Radio, Archive, RotateCcw, ChevronDown, ChevronRight } from 'lucide-react';
 import { api, download, getToken, setToken } from './api';
 import { Edition, LogEntry, Magistrate, Match, Unit, PREFERENCE_AREAS } from './types';
 import { Badge, EmptyRow, Field, Modal, Notice, formatDate, formatDateTime, magistrateTone, useFeedback } from './ui';
@@ -74,6 +74,82 @@ function EditionForm({ initial, onSubmit }: { initial?: Edition; onSubmit: (v: a
   );
 }
 
+/* ---------- Detalhe da unidade: justificativa e vinculação por área ---------- */
+function UnitDetail({ unit, magistrates, matches, busy, onLink, onUnlink }: {
+  unit: Unit;
+  magistrates: Magistrate[];
+  matches: Match[];
+  busy: boolean;
+  onLink: (magistrateId: string, area: string) => void;
+  onUnlink: (matchId: string) => void;
+}) {
+  const [picked, setPicked] = useState('');
+  const match = matches.find(m => m.unitId === unit.id);
+  const linked = match && magistrates.find(m => m.id === match.magistrateId);
+  const matchedIds = new Set(matches.map(m => m.magistrateId));
+
+  // Magistrados ainda sem vínculo cuja 1ª ou 2ª preferência está entre as áreas da unidade
+  const candidates = magistrates
+    .filter(m => !matchedIds.has(m.id) && m.status !== 'Atribuído'
+      && (unit.areas.includes(m.firstPreference) || unit.areas.includes(m.secondPreference)))
+    .map(m => ({
+      m,
+      area: unit.areas.includes(m.firstPreference) ? m.firstPreference : m.secondPreference,
+      rank: unit.areas.includes(m.firstPreference) ? 1 : 2,
+    }))
+    .sort((a, b) => a.rank - b.rank || Number(a.m.status === 'Aguardando Conferência') - Number(b.m.status === 'Aguardando Conferência'));
+
+  const chosen = candidates.find(c => c.m.id === picked);
+
+  return (
+    <div className="grid md:grid-cols-2 gap-6">
+      <div>
+        <div className="text-[11px] font-semibold uppercase tracking-wider text-muted mb-2">Justificativa apresentada</div>
+        {unit.description.trim()
+          ? <p className="text-sm leading-relaxed whitespace-pre-wrap">{unit.description}</p>
+          : <p className="text-sm text-muted italic">Nenhuma justificativa informada.</p>}
+        <div className="text-xs text-muted mt-3">Auxílio solicitado: <span className="text-ink">{unit.supportNeeded}</span> · Responsável: <span className="text-ink">{unit.judgeName}</span></div>
+      </div>
+
+      <div>
+        <div className="text-[11px] font-semibold uppercase tracking-wider text-muted mb-2">Vincular magistrado da mesma área</div>
+        {match ? (
+          <div className="flex items-center justify-between gap-3 bg-ok-soft text-ok rounded-md px-3 py-2.5 text-sm">
+            <span>Vinculada a <strong>{linked?.name || 'magistrado removido'}</strong> · {match.assignedArea}</span>
+            <button className="btn-secondary btn-sm shrink-0" disabled={busy} onClick={() => onUnlink(match.id)}>Desfazer</button>
+          </div>
+        ) : candidates.length === 0 ? (
+          <p className="text-sm text-muted">Nenhum magistrado disponível com preferência nas áreas desta unidade ({unit.areas.join(', ')}).</p>
+        ) : (
+          <div className="space-y-2">
+            {candidates.map(({ m, area, rank }) => {
+              const warn = !m.acceptsHearings && unit.supportNeeded !== 'Sentença';
+              return (
+                <label key={m.id} className={`flex items-start gap-3 rounded-md border px-3 py-2.5 cursor-pointer transition-colors ${picked === m.id ? 'border-navy bg-navy/5' : 'border-line bg-surface hover:border-slate-300'}`}>
+                  <input type="checkbox" className="mt-1" checked={picked === m.id} onChange={() => setPicked(picked === m.id ? '' : m.id)} />
+                  <span className="text-sm min-w-0">
+                    <span className="font-medium">{m.name}</span>
+                    <span className="block text-xs text-muted">{m.currentLocation}</span>
+                    <span className="flex flex-wrap gap-1.5 mt-1.5">
+                      <Badge tone="info">{rank}ª preferência: {area}</Badge>
+                      {m.status === 'Aguardando Conferência' && <Badge tone="warn">Aguardando conferência</Badge>}
+                      <Badge tone={m.acceptsHearings ? 'ok' : 'neutral'}>{m.acceptsHearings ? 'Aceita audiências' : 'Não aceita audiências'}</Badge>
+                    </span>
+                    {warn && <span className="block text-[11px] text-warn mt-1">A unidade precisa de {unit.supportNeeded.toLowerCase()}, e o magistrado não aceita audiências.</span>}
+                  </span>
+                </label>
+              );
+            })}
+            <button className="btn-primary btn-sm" disabled={!chosen || busy} onClick={() => chosen && onLink(chosen.m.id, chosen.area)}>
+              <Check className="w-4 h-4" /> Vincular selecionado
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => void }) {
   const { toast, confirm } = useFeedback();
   const [authed, setAuthed] = useState(!!getToken());
@@ -95,6 +171,8 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const [editingEdition, setEditingEdition] = useState<Edition | null>(null);
   const [editingMag, setEditingMag] = useState<Magistrate | null>(null);
   const [editingUnit, setEditingUnit] = useState<Unit | null>(null);
+  const [openUnitId, setOpenUnitId] = useState('');
+  const [linking, setLinking] = useState(false);
   const [matchForm, setMatchForm] = useState({ magistrateId: '', unitId: '', assignedArea: PREFERENCE_AREAS[0] });
   const [pw, setPw] = useState({ currentPassword: '', newPassword: '' });
   const [ai, setAi] = useState<{ loading: boolean; items: any[] }>({ loading: false, items: [] });
@@ -211,6 +289,20 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
     e.preventDefault();
     const r = await run(() => api('/admin/password', { method: 'POST', json: pw }), 'Senha alterada.');
     if (r) { setModal(null); setPw({ currentPassword: '', newPassword: '' }); }
+  };
+
+  const linkFromUnit = async (unitId: string, magistrateId: string, area: string) => {
+    setLinking(true);
+    const r = await run(() => api('/matches', { method: 'POST', json: withEdition({ magistrateId, unitId, assignedArea: area }) }), 'Vinculação efetivada.');
+    setLinking(false);
+    if (r) refresh();
+  };
+  const unlinkFromUnit = async (matchId: string) => {
+    if (!(await confirm('Desfazer esta vinculação? A unidade e o magistrado voltarão a ficar disponíveis.', 'Desfazer'))) return;
+    setLinking(true);
+    await run(() => api(`/matches/${matchId}`, { method: 'DELETE' }), 'Vinculação desfeita.');
+    setLinking(false);
+    refresh();
   };
 
   const openMatchModal = (m?: Match) => {
@@ -394,16 +486,38 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
           </Toolbar>
           <Table head={['Unidade / Comarca', 'Responsável', 'Áreas', 'Auxílio', 'Status', 'Ações']}>
             {units.length === 0 && <EmptyRow cols={6}>Nenhuma unidade inscrita nesta edição.</EmptyRow>}
-            {units.map(u => (
-              <tr key={u.id}>
-                <td className="td"><div className="font-medium">{u.unitName}</div><div className="text-xs text-muted">{u.comarca} · {u.email}</div>{u.registeredIp && <div className="text-[11px] text-muted/80">IP {u.registeredIp}</div>}</td>
-                <td className="td text-muted">{u.judgeName}</td>
-                <td className="td"><div className="flex flex-wrap gap-1">{u.areas.map(a => <Badge key={a} tone="info">{a}</Badge>)}</div></td>
-                <td className="td"><Badge tone="neutral">{u.supportNeeded}</Badge></td>
-                <td className="td"><Badge tone={u.status === 'Atendida' ? 'ok' : 'warn'}>{u.status}</Badge></td>
-                <td className="td text-right whitespace-nowrap"><button className="btn-ghost btn-sm" title="Editar" onClick={() => { setEditingUnit(u); setModal('unit-edit'); }}><Pencil className="w-4 h-4" /></button><button className="btn-danger" title="Excluir" onClick={() => del('units', u.id, `a unidade ${u.unitName}`)}><Trash2 className="w-4 h-4" /></button></td>
-              </tr>
-            ))}
+            {units.map(u => {
+              const open = openUnitId === u.id;
+              return (
+                <React.Fragment key={u.id}>
+                  <tr className={open ? 'bg-paper' : ''}>
+                    <td className="td">
+                      <button className="flex items-start gap-1.5 text-left" onClick={() => setOpenUnitId(open ? '' : u.id)} aria-expanded={open} title="Ver justificativa e vincular magistrado">
+                        {open ? <ChevronDown className="w-4 h-4 mt-0.5 shrink-0 text-bronze" /> : <ChevronRight className="w-4 h-4 mt-0.5 shrink-0 text-muted" />}
+                        <span><span className="font-medium block">{u.unitName}</span><span className="text-xs text-muted block">{u.comarca} · {u.email}</span>{u.registeredIp && <span className="text-[11px] text-muted/80 block">IP {u.registeredIp}</span>}</span>
+                      </button>
+                    </td>
+                    <td className="td text-muted">{u.judgeName}</td>
+                    <td className="td"><div className="flex flex-wrap gap-1">{u.areas.map(a => <Badge key={a} tone="info">{a}</Badge>)}</div></td>
+                    <td className="td"><Badge tone="neutral">{u.supportNeeded}</Badge></td>
+                    <td className="td"><Badge tone={u.status === 'Atendida' ? 'ok' : 'warn'}>{u.status}</Badge></td>
+                    <td className="td text-right whitespace-nowrap">
+                      <button className="btn-ghost btn-sm" title="Justificativa e vinculação" onClick={() => setOpenUnitId(open ? '' : u.id)}>{open ? 'Fechar' : 'Detalhes'}</button>
+                      <button className="btn-ghost btn-sm" title="Editar" onClick={() => { setEditingUnit(u); setModal('unit-edit'); }}><Pencil className="w-4 h-4" /></button>
+                      <button className="btn-danger" title="Excluir" onClick={() => del('units', u.id, `a unidade ${u.unitName}`)}><Trash2 className="w-4 h-4" /></button>
+                    </td>
+                  </tr>
+                  {open && (
+                    <tr className="bg-paper">
+                      <td colSpan={6} className="px-4 pb-5 pt-1">
+                        <UnitDetail unit={u} magistrates={magistrates} matches={matches} busy={linking}
+                          onLink={(magId, area) => linkFromUnit(u.id, magId, area)} onUnlink={unlinkFromUnit} />
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
           </Table>
         </div>
       )}
