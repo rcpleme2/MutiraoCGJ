@@ -461,7 +461,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             {magistrates.length === 0 && <EmptyRow cols={6}>Nenhuma inscrição nesta edição.</EmptyRow>}
             {magistrates.map(m => (
               <tr key={m.id}>
-                <td className="td"><div className="font-medium">{m.name}</div><div className="text-xs text-muted">{m.email}</div>{m.registeredIp && <div className="text-[11px] text-muted/80">IP {m.registeredIp}</div>}</td>
+                <td className="td"><div className="font-medium">{m.name}</div><div className="text-xs text-muted">{m.email}</div><div className="text-[11px] text-muted/80">{m.registeredIp ? `IP ${m.registeredIp} · ` : ''}{formatDateTime(m.createdAt)}</div></td>
                 <td className="td text-muted">{m.currentLocation}</td>
                 <td className="td text-xs"><div className="text-bronze font-medium">1ª: {m.firstPreference}</div><div className="text-muted">2ª: {m.secondPreference || '—'}</div></td>
                 <td className="td"><Badge tone={m.acceptsHearings ? 'ok' : 'neutral'}>{m.acceptsHearings ? 'Aceita' : 'Não aceita'}</Badge></td>
@@ -494,7 +494,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
                     <td className="td">
                       <button className="flex items-start gap-1.5 text-left" onClick={() => setOpenUnitId(open ? '' : u.id)} aria-expanded={open} title="Ver justificativa e vincular magistrado">
                         {open ? <ChevronDown className="w-4 h-4 mt-0.5 shrink-0 text-bronze" /> : <ChevronRight className="w-4 h-4 mt-0.5 shrink-0 text-muted" />}
-                        <span><span className="font-medium block">{u.unitName}</span><span className="text-xs text-muted block">{u.comarca} · {u.email}</span>{u.registeredIp && <span className="text-[11px] text-muted/80 block">IP {u.registeredIp}</span>}</span>
+                        <span><span className="font-medium block">{u.unitName}</span><span className="text-xs text-muted block">{u.comarca} · {u.email}</span><span className="text-[11px] text-muted/80 block">{u.registeredIp ? `IP ${u.registeredIp} · ` : ''}{formatDateTime(u.createdAt)}</span></span>
                       </button>
                     </td>
                     <td className="td text-muted">{u.judgeName}</td>
