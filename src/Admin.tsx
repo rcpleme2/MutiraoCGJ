@@ -90,9 +90,11 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const [log, setLog] = useState<LogEntry[]>([]);
   const [logFilter, setLogFilter] = useState('');
 
-  const [modal, setModal] = useState<null | 'mag' | 'unit' | 'match' | 'edition-new' | 'edition-edit' | 'password'>(null);
+  const [modal, setModal] = useState<null | 'mag' | 'mag-edit' | 'unit' | 'unit-edit' | 'match' | 'edition-new' | 'edition-edit' | 'password'>(null);
   const [editingMatch, setEditingMatch] = useState<Match | null>(null);
   const [editingEdition, setEditingEdition] = useState<Edition | null>(null);
+  const [editingMag, setEditingMag] = useState<Magistrate | null>(null);
+  const [editingUnit, setEditingUnit] = useState<Unit | null>(null);
   const [matchForm, setMatchForm] = useState({ magistrateId: '', unitId: '', assignedArea: PREFERENCE_AREAS[0] });
   const [pw, setPw] = useState({ currentPassword: '', newPassword: '' });
   const [ai, setAi] = useState<{ loading: boolean; items: any[] }>({ loading: false, items: [] });
@@ -367,13 +369,14 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             {magistrates.length === 0 && <EmptyRow cols={6}>Nenhuma inscrição nesta edição.</EmptyRow>}
             {magistrates.map(m => (
               <tr key={m.id}>
-                <td className="td"><div className="font-medium">{m.name}</div><div className="text-xs text-muted">{m.email}</div></td>
+                <td className="td"><div className="font-medium">{m.name}</div><div className="text-xs text-muted">{m.email}</div>{m.registeredIp && <div className="text-[11px] text-muted/80">IP {m.registeredIp}</div>}</td>
                 <td className="td text-muted">{m.currentLocation}</td>
                 <td className="td text-xs"><div className="text-bronze font-medium">1ª: {m.firstPreference}</div><div className="text-muted">2ª: {m.secondPreference || '—'}</div></td>
                 <td className="td"><Badge tone={m.acceptsHearings ? 'ok' : 'neutral'}>{m.acceptsHearings ? 'Aceita' : 'Não aceita'}</Badge></td>
                 <td className="td"><Badge tone={magistrateTone(m.status)}>{m.status}</Badge></td>
                 <td className="td text-right whitespace-nowrap">
                   {m.status === 'Aguardando Conferência' && <button className="btn-secondary btn-sm mr-1" onClick={() => approve(m.id)}><Check className="w-3.5 h-3.5" /> Aprovar</button>}
+                  <button className="btn-ghost btn-sm" title="Editar" onClick={() => { setEditingMag(m); setModal('mag-edit'); }}><Pencil className="w-4 h-4" /></button>
                   <button className="btn-danger" title="Excluir" onClick={() => del('magistrates', m.id, `a inscrição de ${m.name}`)}><Trash2 className="w-4 h-4" /></button>
                 </td>
               </tr>
@@ -393,12 +396,12 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             {units.length === 0 && <EmptyRow cols={6}>Nenhuma unidade inscrita nesta edição.</EmptyRow>}
             {units.map(u => (
               <tr key={u.id}>
-                <td className="td"><div className="font-medium">{u.unitName}</div><div className="text-xs text-muted">{u.comarca} · {u.email}</div></td>
+                <td className="td"><div className="font-medium">{u.unitName}</div><div className="text-xs text-muted">{u.comarca} · {u.email}</div>{u.registeredIp && <div className="text-[11px] text-muted/80">IP {u.registeredIp}</div>}</td>
                 <td className="td text-muted">{u.judgeName}</td>
                 <td className="td"><div className="flex flex-wrap gap-1">{u.areas.map(a => <Badge key={a} tone="info">{a}</Badge>)}</div></td>
                 <td className="td"><Badge tone="neutral">{u.supportNeeded}</Badge></td>
                 <td className="td"><Badge tone={u.status === 'Atendida' ? 'ok' : 'warn'}>{u.status}</Badge></td>
-                <td className="td text-right"><button className="btn-danger" title="Excluir" onClick={() => del('units', u.id, `a unidade ${u.unitName}`)}><Trash2 className="w-4 h-4" /></button></td>
+                <td className="td text-right whitespace-nowrap"><button className="btn-ghost btn-sm" title="Editar" onClick={() => { setEditingUnit(u); setModal('unit-edit'); }}><Pencil className="w-4 h-4" /></button><button className="btn-danger" title="Excluir" onClick={() => del('units', u.id, `a unidade ${u.unitName}`)}><Trash2 className="w-4 h-4" /></button></td>
               </tr>
             ))}
           </Table>
@@ -497,6 +500,24 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
         <Modal title="Cadastrar unidade judicial" onClose={() => setModal(null)}>
           <UnitForm submitLabel="Salvar unidade" onSubmit={async p => {
             const r = await run(() => api('/units', { method: 'POST', json: withEdition(p) }), 'Unidade incluída.');
+            if (r) { setModal(null); refresh(); }
+            return !!r;
+          }} />
+        </Modal>
+      )}
+      {modal === 'mag-edit' && editingMag && (
+        <Modal title="Editar magistrado" onClose={() => setModal(null)}>
+          <MagistrateForm withStatus initial={editingMag} submitLabel="Salvar alterações" onSubmit={async p => {
+            const r = await run(() => api(`/magistrates/${editingMag.id}`, { method: 'PUT', json: p }), 'Inscrição atualizada.');
+            if (r) { setModal(null); refresh(); }
+            return !!r;
+          }} />
+        </Modal>
+      )}
+      {modal === 'unit-edit' && editingUnit && (
+        <Modal title="Editar unidade judicial" onClose={() => setModal(null)}>
+          <UnitForm withStatus initial={editingUnit} submitLabel="Salvar alterações" onSubmit={async p => {
+            const r = await run(() => api(`/units/${editingUnit.id}`, { method: 'PUT', json: p }), 'Unidade atualizada.');
             if (r) { setModal(null); refresh(); }
             return !!r;
           }} />

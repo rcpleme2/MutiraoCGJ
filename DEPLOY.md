@@ -38,6 +38,19 @@ Ao final, o comando mostra a URL pública (`https://mutirao-cgj-xxxx.a.run.app`)
 - Dados de demonstração: na primeira execução a base começa vazia (só a edição padrão).
   Para incluir os dados fictícios, adicione `--set-env-vars SEED_DEMO=true` na primeira vez.
 
+## Atualizar o site depois de mudanças no código
+Com as mudanças já na branch `main` do GitHub, no Cloud Shell:
+
+```bash
+cd ~/MutiraoCGJ            # pasta do clone (se não existir: git clone https://github.com/rcpleme2/MutiraoCGJ)
+git pull origin main
+gcloud run deploy mutirao-cgj --source . --region southamerica-east1
+```
+
+Não é preciso repetir `--set-env-vars`: senha, chave do Gemini e demais variáveis ficam guardadas no serviço.
+Os dados ficam no Firestore e não são afetados. Se o serviço pedir o projeto, rode antes
+`gcloud config set project SEU_PROJECT_ID`.
+
 ## 3. Deploy automático a cada push (opcional)
 
 Console do Cloud Run → serviço → **Configurar implantação contínua** → conectar o repositório

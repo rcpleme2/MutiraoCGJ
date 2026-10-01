@@ -33,6 +33,7 @@ export interface Magistrate {
   firstPreference: string;
   secondPreference: string;
   acceptsHearings: boolean;
+  registeredIp?: string;
   createdAt: string;
   status: MagistrateStatus;
   editionTitle?: string;
@@ -49,6 +50,7 @@ export interface Unit {
   areas: string[];
   supportNeeded: SupportNeeded;
   description: string;
+  registeredIp?: string;
   createdAt: string;
   status: string;
   editionTitle?: string;

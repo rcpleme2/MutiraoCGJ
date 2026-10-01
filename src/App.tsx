@@ -28,6 +28,15 @@ function PageCard({ icon: Icon, title, subtitle, children }: { icon: React.Eleme
   );
 }
 
+function IpNotice({ ip }: { ip: string }) {
+  return (
+    <div className="rounded-md border border-line bg-paper px-4 py-3 text-xs text-muted leading-relaxed">
+      <strong className="text-ink">Aviso:</strong> seu endereço IP{ip ? <> (<span className="font-mono text-ink">{ip}</span>)</> : ''} será registrado junto com esta inscrição.
+      O uso inadequado da ferramenta, inclusive a inserção de informações falsas ou em nome de terceiros, poderá gerar responsabilização.
+    </div>
+  );
+}
+
 function AppInner() {
   const [tab, setTab] = useState<Tab>('home');
   const [menuOpen, setMenuOpen] = useState(false);
@@ -36,7 +45,8 @@ function AppInner() {
 
   const loadEdition = () =>
     api<Edition | null>('/settings').then(setEdition).catch(() => setLoadError(true));
-  useEffect(() => { loadEdition(); }, []);
+  const [ip, setIp] = useState('');
+  useEffect(() => { loadEdition(); api<{ ip: string }>('/whoami').then(r => setIp(r.ip)).catch(() => {}); }, []);
 
   // Inscrições públicas
   const [busy, setBusy] = useState(false);
@@ -160,6 +170,7 @@ function AppInner() {
               <div className="space-y-5">
                 {magOk && <Notice tone="ok"><strong>Inscrição realizada.</strong> Status inicial: Aguardando Conferência. Acompanhe em “Consultar Status”.</Notice>}
                 {formError && <Notice tone="danger">{formError}</Notice>}
+                <IpNotice ip={ip} />
                 <MagistrateForm busy={busy} submitLabel="Concluir inscrição" onSubmit={submitPublic('/magistrates', setMagOk)} />
               </div>
             )}
@@ -173,6 +184,7 @@ function AppInner() {
               <div className="space-y-5">
                 {unitOk && <Notice tone="ok"><strong>Unidade cadastrada.</strong> Ela já está disponível para vinculação.</Notice>}
                 {formError && <Notice tone="danger">{formError}</Notice>}
+                <IpNotice ip={ip} />
                 <UnitForm busy={busy} submitLabel="Concluir inscrição da unidade" onSubmit={submitPublic('/units', setUnitOk)} />
               </div>
             )}

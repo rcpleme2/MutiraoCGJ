@@ -40,6 +40,7 @@ interface Magistrate {
   firstPreference: string;
   secondPreference: string;
   acceptsHearings: boolean;
+  registeredIp?: string;
   createdAt: string;
   status: MagistrateStatus;
 }
@@ -54,6 +55,7 @@ interface Unit {
   areas: string[];
   supportNeeded: 'Audiência' | 'Sentença' | 'Audiência e Sentença';
   description: string;
+  registeredIp?: string;
   createdAt: string;
   status: 'Pendente' | 'Atendida' | 'Em Andamento';
 }
@@ -249,6 +251,8 @@ function log(
   if (activityLog.length > 5000) activityLog.length = 5000;
 }
 
+const clientIp = (req: express.Request) => (req.ip || 'desconhecido').replace(/^::ffff:/, '');
+
 const actorOf = (source: unknown): LogEntry['actor'] => (source === 'admin' ? 'Administração' : 'Público');
 
 const editionById = (id: string | undefined) => editions.find((e) => e.id === id);
@@ -393,7 +397,7 @@ async function startServer() {
   app.use('/api', (req, res, next) => {
     const ip = req.ip || 'unknown';
     const admin = hasValidToken(req);
-    const publicRead = req.method === 'GET' && (req.path === '/settings' || req.path === '/status');
+    const publicRead = req.method === 'GET' && ['/settings', '/status', '/whoami'].includes(req.path);
     const publicSignup = req.method === 'POST' && (req.path === '/magistrates' || req.path === '/units');
     const login = req.method === 'POST' && req.path === '/admin/login';
 
@@ -452,6 +456,9 @@ async function startServer() {
   });
 
   // ---------- Editions ----------
+  // IP do solicitante (exibido no formulário público e registrado na inscrição)
+  app.get('/api/whoami', (req, res) => res.json({ ip: clientIp(req) }));
+
   // Public settings: the active edition (kept shape-compatible with the former /api/settings).
   app.get('/api/settings', (_req, res) => {
     const active = editionById(activeEditionId) || editions[0];
@@ -602,13 +609,58 @@ async function startServer() {
       firstPreference,
       secondPreference: secondPreference || '',
       acceptsHearings: acceptsHearings === true,
+      registeredIp: source === 'admin' ? undefined : clientIp(req),
       createdAt: new Date().toISOString(),
       status: source === 'admin' && status ? status : 'Aguardando Conferência',
     };
 
     magistrates.unshift(newMag);
-    log(edition.id, actorOf(source), 'Magistrado', `Inscrição de ${newMag.name} (${newMag.currentLocation}) registrada.`);
+    log(edition.id, actorOf(source), 'Magistrado', `Inscrição de ${newMag.name} (${newMag.currentLocation}) registrada${newMag.registeredIp ? ` (IP ${newMag.registeredIp})` : ''}.`);
     res.status(201).json({ success: true, magistrate: newMag });
+  });
+
+  app.put('/api/magistrates/:id', (req, res) => {
+    const mag = magistrates.find((m) => m.id === req.params.id);
+    if (!mag) return res.status(404).json({ error: 'Magistrado não encontrado.' });
+
+    const b = req.body || {};
+    const next = {
+      name: String(b.name ?? mag.name).trim(),
+      email: String(b.email ?? mag.email).trim(),
+      currentLocation: String(b.currentLocation ?? mag.currentLocation).trim(),
+      firstPreference: String(b.firstPreference ?? mag.firstPreference),
+      secondPreference: String(b.secondPreference ?? mag.secondPreference),
+      acceptsHearings: typeof b.acceptsHearings === 'boolean' ? b.acceptsHearings : mag.acceptsHearings,
+    };
+    if (!next.name || !next.email || !next.currentLocation || !next.firstPreference) {
+      return res.status(400).json({ error: 'Preencha todos os campos obrigatórios do magistrado.' });
+    }
+    if (magistrates.some((m) => m.id !== mag.id && m.editionId === mag.editionId && m.email.toLowerCase() === next.email.toLowerCase())) {
+      return res.status(409).json({ error: 'Já existe outra inscrição de magistrado com este e-mail nesta edição.' });
+    }
+
+    const labels: Record<string, string> = {
+      name: 'nome', email: 'e-mail', currentLocation: 'lotação', firstPreference: '1ª preferência',
+      secondPreference: '2ª preferência', acceptsHearings: 'aceita audiências',
+    };
+    const changed = (Object.keys(next) as (keyof typeof next)[])
+      .filter((k) => next[k] !== mag[k])
+      .map((k) => labels[k]);
+    Object.assign(mag, next);
+
+    // Status: coerente com a existência de vinculação
+    const isMatched = matches.some((m) => m.magistrateId === mag.id);
+    const wanted: MagistrateStatus | undefined = b.status;
+    const before = mag.status;
+    if (isMatched) mag.status = 'Atribuído';
+    else if (wanted && wanted !== 'Atribuído') mag.status = wanted;
+    else if (mag.status === 'Atribuído') mag.status = 'Lista de Espera';
+    if (mag.status !== before) changed.push(`status (${before} → ${mag.status})`);
+
+    if (changed.length) {
+      log(mag.editionId, 'Administração', 'Magistrado', `Inscrição de ${mag.name} editada: ${changed.join(', ')}.`);
+    }
+    res.json({ success: true, magistrate: mag });
   });
 
   app.post('/api/magistrates/:id/approve', (req, res) => {
@@ -663,13 +715,55 @@ async function startServer() {
       areas,
       supportNeeded: ['Audiência', 'Sentença', 'Audiência e Sentença'].includes(supportNeeded) ? supportNeeded : 'Sentença',
       description: description || '',
+      registeredIp: source === 'admin' ? undefined : clientIp(req),
       createdAt: new Date().toISOString(),
       status: 'Pendente',
     };
 
     units.unshift(newUnit);
-    log(edition.id, actorOf(source), 'Unidade', `Inscrição da unidade "${newUnit.unitName}" (${newUnit.comarca}) registrada.`);
+    log(edition.id, actorOf(source), 'Unidade', `Inscrição da unidade "${newUnit.unitName}" (${newUnit.comarca}) registrada${newUnit.registeredIp ? ` (IP ${newUnit.registeredIp})` : ''}.`);
     res.status(201).json({ success: true, unit: newUnit });
+  });
+
+  app.put('/api/units/:id', (req, res) => {
+    const unit = units.find((u) => u.id === req.params.id);
+    if (!unit) return res.status(404).json({ error: 'Unidade não encontrada.' });
+
+    const b = req.body || {};
+    const next = {
+      unitName: String(b.unitName ?? unit.unitName).trim(),
+      judgeName: String(b.judgeName ?? unit.judgeName).trim(),
+      email: String(b.email ?? unit.email).trim(),
+      comarca: String(b.comarca ?? unit.comarca).trim(),
+      areas: Array.isArray(b.areas) && b.areas.length ? b.areas.map(String) : unit.areas,
+      supportNeeded: ['Audiência', 'Sentença', 'Audiência e Sentença'].includes(b.supportNeeded) ? b.supportNeeded : unit.supportNeeded,
+      description: String(b.description ?? unit.description),
+    };
+    if (!next.unitName || !next.judgeName || !next.email || !next.comarca) {
+      return res.status(400).json({ error: 'Preencha todos os campos obrigatórios da unidade judicial.' });
+    }
+
+    const labels: Record<string, string> = {
+      unitName: 'unidade', judgeName: 'responsável', email: 'e-mail', comarca: 'comarca',
+      areas: 'áreas', supportNeeded: 'auxílio necessário', description: 'justificativa',
+    };
+    const changed = (Object.keys(next) as (keyof typeof next)[])
+      .filter((k) => JSON.stringify(next[k]) !== JSON.stringify(unit[k]))
+      .map((k) => labels[k]);
+    Object.assign(unit, next);
+
+    const isMatched = matches.some((m) => m.unitId === unit.id);
+    const wanted = b.status as Unit['status'] | undefined;
+    const before = unit.status;
+    if (isMatched) unit.status = 'Atendida';
+    else if (wanted && wanted !== 'Atendida') unit.status = wanted;
+    else if (unit.status === 'Atendida') unit.status = 'Pendente';
+    if (unit.status !== before) changed.push(`status (${before} → ${unit.status})`);
+
+    if (changed.length) {
+      log(unit.editionId, 'Administração', 'Unidade', `Unidade "${unit.unitName}" editada: ${changed.join(', ')}.`);
+    }
+    res.json({ success: true, unit });
   });
 
   app.delete('/api/units/:id', (req, res) => {
@@ -909,18 +1003,18 @@ async function startServer() {
 
     if (type === 'magistrates' || type === 'all') {
       csv += '=== MAGISTRADOS VOLUNTARIOS ===\n';
-      csv += 'ID,Nome,Email,Lotacao Atual,1ª Preferencia,2ª Preferencia,Aceita Audiencia,Status,Data Inscr.\n';
+      csv += 'ID,Nome,Email,Lotacao Atual,1ª Preferencia,2ª Preferencia,Aceita Audiencia,IP,Status,Data Inscr.\n';
       magistrates.filter((m) => m.editionId === edition.id).forEach((m) => {
-        csv += [m.id, m.name, m.email, m.currentLocation, m.firstPreference, m.secondPreference, m.acceptsHearings ? 'Sim' : 'Nao', m.status, m.createdAt].map(csvCell).join(',') + '\n';
+        csv += [m.id, m.name, m.email, m.currentLocation, m.firstPreference, m.secondPreference, m.acceptsHearings ? 'Sim' : 'Nao', m.registeredIp ?? '', m.status, m.createdAt].map(csvCell).join(',') + '\n';
       });
       csv += '\n\n';
     }
 
     if (type === 'units' || type === 'all') {
       csv += '=== UNIDADES JUDICIAIS ===\n';
-      csv += 'ID,Unidade,Juiz(a) Responsavel,Email,Comarca,Areas,Auxilio Necessario,Status,Data Inscr.\n';
+      csv += 'ID,Unidade,Juiz(a) Responsavel,Email,Comarca,Areas,Auxilio Necessario,IP,Status,Data Inscr.\n';
       units.filter((u) => u.editionId === edition.id).forEach((u) => {
-        csv += [u.id, u.unitName, u.judgeName, u.email, u.comarca, u.areas.join(' | '), u.supportNeeded, u.status, u.createdAt].map(csvCell).join(',') + '\n';
+        csv += [u.id, u.unitName, u.judgeName, u.email, u.comarca, u.areas.join(' | '), u.supportNeeded, u.registeredIp ?? '', u.status, u.createdAt].map(csvCell).join(',') + '\n';
       });
       csv += '\n\n';
     }
