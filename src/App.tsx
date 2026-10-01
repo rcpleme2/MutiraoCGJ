@@ -31,7 +31,7 @@ function PageCard({ icon: Icon, title, subtitle, children }: { icon: React.Eleme
 function IpNotice({ ip }: { ip: string }) {
   return (
     <div className="rounded-md border border-line bg-paper px-4 py-3 text-xs text-muted leading-relaxed">
-      <strong className="text-ink">Aviso:</strong> seu endereço IP{ip ? <> (<span className="font-mono text-ink">{ip}</span>)</> : ''} será registrado junto com esta inscrição.
+      <strong className="text-ink">Aviso:</strong> seu endereço IP{ip ? <> (<span className="font-mono text-ink">{ip}</span>)</> : ''} e a data e hora desta inscrição serão registrados.
       O uso inadequado da ferramenta, inclusive a inserção de informações falsas ou em nome de terceiros, poderá gerar responsabilização.
     </div>
   );
