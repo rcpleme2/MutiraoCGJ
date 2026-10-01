@@ -78,7 +78,7 @@ export function MagistrateForm({
           onChange={v => setF({ ...f, acceptsHearings: v })}
           options={[
             { value: 'sim', label: 'Sim, aceito realizar audiências' },
-            { value: 'nao', label: 'Não, apenas sentenças / decisões' },
+            { value: 'nao', label: 'Não, apenas sentenças' },
           ]}
         />
       </Field>
@@ -131,18 +131,16 @@ export function UnitForm({
         if (await onSubmit({ ...f })) setF(empty);
       }}
     >
-      <Field label="Unidade judicial (vara / juizado)">
+      <Field label="Comarca">
+        <input required className="input" value={f.comarca} onChange={text('comarca')} />
+      </Field>
+      <Field label="Unidade judicial">
         <input required className="input" value={f.unitName} onChange={text('unitName')} />
       </Field>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <Field label="Juiz(a) titular / responsável">
-          <input required className="input" value={f.judgeName} onChange={text('judgeName')} />
-        </Field>
-        <Field label="Comarca / cidade">
-          <input required className="input" value={f.comarca} onChange={text('comarca')} />
-        </Field>
-      </div>
-      <Field label="E-mail oficial da unidade">
+      <Field label="Juiz(a) titular / responsável">
+        <input required className="input" value={f.judgeName} onChange={text('judgeName')} />
+      </Field>
+      <Field label="E-mail do responsável pela inscrição">
         <input required type="email" className="input" value={f.email} onChange={text('email')} />
       </Field>
       <Field label="Áreas a serem atendidas (uma ou mais)">
@@ -179,6 +177,9 @@ export function UnitForm({
       <Field label="Justificativa / detalhes da demanda">
         <textarea rows={3} className="input" value={f.description} onChange={text('description')} />
       </Field>
+      <p className="text-xs text-muted leading-relaxed border-l-2 border-bronze/50 pl-3">
+        A preferência será atendida na medida do possível, de acordo com a opção dos inscritos.
+      </p>
       <button type="submit" disabled={busy} className="btn-primary w-full">{busy ? 'Processando…' : submitLabel}</button>
     </form>
   );
