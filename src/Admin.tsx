@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Lock, Unlock, Plus, Trash2, Check, Pencil, Download, Sparkles, LogOut, Radio, Archive, RotateCcw, ChevronDown, ChevronRight } from 'lucide-react';
+import { Lock, Unlock, Plus, Trash2, Check, Pencil, Download, Sparkles, LogOut, Radio, Archive, RotateCcw, ChevronDown, ChevronRight, X } from 'lucide-react';
 import { api, download, getToken, setToken } from './api';
 import { Edition, LogEntry, Magistrate, Match, Unit, PREFERENCE_AREAS } from './types';
 import { Badge, EmptyRow, Field, Modal, Notice, formatDate, formatDateTime, magistrateTone, useFeedback } from './ui';
@@ -90,7 +90,7 @@ function UnitDetail({ unit, magistrates, matches, busy, onLink, onUnlink }: {
 
   // Magistrados ainda sem vínculo cuja 1ª ou 2ª preferência está entre as áreas da unidade
   const candidates = magistrates
-    .filter(m => !matchedIds.has(m.id) && m.status !== 'Atribuído'
+    .filter(m => !matchedIds.has(m.id) && m.status !== 'Atribuído' && m.status !== 'Rejeitado'
       && (unit.areas.includes(m.firstPreference) || unit.areas.includes(m.secondPreference)))
     .map(m => ({
       m,
@@ -166,12 +166,14 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const [log, setLog] = useState<LogEntry[]>([]);
   const [logFilter, setLogFilter] = useState('');
 
-  const [modal, setModal] = useState<null | 'mag' | 'mag-edit' | 'unit' | 'unit-edit' | 'match' | 'edition-new' | 'edition-edit' | 'password'>(null);
+  const [modal, setModal] = useState<null | 'mag' | 'mag-edit' | 'reject' | 'unit' | 'unit-edit' | 'match' | 'edition-new' | 'edition-edit' | 'password'>(null);
   const [editingMatch, setEditingMatch] = useState<Match | null>(null);
   const [editingEdition, setEditingEdition] = useState<Edition | null>(null);
   const [editingMag, setEditingMag] = useState<Magistrate | null>(null);
   const [editingUnit, setEditingUnit] = useState<Unit | null>(null);
   const [openUnitId, setOpenUnitId] = useState('');
+  const [rejecting, setRejecting] = useState<Magistrate | null>(null);
+  const [rejectReason, setRejectReason] = useState('');
   const [linking, setLinking] = useState(false);
   const [matchForm, setMatchForm] = useState({ magistrateId: '', unitId: '', assignedArea: PREFERENCE_AREAS[0] });
   const [pw, setPw] = useState({ currentPassword: '', newPassword: '' });
@@ -289,6 +291,13 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
     e.preventDefault();
     const r = await run(() => api('/admin/password', { method: 'POST', json: pw }), 'Senha alterada.');
     if (r) { setModal(null); setPw({ currentPassword: '', newPassword: '' }); }
+  };
+
+  const rejectMag = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!rejecting) return;
+    const r = await run(() => api(`/magistrates/${rejecting.id}/reject`, { method: 'POST', json: { reason: rejectReason } }), 'Inscrição rejeitada.');
+    if (r) { setModal(null); refresh(); }
   };
 
   const linkFromUnit = async (unitId: string, magistrateId: string, area: string) => {
@@ -461,13 +470,19 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             {magistrates.length === 0 && <EmptyRow cols={6}>Nenhuma inscrição nesta edição.</EmptyRow>}
             {magistrates.map(m => (
               <tr key={m.id}>
-                <td className="td"><div className="font-medium">{m.name}</div><div className="text-xs text-muted">{m.email}</div><div className="text-[11px] text-muted/80">{m.registeredIp ? `IP ${m.registeredIp} · ` : ''}{formatDateTime(m.createdAt)}</div></td>
+                <td className="td"><div className="font-medium">{m.name}</div><div className="text-xs text-muted">{m.email}</div><div className="text-[11px] text-muted/80">{m.registeredIp ? `IP ${m.registeredIp} · ` : ''}{formatDateTime(m.createdAt)}</div>{m.declaration && <div className="text-[11px] text-ok mt-0.5">Declaração de regularidade aceita</div>}</td>
                 <td className="td text-muted">{m.currentLocation}</td>
                 <td className="td text-xs"><div className="text-bronze font-medium">1ª: {m.firstPreference}</div><div className="text-muted">2ª: {m.secondPreference || '—'}</div></td>
                 <td className="td"><Badge tone={m.acceptsHearings ? 'ok' : 'neutral'}>{m.acceptsHearings ? 'Aceita' : 'Não aceita'}</Badge></td>
-                <td className="td"><Badge tone={magistrateTone(m.status)}>{m.status}</Badge></td>
+                <td className="td">
+                  <Badge tone={magistrateTone(m.status)}>{m.status}</Badge>
+                  {m.status === 'Rejeitado' && m.rejectionReason && (
+                    <div className="text-[11px] text-danger mt-1.5 max-w-[14rem] leading-snug" title={m.rejectionReason}>Motivo: {m.rejectionReason}</div>
+                  )}
+                </td>
                 <td className="td text-right whitespace-nowrap">
-                  {m.status === 'Aguardando Conferência' && <button className="btn-secondary btn-sm mr-1" onClick={() => approve(m.id)}><Check className="w-3.5 h-3.5" /> Aprovar</button>}
+                  {(m.status === 'Aguardando Conferência' || m.status === 'Rejeitado') && <button className="btn-secondary btn-sm mr-1" onClick={() => approve(m.id)}><Check className="w-3.5 h-3.5" /> {m.status === 'Rejeitado' ? 'Reconsiderar' : 'Aprovar'}</button>}
+                  {m.status !== 'Rejeitado' && <button className="btn-secondary btn-sm mr-1 !text-danger" onClick={() => { setRejecting(m); setRejectReason(''); setModal('reject'); }}><X className="w-3.5 h-3.5" /> Rejeitar</button>}
                   <button className="btn-ghost btn-sm" title="Editar" onClick={() => { setEditingMag(m); setModal('mag-edit'); }}><Pencil className="w-4 h-4" /></button>
                   <button className="btn-danger" title="Excluir" onClick={() => del('magistrates', m.id, `a inscrição de ${m.name}`)}><Trash2 className="w-4 h-4" /></button>
                 </td>
@@ -619,6 +634,23 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
           }} />
         </Modal>
       )}
+      {modal === 'reject' && rejecting && (
+        <Modal title="Rejeitar inscrição" onClose={() => setModal(null)}>
+          <form onSubmit={rejectMag} className="space-y-4">
+            <p className="text-sm text-muted">
+              Inscrição de <strong className="text-ink">{rejecting.name}</strong>.
+              {rejecting.status === 'Atribuído' && <span className="block mt-1 text-warn">O magistrado está vinculado a uma unidade: a vinculação será desfeita e a unidade voltará a ficar pendente.</span>}
+            </p>
+            <Field label="Motivo da rejeição (visível ao inscrito na consulta de status)">
+              <textarea required autoFocus rows={4} className="input" value={rejectReason} onChange={e => setRejectReason(e.target.value)} placeholder="Ex.: Declaração de regularidade incompatível com os registros funcionais." />
+            </Field>
+            <div className="flex justify-end gap-2">
+              <button type="button" className="btn-secondary" onClick={() => setModal(null)}>Cancelar</button>
+              <button className="btn-primary" disabled={!rejectReason.trim()}>Rejeitar inscrição</button>
+            </div>
+          </form>
+        </Modal>
+      )}
       {modal === 'mag-edit' && editingMag && (
         <Modal title="Editar magistrado" onClose={() => setModal(null)}>
           <MagistrateForm withStatus initial={editingMag} submitLabel="Salvar alterações" onSubmit={async p => {
@@ -643,7 +675,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             <Field label="Magistrado">
               <select required className="input" value={matchForm.magistrateId} onChange={e => setMatchForm({ ...matchForm, magistrateId: e.target.value })}>
                 <option value="">Selecione…</option>
-                {magistrates.filter(m => m.status !== 'Atribuído' || m.id === matchForm.magistrateId).map(m => <option key={m.id} value={m.id}>{m.name} — {m.status}</option>)}
+                {magistrates.filter(m => (m.status !== 'Atribuído' && m.status !== 'Rejeitado') || m.id === matchForm.magistrateId).map(m => <option key={m.id} value={m.id}>{m.name} — {m.status}</option>)}
               </select>
             </Field>
             <Field label="Unidade judicial">

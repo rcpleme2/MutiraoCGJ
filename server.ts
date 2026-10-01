@@ -18,7 +18,7 @@ const ai = process.env.GEMINI_API_KEY
     })
   : null;
 
-type MagistrateStatus = 'Aguardando Conferência' | 'Aprovado' | 'Lista de Espera' | 'Atribuído';
+type MagistrateStatus = 'Aguardando Conferência' | 'Aprovado' | 'Lista de Espera' | 'Atribuído' | 'Rejeitado';
 
 interface Edition {
   id: string;
@@ -41,6 +41,10 @@ interface Magistrate {
   secondPreference: string;
   acceptsHearings: boolean;
   registeredIp?: string;
+  /** Declaração de regularidade (120 dias / sanção / processo administrativo) aceita na inscrição pública */
+  declaration?: boolean;
+  rejectionReason?: string;
+  rejectedAt?: string;
   createdAt: string;
   status: MagistrateStatus;
 }
@@ -273,7 +277,7 @@ function editionStats(e: Edition) {
     magistrates: mags.length,
     units: us.length,
     matches: ms.length,
-    waiting: mags.filter((m) => m.status !== 'Atribuído').length,
+    waiting: mags.filter((m) => m.status !== 'Atribuído' && m.status !== 'Rejeitado').length,
     pendingUnits: us.filter((u) => u.status === 'Pendente').length,
   };
 }
@@ -587,7 +591,7 @@ async function startServer() {
   });
 
   app.post('/api/magistrates', (req, res) => {
-    const { name, email, currentLocation, firstPreference, secondPreference, acceptsHearings, status, source } = req.body;
+    const { name, email, currentLocation, firstPreference, secondPreference, acceptsHearings, declaration, status, source } = req.body;
     const edition = resolveEdition(req);
     if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
     if (!name || !email || !currentLocation || !firstPreference) {
@@ -595,6 +599,9 @@ async function startServer() {
     }
     if (source !== 'admin' && (!edition.isRegistrationOpen || edition.status === 'Encerrada')) {
       return res.status(403).json({ error: 'As inscrições desta edição estão encerradas.' });
+    }
+    if (source !== 'admin' && declaration !== true) {
+      return res.status(400).json({ error: 'É necessário aceitar a declaração de regularidade para concluir a inscrição.' });
     }
     if (magistrates.some((m) => m.editionId === edition.id && m.email.toLowerCase() === String(email).trim().toLowerCase())) {
       return res.status(409).json({ error: 'Já existe uma inscrição de magistrado com este e-mail nesta edição.' });
@@ -610,12 +617,13 @@ async function startServer() {
       secondPreference: secondPreference || '',
       acceptsHearings: acceptsHearings === true,
       registeredIp: source === 'admin' ? undefined : clientIp(req),
+      declaration: source === 'admin' ? undefined : true,
       createdAt: new Date().toISOString(),
-      status: source === 'admin' && status ? status : 'Aguardando Conferência',
+      status: source === 'admin' && status && status !== 'Rejeitado' && status !== 'Atribuído' ? status : 'Aguardando Conferência',
     };
 
     magistrates.unshift(newMag);
-    log(edition.id, actorOf(source), 'Magistrado', `Inscrição de ${newMag.name} (${newMag.currentLocation}) registrada${newMag.registeredIp ? ` (IP ${newMag.registeredIp})` : ''}.`);
+    log(edition.id, actorOf(source), 'Magistrado', `Inscrição de ${newMag.name} (${newMag.currentLocation}) registrada${newMag.registeredIp ? ` (IP ${newMag.registeredIp})` : ''}${newMag.declaration ? ' com declaração de regularidade' : ''}.`);
     res.status(201).json({ success: true, magistrate: newMag });
   });
 
@@ -653,8 +661,10 @@ async function startServer() {
     const wanted: MagistrateStatus | undefined = b.status;
     const before = mag.status;
     if (isMatched) mag.status = 'Atribuído';
-    else if (wanted && wanted !== 'Atribuído') mag.status = wanted;
+    else if (mag.status === 'Rejeitado' && (!wanted || wanted === 'Rejeitado')) { /* mantém rejeitado */ }
+    else if (wanted && wanted !== 'Atribuído' && wanted !== 'Rejeitado') mag.status = wanted;
     else if (mag.status === 'Atribuído') mag.status = 'Lista de Espera';
+    if (before === 'Rejeitado' && mag.status !== 'Rejeitado') { mag.rejectionReason = undefined; mag.rejectedAt = undefined; }
     if (mag.status !== before) changed.push(`status (${before} → ${mag.status})`);
 
     if (changed.length) {
@@ -668,8 +678,33 @@ async function startServer() {
     if (!mag) return res.status(404).json({ error: 'Magistrado não encontrado.' });
 
     const isMatched = matches.some((m) => m.magistrateId === mag.id);
+    const wasRejected = mag.status === 'Rejeitado';
     mag.status = isMatched ? 'Atribuído' : 'Lista de Espera';
-    log(mag.editionId, 'Administração', 'Magistrado', `Inscrição de ${mag.name} aprovada.`);
+    mag.rejectionReason = undefined;
+    mag.rejectedAt = undefined;
+    log(mag.editionId, 'Administração', 'Magistrado', `Inscrição de ${mag.name} ${wasRejected ? 'reconsiderada e aprovada' : 'aprovada'}.`);
+    res.json({ success: true, magistrate: mag });
+  });
+
+  app.post('/api/magistrates/:id/reject', (req, res) => {
+    const mag = magistrates.find((m) => m.id === req.params.id);
+    if (!mag) return res.status(404).json({ error: 'Magistrado não encontrado.' });
+    const reason = String(req.body?.reason ?? '').trim();
+    if (!reason) return res.status(400).json({ error: 'Informe o motivo da rejeição.' });
+
+    // Se havia vinculação, ela é desfeita e a unidade volta a ficar disponível
+    matches.filter((m) => m.magistrateId === mag.id).forEach((m) => {
+      const u = units.find((x) => x.id === m.unitId);
+      if (u) u.status = 'Pendente';
+    });
+    const hadMatch = matches.some((m) => m.magistrateId === mag.id);
+    matches = matches.filter((m) => m.magistrateId !== mag.id);
+
+    mag.status = 'Rejeitado';
+    mag.rejectionReason = reason;
+    mag.rejectedAt = new Date().toISOString();
+    log(mag.editionId, 'Administração', 'Magistrado',
+      `Inscrição de ${mag.name} rejeitada${hadMatch ? ' (vinculação desfeita)' : ''}. Motivo: ${reason}`);
     res.json({ success: true, magistrate: mag });
   });
 
@@ -804,6 +839,9 @@ async function startServer() {
     if (mag.editionId !== unit.editionId) {
       return res.status(400).json({ error: 'Magistrado e unidade pertencem a edições diferentes.' });
     }
+    if (mag.status === 'Rejeitado') {
+      return res.status(400).json({ error: 'A inscrição deste magistrado foi rejeitada. Reconsidere-a antes de vincular.' });
+    }
 
     const existingMatch = matches.find((m) => m.magistrateId === magistrateId);
     if (existingMatch) {
@@ -841,6 +879,9 @@ async function startServer() {
     const nextUnit = units.find((u) => u.id === (unitId || match.unitId));
     if (!nextMag || !nextUnit || nextMag.editionId !== match.editionId || nextUnit.editionId !== match.editionId) {
       return res.status(400).json({ error: 'Magistrado e unidade devem pertencer à mesma edição da vinculação.' });
+    }
+    if (nextMag.status === 'Rejeitado') {
+      return res.status(400).json({ error: 'A inscrição deste magistrado foi rejeitada. Reconsidere-a antes de vincular.' });
     }
 
     const oldUnit = units.find((u) => u.id === match.unitId);
@@ -886,7 +927,7 @@ async function startServer() {
     const pass = (pick: (m: Magistrate) => string) => {
       for (const mag of eMags) {
         const area = pick(mag);
-        if (!area || mag.status === 'Aguardando Conferência' || assignedMagIds.has(mag.id)) continue;
+        if (!area || mag.status === 'Aguardando Conferência' || mag.status === 'Rejeitado' || assignedMagIds.has(mag.id)) continue;
         const target = eUnits.find((u) => !assignedUnitIds.has(u.id) && u.areas.includes(area));
         if (!target) continue;
         matches.push({
@@ -917,7 +958,7 @@ async function startServer() {
     const edition = resolveEdition(req);
     if (!edition) return res.json([]);
     const assigned = new Set(matches.filter((m) => m.editionId === edition.id).map((m) => m.magistrateId));
-    res.json(magistrates.filter((m) => m.editionId === edition.id && m.status !== 'Atribuído' && !assigned.has(m.id)));
+    res.json(magistrates.filter((m) => m.editionId === edition.id && m.status !== 'Atribuído' && m.status !== 'Rejeitado' && !assigned.has(m.id)));
   });
 
   // ---------- AI recommendations ----------
@@ -931,7 +972,7 @@ async function startServer() {
     try {
       const assigned = new Set(matches.filter((m) => m.editionId === edition.id).map((m) => m.magistrateId));
       const unassignedMags = magistrates.filter(
-        (m) => m.editionId === edition.id && m.status !== 'Atribuído' && !assigned.has(m.id),
+        (m) => m.editionId === edition.id && m.status !== 'Atribuído' && m.status !== 'Rejeitado' && !assigned.has(m.id),
       );
       const pendingUnits = units.filter((u) => u.editionId === edition.id && u.status === 'Pendente');
 
@@ -1003,9 +1044,9 @@ async function startServer() {
 
     if (type === 'magistrates' || type === 'all') {
       csv += '=== MAGISTRADOS VOLUNTARIOS ===\n';
-      csv += 'ID,Nome,Email,Lotacao Atual,1ª Preferencia,2ª Preferencia,Aceita Audiencia,IP,Status,Data Inscr.\n';
+      csv += 'ID,Nome,Email,Lotacao Atual,1ª Preferencia,2ª Preferencia,Aceita Audiencia,IP,Declaracao,Status,Motivo Rejeicao,Data Inscr.\n';
       magistrates.filter((m) => m.editionId === edition.id).forEach((m) => {
-        csv += [m.id, m.name, m.email, m.currentLocation, m.firstPreference, m.secondPreference, m.acceptsHearings ? 'Sim' : 'Nao', m.registeredIp ?? '', m.status, m.createdAt].map(csvCell).join(',') + '\n';
+        csv += [m.id, m.name, m.email, m.currentLocation, m.firstPreference, m.secondPreference, m.acceptsHearings ? 'Sim' : 'Nao', m.registeredIp ?? '', m.declaration ? 'Sim' : '', m.status, m.rejectionReason ?? '', m.createdAt].map(csvCell).join(',') + '\n';
       });
       csv += '\n\n';
     }
