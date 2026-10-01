@@ -171,7 +171,7 @@ function AppInner() {
                 {magOk && <Notice tone="ok"><strong>Inscrição realizada.</strong> Status inicial: Aguardando Conferência. Acompanhe em “Consultar Status”.</Notice>}
                 {formError && <Notice tone="danger">{formError}</Notice>}
                 <IpNotice ip={ip} />
-                <MagistrateForm busy={busy} submitLabel="Concluir inscrição" onSubmit={submitPublic('/magistrates', setMagOk)} />
+                <MagistrateForm withDeclaration busy={busy} submitLabel="Concluir inscrição" onSubmit={submitPublic('/magistrates', setMagOk)} />
               </div>
             )}
           </PageCard>

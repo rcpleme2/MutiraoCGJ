@@ -26,12 +26,14 @@ export function MagistrateForm({
   onSubmit,
   submitLabel,
   withStatus,
+  withDeclaration,
   initial,
   busy,
 }: {
   onSubmit: (payload: Record<string, unknown>) => Promise<boolean>;
   submitLabel: string;
   withStatus?: boolean;
+  withDeclaration?: boolean;
   initial?: Magistrate;
   busy?: boolean;
 }) {
@@ -45,6 +47,7 @@ export function MagistrateForm({
     firstPreference: initial.firstPreference, secondPreference: initial.secondPreference,
     acceptsHearings: initial.acceptsHearings ? 'sim' : 'nao', status: initial.status as string,
   } : empty);
+  const [declared, setDeclared] = useState(false);
   const set = (k: keyof typeof empty) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setF({ ...f, [k]: e.target.value });
 
@@ -53,8 +56,8 @@ export function MagistrateForm({
       className="space-y-5"
       onSubmit={async e => {
         e.preventDefault();
-        const ok = await onSubmit({ ...f, acceptsHearings: f.acceptsHearings === 'sim' });
-        if (ok && !initial) setF(empty);
+        const ok = await onSubmit({ ...f, acceptsHearings: f.acceptsHearings === 'sim', ...(withDeclaration ? { declaration: declared } : {}) });
+        if (ok && !initial) { setF(empty); setDeclared(false); }
       }}
     >
       <Field label="Nome completo do(a) magistrado(a)">
@@ -96,9 +99,25 @@ export function MagistrateForm({
             <option>Aprovado</option>
             {initial && <option>Lista de Espera</option>}
             {initial?.status === 'Atribuído' && <option>Atribuído</option>}
+            {initial?.status === 'Rejeitado' && <option>Rejeitado</option>}
           </select>
           {initial?.status === 'Atribuído' && <p className="text-xs text-muted mt-1.5">Magistrado vinculado a uma unidade: para alterar o status, desfaça antes a vinculação.</p>}
         </Field>
+      )}
+      {withDeclaration && (
+        <label className="flex items-start gap-3 rounded-md border border-line bg-paper px-4 py-3.5 cursor-pointer">
+          <input type="checkbox" required className="mt-1 shrink-0" checked={declared}
+            onInvalid={e => e.currentTarget.setCustomValidity('Marque a declaração de regularidade para concluir a inscrição.')}
+            onChange={e => { e.currentTarget.setCustomValidity(''); setDeclared(e.target.checked); }} />
+          <span className="text-sm leading-relaxed">
+            <strong className="text-navy">Declaração de regularidade.</strong> Declaro que:
+            <span className="block mt-1.5 text-muted">
+              (i) não possuo processo concluso há mais de 120 dias;<br />
+              (ii) não sofri sanção disciplinar nos últimos dois anos; e<br />
+              (iii) não respondo a processo administrativo em andamento.
+            </span>
+          </span>
+        </label>
       )}
       <p className="text-xs text-muted leading-relaxed border-l-2 border-bronze/50 pl-3">
         A preferência indicada será atendida na medida do possível, considerando a disponibilidade de unidades e o interesse público.

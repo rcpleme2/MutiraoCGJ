@@ -14,7 +14,7 @@ export function Badge({ tone = 'neutral', children }: { tone?: keyof typeof TONE
 }
 
 export const magistrateTone = (s: string) =>
-  s === 'Atribuído' ? 'ok' : s === 'Aprovado' || s === 'Lista de Espera' ? 'info' : 'warn';
+  s === 'Rejeitado' ? 'danger' : s === 'Atribuído' ? 'ok' : s === 'Aprovado' || s === 'Lista de Espera' ? 'info' : 'warn';
 
 export function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
