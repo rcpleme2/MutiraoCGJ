@@ -6,6 +6,7 @@ import { GoogleGenAI } from '@google/genai';
 import XLSX from 'xlsx';
 import crypto from 'crypto';
 import fs from 'fs';
+import { Firestore } from '@google-cloud/firestore';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -245,6 +246,7 @@ function log(
     category,
     description,
   });
+  if (activityLog.length > 5000) activityLog.length = 5000;
 }
 
 const actorOf = (source: unknown): LogEntry['actor'] => (source === 'admin' ? 'Administração' : 'Público');
@@ -279,39 +281,113 @@ const csvCell = (v: unknown) => {
   return `"${t.replace(/"/g, '""')}"`;
 };
 
-function loadState() {
-  try {
-    const raw = JSON.parse(fs.readFileSync(DATA_FILE, 'utf-8'));
-    editions = raw.editions ?? editions;
-    activeEditionId = raw.activeEditionId ?? activeEditionId;
-    magistrates = raw.magistrates ?? magistrates;
-    units = raw.units ?? units;
-    matches = raw.matches ?? matches;
-    activityLog = raw.activityLog ?? activityLog;
-  } catch { /* primeira execução: usa os dados iniciais */ }
+// ---------- Persistência ----------
+// No Cloud Run (K_SERVICE definido) ou com USE_FIRESTORE=true, o estado é gravado no Firestore,
+// um documento por registro. Em desenvolvimento local, usa o arquivo data/state.json.
+const db = process.env.K_SERVICE || process.env.USE_FIRESTORE === 'true'
+  ? new Firestore({ ignoreUndefinedProperties: true })
+  : null;
+const PREFIX = 'mutirao_';
+const lastSaved = new Map<string, Map<string, string>>();
+let lastMeta = '';
+
+const collectionsNow = (): Record<string, { id: string }[]> => ({
+  editions, magistrates, units, matches, log: activityLog,
+});
+
+async function loadState() {
+  if (!db) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(DATA_FILE, 'utf-8'));
+      editions = raw.editions ?? editions;
+      activeEditionId = raw.activeEditionId ?? activeEditionId;
+      magistrates = raw.magistrates ?? magistrates;
+      units = raw.units ?? units;
+      matches = raw.matches ?? matches;
+      activityLog = raw.activityLog ?? activityLog;
+    } catch { /* primeira execução: usa os dados iniciais */ }
+    return;
+  }
+
+  const loaded: Record<string, any[]> = {};
+  for (const name of Object.keys(collectionsNow())) {
+    const snap = await db.collection(PREFIX + name).get();
+    loaded[name] = snap.docs.map((d) => d.data());
+    lastSaved.set(name, new Map(loaded[name].map((i) => [i.id, JSON.stringify(i)])));
+  }
+  const meta = (await db.collection(PREFIX + 'meta').doc('state').get()).data();
+
+  if (loaded.editions.length === 0) {
+    // Primeira execução em produção: mantém só a edição inicial, sem os dados fictícios de demonstração.
+    if (process.env.SEED_DEMO !== 'true') {
+      magistrates = []; units = []; matches = [];
+    }
+    console.log('[Firestore] Base vazia: iniciando com a edição padrão.');
+    return;
+  }
+  editions = loaded.editions as Edition[];
+  magistrates = loaded.magistrates as Magistrate[];
+  units = loaded.units as Unit[];
+  matches = loaded.matches as Match[];
+  activityLog = (loaded.log as LogEntry[]).sort((x, y) => y.timestamp.localeCompare(x.timestamp));
+  activeEditionId = meta?.activeEditionId ?? editions[0].id;
+  lastMeta = JSON.stringify({ activeEditionId });
 }
 
-let saveTimer: NodeJS.Timeout | null = null;
-function saveState() {
-  if (saveTimer) return;
-  saveTimer = setTimeout(() => {
-    saveTimer = null;
-    try {
-      fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
-      fs.writeFileSync(
-        DATA_FILE,
-        JSON.stringify({ editions, activeEditionId, magistrates, units, matches, activityLog }),
-      );
-    } catch (err) {
-      console.error('Falha ao persistir estado:', err);
+async function persist() {
+  if (!db) {
+    fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
+    fs.writeFileSync(
+      DATA_FILE,
+      JSON.stringify({ editions, activeEditionId, magistrates, units, matches, activityLog }),
+    );
+    return;
+  }
+
+  // Grava apenas o que mudou desde a última gravação (diff por registro).
+  type Op = { kind: 'set' | 'del'; ref: FirebaseFirestore.DocumentReference; data?: any };
+  const ops: Op[] = [];
+  const nextSaved = new Map<string, Map<string, string>>();
+
+  for (const [name, items] of Object.entries(collectionsNow())) {
+    const prev = lastSaved.get(name) ?? new Map<string, string>();
+    const next = new Map<string, string>();
+    const col = db.collection(PREFIX + name);
+    for (const item of items) {
+      const json = JSON.stringify(item);
+      next.set(item.id, json);
+      if (prev.get(item.id) !== json) ops.push({ kind: 'set', ref: col.doc(item.id), data: JSON.parse(json) });
     }
-  }, 300);
+    for (const id of prev.keys()) if (!next.has(id)) ops.push({ kind: 'del', ref: col.doc(id) });
+    nextSaved.set(name, next);
+  }
+  const meta = JSON.stringify({ activeEditionId });
+  if (meta !== lastMeta) ops.push({ kind: 'set', ref: db.collection(PREFIX + 'meta').doc('state'), data: JSON.parse(meta) });
+
+  for (let i = 0; i < ops.length; i += 400) {
+    const batch = db.batch();
+    for (const op of ops.slice(i, i + 400)) {
+      if (op.kind === 'set') batch.set(op.ref, op.data); else batch.delete(op.ref);
+    }
+    await batch.commit();
+  }
+  nextSaved.forEach((v, k) => lastSaved.set(k, v));
+  lastMeta = meta;
+}
+
+// Gravações são serializadas; a resposta HTTP só sai depois de gravar
+// (no Cloud Run a CPU pode ser reduzida logo após a resposta).
+let saving: Promise<void> = Promise.resolve();
+function saveState(): Promise<void> {
+  saving = saving.then(persist).catch((err) => console.error('Falha ao persistir estado:', err));
+  return saving;
 }
 
 async function startServer() {
   const app = express();
   app.use(express.json({ limit: '100kb' }));
-  loadState();
+  await loadState();
+  app.set('trust proxy', 1); // Cloud Run: IP real do cliente para o limitador
 
   // Proteção das rotas: somente o necessário é público; o resto exige sessão administrativa.
   app.use('/api', (req, res, next) => {
@@ -331,13 +407,16 @@ async function startServer() {
       return next();
     }
     if (publicRead || login || admin) {
-      if (req.method !== 'GET') res.on('finish', saveState);
       return next();
     }
     return res.status(401).json({ error: 'Acesso restrito à administração.' });
   });
+  // Em requisições que alteram dados, grava antes de responder.
   app.use('/api', (req, res, next) => {
-    if (req.method !== 'GET') res.on('finish', saveState);
+    if (req.method !== 'GET') {
+      const json = res.json.bind(res);
+      res.json = (body: any) => { saveState().finally(() => json(body)); return res; };
+    }
     next();
   });
 
@@ -878,9 +957,9 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static(path.join(__dirname, 'dist')));
+    app.use(express.static(path.join(process.cwd(), 'dist')));
     app.get('*', (req, res) => {
-      res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+      res.sendFile(path.join(process.cwd(), 'dist', 'index.html'));
     });
   }
 
