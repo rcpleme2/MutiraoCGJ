@@ -641,7 +641,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
               Inscrição de <strong className="text-ink">{rejecting.name}</strong>.
               {rejecting.status === 'Atribuído' && <span className="block mt-1 text-warn">O magistrado está vinculado a uma unidade: a vinculação será desfeita e a unidade voltará a ficar pendente.</span>}
             </p>
-            <Field label="Motivo da rejeição (visível ao inscrito na consulta de status)">
+            <Field label="Motivo da rejeição (uso interno; o inscrito vê apenas o status)">
               <textarea required autoFocus rows={4} className="input" value={rejectReason} onChange={e => setRejectReason(e.target.value)} placeholder="Ex.: Declaração de regularidade incompatível com os registros funcionais." />
             </Field>
             <div className="flex justify-end gap-2">

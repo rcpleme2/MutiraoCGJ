@@ -580,8 +580,10 @@ async function startServer() {
       magistrates: matchedMagistrates.map((mag) => {
         const match = matches.find((m) => m.magistrateId === mag.id);
         const assignedUnit = match ? units.find((u) => u.id === match.unitId) || null : null;
+        // O motivo da rejeição é de uso interno e não é exposto na consulta pública
+        const { rejectionReason: _reason, rejectedAt: _rejectedAt, ...publicMag } = mag;
         return {
-          ...mag,
+          ...publicMag,
           editionTitle: titleOf(mag.editionId),
           match: match ? { ...match, unit: assignedUnit } : null,
         };

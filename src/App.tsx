@@ -216,11 +216,6 @@ function AppInner() {
                         <div className="text-xs text-muted">
                           1ª: <span className="text-ink">{m.firstPreference}</span> · 2ª: <span className="text-ink">{m.secondPreference || '—'}</span> · Audiências: <span className="text-ink">{m.acceptsHearings ? 'aceita' : 'não aceita'}</span>
                         </div>
-                        {m.status === 'Rejeitado' && (
-                          <div className="bg-danger-soft text-danger text-sm rounded-md px-3 py-2.5">
-                            <strong>Inscrição rejeitada.</strong> Motivo: {m.rejectionReason || 'não informado.'}
-                          </div>
-                        )}
                         {m.match && (
                           <div className="bg-ok-soft text-ok text-sm rounded-md px-3 py-2.5">
                             <strong>Unidade atribuída:</strong> {m.match.unit?.unitName} ({m.match.unit?.comarca}) · {m.match.assignedArea}
