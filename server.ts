@@ -4,6 +4,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
 import XLSX from 'xlsx';
+import crypto from 'crypto';
+import fs from 'fs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -15,24 +17,41 @@ const ai = process.env.GEMINI_API_KEY
     })
   : null;
 
+type MagistrateStatus = 'Aguardando Conferência' | 'Aprovado' | 'Lista de Espera' | 'Atribuído';
+
+interface Edition {
+  id: string;
+  title: string;
+  description: string;
+  openingDate: string;
+  closingDate: string;
+  isRegistrationOpen: boolean;
+  status: 'Em andamento' | 'Encerrada';
+  createdAt: string;
+}
+
 interface Magistrate {
   id: string;
+  editionId: string;
   name: string;
   email: string;
   currentLocation: string;
   firstPreference: string;
   secondPreference: string;
+  acceptsHearings: boolean;
   createdAt: string;
-  status: 'Aguardando Conferência' | 'Aprovado' | 'Lista de Espera' | 'Atribuído';
+  status: MagistrateStatus;
 }
 
 interface Unit {
   id: string;
+  editionId: string;
   unitName: string;
   judgeName: string;
   email: string;
   comarca: string;
   areas: string[];
+  supportNeeded: 'Audiência' | 'Sentença' | 'Audiência e Sentença';
   description: string;
   createdAt: string;
   status: 'Pendente' | 'Atendida' | 'Em Andamento';
@@ -40,6 +59,7 @@ interface Unit {
 
 interface Match {
   id: string;
+  editionId: string;
   magistrateId: string;
   unitId: string;
   assignedArea: string;
@@ -47,52 +67,97 @@ interface Match {
   createdAt: string;
 }
 
-interface Settings {
-  title: string;
-  openingDate: string;
-  closingDate: string;
-  adminPassword: string;
-  isRegistrationOpen: boolean;
+type LogCategory = 'Edição' | 'Magistrado' | 'Unidade' | 'Vinculação' | 'Exportação' | 'Acesso';
+
+interface LogEntry {
+  id: string;
+  editionId: string | null;
+  timestamp: string;
+  actor: 'Administração' | 'Público' | 'Sistema';
+  category: LogCategory;
   description: string;
 }
 
-let settings: Settings = {
-  title: 'Mutirão de Julgamento TJPR - 2026',
-  openingDate: '2026-04-01T08:00',
-  closingDate: '2026-05-15T23:59',
-  adminPassword: 'leafar37',
-  isRegistrationOpen: true,
-  description: 'Mutirão focado na redução do acervo processual e cumprimento das metas do CNJ em unidades de todo o estado.',
+// Senha administrativa: defina ADMIN_PASSWORD nos Secrets do AI Studio.
+// Sem ela, uma senha aleatória é gerada e exibida no console do servidor a cada inicialização.
+let adminPassword = process.env.ADMIN_PASSWORD || '';
+if (!adminPassword) {
+  adminPassword = crypto.randomBytes(9).toString('base64url');
+  console.warn(`[SEGURANÇA] ADMIN_PASSWORD não definida. Senha temporária gerada: ${adminPassword}`);
+}
+
+// Sessões administrativas (token opaco, expira em 8h)
+const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
+const sessions = new Map<string, number>();
+const hasValidToken = (req: express.Request) => {
+  const token = req.header('x-admin-token');
+  const exp = token ? sessions.get(token) : undefined;
+  if (!token || !exp) return false;
+  if (exp < Date.now()) { sessions.delete(token); return false; }
+  return true;
 };
+
+// Limitador simples por IP (tentativas de login e consultas por e-mail)
+const hits = new Map<string, number[]>();
+const rateLimited = (key: string, max: number, windowMs: number) => {
+  const now = Date.now();
+  const list = (hits.get(key) || []).filter((t) => now - t < windowMs);
+  list.push(now);
+  hits.set(key, list);
+  return list.length > max;
+};
+
+// Persistência em arquivo (o container do AI Studio pode reiniciar)
+const DATA_FILE = path.join(process.cwd(), 'data', 'state.json');
+
+let editions: Edition[] = [
+  {
+    id: 'ed-1',
+    title: 'Mutirão de Julgamento TJPR - 2026',
+    description: 'Mutirão focado na redução do acervo processual e cumprimento das metas do CNJ em unidades de todo o estado.',
+    openingDate: '2026-04-01T08:00',
+    closingDate: '2026-05-15T23:59',
+    isRegistrationOpen: true,
+    status: 'Em andamento',
+    createdAt: '2026-03-20T09:00:00Z',
+  },
+];
+let activeEditionId = 'ed-1';
 
 let magistrates: Magistrate[] = [
   {
     id: 'mag-1',
+    editionId: 'ed-1',
     name: 'Dra. Ana Paula Silveira',
     email: 'ana.silveira@tjp.jus.br',
     currentLocation: '1ª Vara Cível da Comarca de Curitiba',
     firstPreference: 'Cível e Fazenda Pública',
     secondPreference: 'Família e Infância',
+    acceptsHearings: true,
     createdAt: '2026-04-02T10:15:00Z',
     status: 'Aprovado',
   },
   {
     id: 'mag-2',
+    editionId: 'ed-1',
     name: 'Dr. Carlos Eduardo Mendes',
     email: 'carlos.mendes@tjp.jus.br',
     currentLocation: '3ª Vara Criminal da Comarca de Londrina',
     firstPreference: 'Crime',
     secondPreference: 'Juizado Cível, Crime e Fazenda Pública',
+    acceptsHearings: false,
     createdAt: '2026-04-03T14:20:00Z',
     status: 'Aguardando Conferência',
   },
   {
     id: 'mag-3',
+    editionId: 'ed-1',
     name: 'Dra. Beatriz de Souza Lima',
     email: 'beatriz.lima@tjp.jus.br',
     currentLocation: '2ª Vara de Família e Sucessões de Maringá',
     firstPreference: 'Família e Infância',
     secondPreference: 'Cível e Fazenda Pública',
+    acceptsHearings: true,
     createdAt: '2026-04-04T09:30:00Z',
     status: 'Atribuído',
   },
@@ -101,33 +166,39 @@ let magistrates: Magistrate[] = [
 let units: Unit[] = [
   {
     id: 'unit-1',
+    editionId: 'ed-1',
     unitName: 'Vara do Juizado Especial Cível e Criminal - Comarca de Cascavel',
     judgeName: 'Dr. Roberto Sampaio',
     email: 'cascavel.jecc@tjp.jus.br',
     comarca: 'Cascavel',
     areas: ['Juizado Cível, Crime e Fazenda Pública', 'Crime'],
+    supportNeeded: 'Audiência e Sentença',
     description: 'Acervo elevado de processos conclusos para sentença há mais de 100 dias.',
     createdAt: '2026-04-02T11:00:00Z',
     status: 'Pendente',
   },
   {
     id: 'unit-2',
+    editionId: 'ed-1',
     unitName: '2ª Vara Cível da Comarca de Ponta Grossa',
     judgeName: 'Dra. Fernanda Vasconcelos',
     email: 'pg.2civel@tjp.jus.br',
     comarca: 'Ponta Grossa',
     areas: ['Cível e Fazenda Pública'],
+    supportNeeded: 'Sentença',
     description: 'Demanda reprimida em execuções fiscais e ações de cobrança.',
     createdAt: '2026-04-03T16:45:00Z',
     status: 'Pendente',
   },
   {
     id: 'unit-3',
+    editionId: 'ed-1',
     unitName: 'Vara da Infância e da Juventude - Comarca de Maringá',
     judgeName: 'Dr. Lucas Ribeiro',
     email: 'beatriz.lima@tjp.jus.br',
     comarca: 'Maringá',
     areas: ['Família e Infância'],
+    supportNeeded: 'Audiência',
     description: 'Necessidade de mutirão em audiências concentradas e medidas protetivas.',
     createdAt: '2026-04-04T11:10:00Z',
     status: 'Atendida',
@@ -137,6 +208,7 @@ let units: Unit[] = [
 let matches: Match[] = [
   {
     id: 'match-1',
+    editionId: 'ed-1',
     magistrateId: 'mag-3',
     unitId: 'unit-3',
     assignedArea: 'Família e Infância',
@@ -145,305 +217,550 @@ let matches: Match[] = [
   },
 ];
 
+let activityLog: LogEntry[] = [
+  {
+    id: 'log-seed-1',
+    editionId: 'ed-1',
+    timestamp: '2026-03-20T09:00:00Z',
+    actor: 'Sistema',
+    category: 'Edição',
+    description: 'Edição "Mutirão de Julgamento TJPR - 2026" criada.',
+  },
+];
+
+let idCounter = 0;
+const newId = (prefix: string) => `${prefix}-${Date.now()}-${(idCounter++).toString(36)}`;
+
+function log(
+  editionId: string | null,
+  actor: LogEntry['actor'],
+  category: LogCategory,
+  description: string,
+) {
+  activityLog.unshift({
+    id: newId('log'),
+    editionId,
+    timestamp: new Date().toISOString(),
+    actor,
+    category,
+    description,
+  });
+}
+
+const actorOf = (source: unknown): LogEntry['actor'] => (source === 'admin' ? 'Administração' : 'Público');
+
+const editionById = (id: string | undefined) => editions.find((e) => e.id === id);
+
+/** Resolves the edition targeted by a request (?edition=, body.editionId) or falls back to the active one. */
+function resolveEdition(req: express.Request): Edition | undefined {
+  const id = (req.query.edition as string) || req.body?.editionId || activeEditionId;
+  return editionById(id);
+}
+
+const publicEdition = (e: Edition) => ({ ...e, isActive: e.id === activeEditionId });
+
+function editionStats(e: Edition) {
+  const mags = magistrates.filter((m) => m.editionId === e.id);
+  const us = units.filter((u) => u.editionId === e.id);
+  const ms = matches.filter((m) => m.editionId === e.id);
+  return {
+    magistrates: mags.length,
+    units: us.length,
+    matches: ms.length,
+    waiting: mags.filter((m) => m.status !== 'Atribuído').length,
+    pendingUnits: us.filter((u) => u.status === 'Pendente').length,
+  };
+}
+
+// Neutraliza injeção de fórmulas em planilhas (=, +, -, @) e escapa aspas
+const csvCell = (v: unknown) => {
+  let t = String(v ?? '');
+  if (/^[=+\-@\t\r]/.test(t)) t = `'${t}`;
+  return `"${t.replace(/"/g, '""')}"`;
+};
+
+function loadState() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(DATA_FILE, 'utf-8'));
+    editions = raw.editions ?? editions;
+    activeEditionId = raw.activeEditionId ?? activeEditionId;
+    magistrates = raw.magistrates ?? magistrates;
+    units = raw.units ?? units;
+    matches = raw.matches ?? matches;
+    activityLog = raw.activityLog ?? activityLog;
+  } catch { /* primeira execução: usa os dados iniciais */ }
+}
+
+let saveTimer: NodeJS.Timeout | null = null;
+function saveState() {
+  if (saveTimer) return;
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    try {
+      fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
+      fs.writeFileSync(
+        DATA_FILE,
+        JSON.stringify({ editions, activeEditionId, magistrates, units, matches, activityLog }),
+      );
+    } catch (err) {
+      console.error('Falha ao persistir estado:', err);
+    }
+  }, 300);
+}
+
 async function startServer() {
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: '100kb' }));
+  loadState();
 
-  // API Routes
-  app.get('/api/settings', (req, res) => {
-    res.json(settings);
+  // Proteção das rotas: somente o necessário é público; o resto exige sessão administrativa.
+  app.use('/api', (req, res, next) => {
+    const ip = req.ip || 'unknown';
+    const admin = hasValidToken(req);
+    const publicRead = req.method === 'GET' && (req.path === '/settings' || req.path === '/status');
+    const publicSignup = req.method === 'POST' && (req.path === '/magistrates' || req.path === '/units');
+    const login = req.method === 'POST' && req.path === '/admin/login';
+
+    if (req.path === '/status' && rateLimited(`status:${ip}`, 30, 60_000)) {
+      return res.status(429).json({ error: 'Muitas consultas. Aguarde um instante.' });
+    }
+    if (publicSignup && !admin) {
+      // Inscrição pública: sempre na edição vigente, sem poder de definir status/origem.
+      req.body = { ...req.body, source: 'public', editionId: activeEditionId };
+      req.query = {};
+      return next();
+    }
+    if (publicRead || login || admin) {
+      if (req.method !== 'GET') res.on('finish', saveState);
+      return next();
+    }
+    return res.status(401).json({ error: 'Acesso restrito à administração.' });
+  });
+  app.use('/api', (req, res, next) => {
+    if (req.method !== 'GET') res.on('finish', saveState);
+    next();
   });
 
-  app.post('/api/settings', (req, res) => {
-    const { title, openingDate, closingDate, adminPassword, isRegistrationOpen, description } = req.body;
-    settings = {
-      title: title || settings.title,
-      openingDate: openingDate || settings.openingDate,
-      closingDate: closingDate || settings.closingDate,
-      adminPassword: adminPassword !== undefined && adminPassword !== '' ? adminPassword : settings.adminPassword,
-      isRegistrationOpen: isRegistrationOpen !== undefined ? isRegistrationOpen : settings.isRegistrationOpen,
-      description: description || settings.description,
-    };
-    res.json({ success: true, settings });
-  });
-
+  // ---------- Admin auth ----------
   app.post('/api/admin/login', (req, res) => {
-    const { password } = req.body;
-    if (password === settings.adminPassword) {
-      res.json({ success: true });
+    if (rateLimited(`login:${req.ip}`, 8, 10 * 60_000)) {
+      return res.status(429).json({ success: false, message: 'Muitas tentativas. Tente novamente em alguns minutos.' });
+    }
+    const given = Buffer.from(String(req.body?.password ?? ''));
+    const expected = Buffer.from(adminPassword);
+    const ok = given.length === expected.length && crypto.timingSafeEqual(given, expected);
+    if (ok) {
+      const token = crypto.randomBytes(24).toString('hex');
+      sessions.set(token, Date.now() + SESSION_TTL_MS);
+      log(null, 'Administração', 'Acesso', 'Acesso ao painel administrativo.');
+      res.json({ success: true, token });
     } else {
       res.status(401).json({ success: false, message: 'Senha administrativa incorreta.' });
     }
   });
 
-  // Magistrates endpoints
-  app.get('/api/magistrates', (req, res) => {
-    res.json(magistrates);
+  app.post('/api/admin/password', (req, res) => {
+    const { currentPassword, newPassword } = req.body || {};
+    if (currentPassword !== adminPassword) {
+      return res.status(401).json({ error: 'Senha atual incorreta.' });
+    }
+    if (!newPassword || String(newPassword).length < 6) {
+      return res.status(400).json({ error: 'A nova senha deve ter ao menos 6 caracteres.' });
+    }
+    adminPassword = String(newPassword);
+    log(null, 'Administração', 'Acesso', 'Senha administrativa alterada.');
+    res.json({ success: true });
   });
 
+  // ---------- Editions ----------
+  // Public settings: the active edition (kept shape-compatible with the former /api/settings).
+  app.get('/api/settings', (_req, res) => {
+    const active = editionById(activeEditionId) || editions[0];
+    res.json(active ? publicEdition(active) : null);
+  });
+
+  app.get('/api/editions', (_req, res) => {
+    const list = [...editions]
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .map((e) => ({ ...publicEdition(e), stats: editionStats(e) }));
+    res.json({ activeEditionId, editions: list });
+  });
+
+  app.post('/api/editions', (req, res) => {
+    const { title, description, openingDate, closingDate, activate } = req.body || {};
+    if (!title || !openingDate || !closingDate) {
+      return res.status(400).json({ error: 'Informe título, abertura e encerramento da edição.' });
+    }
+    const edition: Edition = {
+      id: newId('ed'),
+      title,
+      description: description || '',
+      openingDate,
+      closingDate,
+      isRegistrationOpen: true,
+      status: 'Em andamento',
+      createdAt: new Date().toISOString(),
+    };
+    editions.push(edition);
+    log(edition.id, 'Administração', 'Edição', `Edição "${edition.title}" criada.`);
+    if (activate) {
+      activeEditionId = edition.id;
+      log(edition.id, 'Administração', 'Edição', 'Edição definida como a vigente para inscrições públicas.');
+    }
+    res.status(201).json({ success: true, edition: publicEdition(edition) });
+  });
+
+  app.put('/api/editions/:id', (req, res) => {
+    const edition = editionById(req.params.id);
+    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+
+    const { title, description, openingDate, closingDate, isRegistrationOpen } = req.body || {};
+    const changes: string[] = [];
+    if (title && title !== edition.title) { changes.push(`título para "${title}"`); edition.title = title; }
+    if (description !== undefined && description !== edition.description) { changes.push('descrição'); edition.description = description; }
+    if (openingDate && openingDate !== edition.openingDate) { changes.push('data de abertura'); edition.openingDate = openingDate; }
+    if (closingDate && closingDate !== edition.closingDate) { changes.push('data de encerramento'); edition.closingDate = closingDate; }
+    if (typeof isRegistrationOpen === 'boolean' && isRegistrationOpen !== edition.isRegistrationOpen) {
+      edition.isRegistrationOpen = isRegistrationOpen;
+      changes.push(isRegistrationOpen ? 'inscrições reabertas' : 'inscrições encerradas');
+    }
+    if (changes.length) {
+      log(edition.id, 'Administração', 'Edição', `Edição atualizada: ${changes.join(', ')}.`);
+    }
+    res.json({ success: true, edition: publicEdition(edition) });
+  });
+
+  app.post('/api/editions/:id/activate', (req, res) => {
+    const edition = editionById(req.params.id);
+    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+    activeEditionId = edition.id;
+    log(edition.id, 'Administração', 'Edição', 'Edição definida como a vigente para inscrições públicas.');
+    res.json({ success: true });
+  });
+
+  app.post('/api/editions/:id/close', (req, res) => {
+    const edition = editionById(req.params.id);
+    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+    edition.status = 'Encerrada';
+    edition.isRegistrationOpen = false;
+    log(edition.id, 'Administração', 'Edição', 'Edição encerrada. Inscrições fechadas.');
+    res.json({ success: true, edition: publicEdition(edition) });
+  });
+
+  app.post('/api/editions/:id/reopen', (req, res) => {
+    const edition = editionById(req.params.id);
+    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+    edition.status = 'Em andamento';
+    log(edition.id, 'Administração', 'Edição', 'Edição reaberta (em andamento).');
+    res.json({ success: true, edition: publicEdition(edition) });
+  });
+
+  // ---------- Activity log ----------
+  app.get('/api/log', (req, res) => {
+    const edition = (req.query.edition as string) || '';
+    const list = edition
+      ? activityLog.filter((l) => l.editionId === edition || l.editionId === null)
+      : activityLog;
+    res.json(list.slice(0, 500));
+  });
+
+  // ---------- Magistrates ----------
+  app.get('/api/magistrates', (req, res) => {
+    const edition = resolveEdition(req);
+    res.json(edition ? magistrates.filter((m) => m.editionId === edition.id) : []);
+  });
+
+  // Public consultation across all editions
   app.get('/api/status', (req, res) => {
-    const emailQuery = (req.query.email as string || '').trim().toLowerCase();
+    const emailQuery = ((req.query.email as string) || '').trim().toLowerCase();
     if (!emailQuery) {
       return res.status(400).json({ error: 'Informe o e-mail cadastrado.' });
     }
 
-    const matchedMagistrates = magistrates.filter(m => m.email.toLowerCase() === emailQuery);
-    const matchedUnits = units.filter(u => u.email.toLowerCase() === emailQuery);
+    const matchedMagistrates = magistrates.filter((m) => m.email.toLowerCase() === emailQuery);
+    const matchedUnits = units.filter((u) => u.email.toLowerCase() === emailQuery);
 
     if (matchedMagistrates.length === 0 && matchedUnits.length === 0) {
       return res.status(404).json({ error: 'Nenhum cadastro encontrado com este e-mail.' });
     }
 
-    const magistrateDetails = matchedMagistrates.map(mag => {
-      const match = matches.find(m => m.magistrateId === mag.id);
-      const assignedUnit = match ? units.find(u => u.id === match.unitId) || null : null;
-      return {
-        ...mag,
-        match: match ? { ...match, unit: assignedUnit } : null,
-      };
-    });
+    const titleOf = (id: string) => editionById(id)?.title || '';
 
     res.json({
-      magistrates: magistrateDetails,
-      units: matchedUnits,
+      magistrates: matchedMagistrates.map((mag) => {
+        const match = matches.find((m) => m.magistrateId === mag.id);
+        const assignedUnit = match ? units.find((u) => u.id === match.unitId) || null : null;
+        return {
+          ...mag,
+          editionTitle: titleOf(mag.editionId),
+          match: match ? { ...match, unit: assignedUnit } : null,
+        };
+      }),
+      units: matchedUnits.map((u) => ({ ...u, editionTitle: titleOf(u.editionId) })),
     });
   });
 
   app.post('/api/magistrates', (req, res) => {
-    const { name, email, currentLocation, firstPreference, secondPreference, status } = req.body;
+    const { name, email, currentLocation, firstPreference, secondPreference, acceptsHearings, status, source } = req.body;
+    const edition = resolveEdition(req);
+    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
     if (!name || !email || !currentLocation || !firstPreference) {
       return res.status(400).json({ error: 'Preencha todos os campos obrigatórios do magistrado.' });
     }
+    if (source !== 'admin' && (!edition.isRegistrationOpen || edition.status === 'Encerrada')) {
+      return res.status(403).json({ error: 'As inscrições desta edição estão encerradas.' });
+    }
+    if (magistrates.some((m) => m.editionId === edition.id && m.email.toLowerCase() === String(email).trim().toLowerCase())) {
+      return res.status(409).json({ error: 'Já existe uma inscrição de magistrado com este e-mail nesta edição.' });
+    }
 
     const newMag: Magistrate = {
-      id: `mag-${Date.now()}`,
+      id: newId('mag'),
+      editionId: edition.id,
       name,
-      email,
+      email: String(email).trim(),
       currentLocation,
       firstPreference,
       secondPreference: secondPreference || '',
+      acceptsHearings: acceptsHearings === true,
       createdAt: new Date().toISOString(),
-      status: status || 'Aguardando Conferência',
+      status: source === 'admin' && status ? status : 'Aguardando Conferência',
     };
 
     magistrates.unshift(newMag);
+    log(edition.id, actorOf(source), 'Magistrado', `Inscrição de ${newMag.name} (${newMag.currentLocation}) registrada.`);
     res.status(201).json({ success: true, magistrate: newMag });
   });
 
   app.post('/api/magistrates/:id/approve', (req, res) => {
-    const { id } = req.params;
-    const mag = magistrates.find(m => m.id === id);
-    if (!mag) {
-      return res.status(404).json({ error: 'Magistrado não encontrado.' });
-    }
+    const mag = magistrates.find((m) => m.id === req.params.id);
+    if (!mag) return res.status(404).json({ error: 'Magistrado não encontrado.' });
 
-    const isMatched = matches.some(m => m.magistrateId === id);
+    const isMatched = matches.some((m) => m.magistrateId === mag.id);
     mag.status = isMatched ? 'Atribuído' : 'Lista de Espera';
+    log(mag.editionId, 'Administração', 'Magistrado', `Inscrição de ${mag.name} aprovada.`);
     res.json({ success: true, magistrate: mag });
   });
 
   app.delete('/api/magistrates/:id', (req, res) => {
     const { id } = req.params;
-    console.log('[SERVER] DELETE /api/magistrates/:id called with id:', id);
+    const mag = magistrates.find((m) => m.id === id);
+    if (mag) {
+      matches.filter((m) => m.magistrateId === id).forEach((m) => {
+        const u = units.find((x) => x.id === m.unitId);
+        if (u) u.status = 'Pendente';
+      });
+      log(mag.editionId, 'Administração', 'Magistrado', `Inscrição de ${mag.name} excluída.`);
+    }
     magistrates = magistrates.filter((m) => m.id !== id);
     matches = matches.filter((m) => m.magistrateId !== id);
     res.json({ success: true, id });
   });
 
-  // Units endpoints
+  // ---------- Units ----------
   app.get('/api/units', (req, res) => {
-    res.json(units);
+    const edition = resolveEdition(req);
+    res.json(edition ? units.filter((u) => u.editionId === edition.id) : []);
   });
 
   app.post('/api/units', (req, res) => {
-    const { unitName, judgeName, email, comarca, areas, description } = req.body;
+    const { unitName, judgeName, email, comarca, areas, supportNeeded, description, source } = req.body;
+    const edition = resolveEdition(req);
+    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
     if (!unitName || !judgeName || !email || !comarca || !areas || !areas.length) {
       return res.status(400).json({ error: 'Preencha todos os campos obrigatórios da unidade judicial.' });
     }
+    if (source !== 'admin' && (!edition.isRegistrationOpen || edition.status === 'Encerrada')) {
+      return res.status(403).json({ error: 'As inscrições desta edição estão encerradas.' });
+    }
 
     const newUnit: Unit = {
-      id: `unit-${Date.now()}`,
+      id: newId('unit'),
+      editionId: edition.id,
       unitName,
       judgeName,
-      email,
+      email: String(email).trim(),
       comarca,
       areas,
+      supportNeeded: ['Audiência', 'Sentença', 'Audiência e Sentença'].includes(supportNeeded) ? supportNeeded : 'Sentença',
       description: description || '',
       createdAt: new Date().toISOString(),
       status: 'Pendente',
     };
 
     units.unshift(newUnit);
+    log(edition.id, actorOf(source), 'Unidade', `Inscrição da unidade "${newUnit.unitName}" (${newUnit.comarca}) registrada.`);
     res.status(201).json({ success: true, unit: newUnit });
   });
 
   app.delete('/api/units/:id', (req, res) => {
     const { id } = req.params;
-    console.log('[SERVER] DELETE /api/units/:id called with id:', id);
+    const unit = units.find((u) => u.id === id);
+    if (unit) {
+      matches.filter((m) => m.unitId === id).forEach((m) => {
+        const mag = magistrates.find((x) => x.id === m.magistrateId);
+        if (mag) mag.status = 'Lista de Espera';
+      });
+      log(unit.editionId, 'Administração', 'Unidade', `Inscrição da unidade "${unit.unitName}" excluída.`);
+    }
     units = units.filter((u) => u.id !== id);
     matches = matches.filter((m) => m.unitId !== id);
     res.json({ success: true, id });
   });
 
-  // Matches endpoints
+  // ---------- Matches ----------
   app.get('/api/matches', (req, res) => {
-    res.json(matches);
+    const edition = resolveEdition(req);
+    res.json(edition ? matches.filter((m) => m.editionId === edition.id) : []);
   });
 
+  const describeMatch = (mt: Match) => {
+    const mag = magistrates.find((m) => m.id === mt.magistrateId);
+    const un = units.find((u) => u.id === mt.unitId);
+    return `${mag?.name || 'Magistrado'} → ${un?.unitName || 'Unidade'} (${mt.assignedArea})`;
+  };
+
   app.post('/api/matches', (req, res) => {
-    const { magistrateId, unitId, assignedArea } = req.body;
+    const { magistrateId, unitId, assignedArea, source } = req.body;
     if (!magistrateId || !unitId || !assignedArea) {
       return res.status(400).json({ error: 'Magistrado, Unidade e Área são obrigatórios para a vinculação.' });
     }
+    const mag = magistrates.find((m) => m.id === magistrateId);
+    const unit = units.find((u) => u.id === unitId);
+    if (!mag || !unit) return res.status(404).json({ error: 'Magistrado ou unidade não encontrados.' });
+    if (mag.editionId !== unit.editionId) {
+      return res.status(400).json({ error: 'Magistrado e unidade pertencem a edições diferentes.' });
+    }
 
-    // If magistrate already had a match elsewhere, clear old match's unit status
-    const existingMatch = matches.find(m => m.magistrateId === magistrateId);
+    const existingMatch = matches.find((m) => m.magistrateId === magistrateId);
     if (existingMatch) {
-      const oldUnit = units.find(u => u.id === existingMatch.unitId);
+      const oldUnit = units.find((u) => u.id === existingMatch.unitId);
       if (oldUnit) oldUnit.status = 'Pendente';
-      matches = matches.filter(m => m.id !== existingMatch.id);
+      matches = matches.filter((m) => m.id !== existingMatch.id);
     }
 
-    const mag = magistrates.find(m => m.id === magistrateId);
-    if (mag) {
-      mag.status = 'Atribuído';
-    }
-
+    mag.status = 'Atribuído';
     const newMatch: Match = {
-      id: `match-${Date.now()}`,
+      id: newId('match'),
+      editionId: mag.editionId,
       magistrateId,
       unitId,
       assignedArea,
       status: 'Vinculado',
       createdAt: new Date().toISOString(),
     };
-
     matches.unshift(newMatch);
+    unit.status = 'Atendida';
 
-    const unit = units.find((u) => u.id === unitId);
-    if (unit) {
-      unit.status = 'Atendida';
-    }
-
+    log(mag.editionId, source === 'ai' ? 'Sistema' : 'Administração', 'Vinculação',
+      `Vinculação ${source === 'ai' ? 'sugerida por IA e efetivada' : 'manual'}: ${describeMatch(newMatch)}.`);
     res.status(201).json({ success: true, match: newMatch });
   });
 
-  // Put / Update match (alterar vinculação)
   app.put('/api/matches/:id', (req, res) => {
-    const { id } = req.params;
+    const match = matches.find((m) => m.id === req.params.id);
+    if (!match) return res.status(404).json({ error: 'Vinculação não encontrada.' });
+
+    const before = describeMatch(match);
     const { magistrateId, unitId, assignedArea } = req.body;
-    
-    const match = matches.find(m => m.id === id);
-    if (!match) {
-      return res.status(404).json({ error: 'Vinculação não encontrada.' });
+
+    const nextMag = magistrates.find((m) => m.id === (magistrateId || match.magistrateId));
+    const nextUnit = units.find((u) => u.id === (unitId || match.unitId));
+    if (!nextMag || !nextUnit || nextMag.editionId !== match.editionId || nextUnit.editionId !== match.editionId) {
+      return res.status(400).json({ error: 'Magistrado e unidade devem pertencer à mesma edição da vinculação.' });
     }
 
-    // Reset old unit status
-    const oldUnit = units.find(u => u.id === match.unitId);
+    const oldUnit = units.find((u) => u.id === match.unitId);
     if (oldUnit) oldUnit.status = 'Pendente';
-    const oldMag = magistrates.find(m => m.id === match.magistrateId);
+    const oldMag = magistrates.find((m) => m.id === match.magistrateId);
     if (oldMag) oldMag.status = 'Lista de Espera';
 
-    match.magistrateId = magistrateId || match.magistrateId;
-    match.unitId = unitId || match.unitId;
+    match.magistrateId = nextMag.id;
+    match.unitId = nextUnit.id;
     match.assignedArea = assignedArea || match.assignedArea;
+    nextMag.status = 'Atribuído';
+    nextUnit.status = 'Atendida';
 
-    const newMag = magistrates.find(m => m.id === match.magistrateId);
-    if (newMag) newMag.status = 'Atribuído';
-
-    const newUnit = units.find(u => u.id === match.unitId);
-    if (newUnit) newUnit.status = 'Atendida';
-
+    log(match.editionId, 'Administração', 'Vinculação', `Vinculação alterada: de ${before} para ${describeMatch(match)}.`);
     res.json({ success: true, match });
   });
 
   app.delete('/api/matches/:id', (req, res) => {
     const { id } = req.params;
-    console.log('[SERVER] DELETE /api/matches/:id called with id:', id);
     const match = matches.find((m) => m.id === id);
     if (match) {
       const unit = units.find((u) => u.id === match.unitId);
-      if (unit) {
-        unit.status = 'Pendente';
-      }
+      if (unit) unit.status = 'Pendente';
       const mag = magistrates.find((m) => m.id === match.magistrateId);
-      if (mag) {
-        mag.status = 'Lista de Espera';
-      }
+      if (mag) mag.status = 'Lista de Espera';
+      log(match.editionId, 'Administração', 'Vinculação', `Vinculação desfeita: ${describeMatch(match)}.`);
     }
     matches = matches.filter((m) => m.id !== id);
     res.json({ success: true, id });
   });
 
-  // Auto-matching algorithm
+  // Auto-matching, scoped to one edition
   app.post('/api/matches/auto', (req, res) => {
+    const edition = resolveEdition(req);
+    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+
+    const eMags = magistrates.filter((m) => m.editionId === edition.id);
+    const eUnits = units.filter((u) => u.editionId === edition.id);
+    const assignedMagIds = new Set(matches.filter((m) => m.editionId === edition.id).map((m) => m.magistrateId));
+    const assignedUnitIds = new Set(matches.filter((m) => m.editionId === edition.id).map((m) => m.unitId));
     let newMatchesCount = 0;
-    const assignedMagIds = new Set(matches.map((m) => m.magistrateId));
-    const assignedUnitIds = new Set(matches.map((m) => m.unitId));
 
-    const eligibleMags = magistrates.filter(m => m.status !== 'Atribuído' && !assignedMagIds.has(m.id));
-
-    // PASS 1: Prioritize 1st preference
-    for (const mag of eligibleMags) {
-      if (assignedMagIds.has(mag.id)) continue;
-      const targetUnit = units.find((u) => !assignedUnitIds.has(u.id) && u.areas.includes(mag.firstPreference));
-      if (targetUnit) {
+    const pass = (pick: (m: Magistrate) => string) => {
+      for (const mag of eMags) {
+        const area = pick(mag);
+        if (!area || mag.status === 'Aguardando Conferência' || assignedMagIds.has(mag.id)) continue;
+        const target = eUnits.find((u) => !assignedUnitIds.has(u.id) && u.areas.includes(area));
+        if (!target) continue;
         matches.push({
-          id: `match-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+          id: newId('match'),
+          editionId: edition.id,
           magistrateId: mag.id,
-          unitId: targetUnit.id,
-          assignedArea: mag.firstPreference,
+          unitId: target.id,
+          assignedArea: area,
           status: 'Vinculado',
           createdAt: new Date().toISOString(),
         });
         assignedMagIds.add(mag.id);
-        assignedUnitIds.add(targetUnit.id);
-        targetUnit.status = 'Atendida';
+        assignedUnitIds.add(target.id);
+        target.status = 'Atendida';
         mag.status = 'Atribuído';
         newMatchesCount++;
       }
-    }
+    };
+    pass((m) => m.firstPreference);
+    pass((m) => m.secondPreference);
 
-    // PASS 2: Try 2nd preference
-    const eligibleMags2 = magistrates.filter(m => m.status !== 'Atribuído' && !assignedMagIds.has(m.id));
-    for (const mag of eligibleMags2) {
-      if (!mag.secondPreference || assignedMagIds.has(mag.id)) continue;
-      const targetUnit = units.find((u) => !assignedUnitIds.has(u.id) && u.areas.includes(mag.secondPreference));
-      if (targetUnit) {
-        matches.push({
-          id: `match-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-          magistrateId: mag.id,
-          unitId: targetUnit.id,
-          assignedArea: mag.secondPreference,
-          status: 'Vinculado',
-          createdAt: new Date().toISOString(),
-        });
-        assignedMagIds.add(mag.id);
-        assignedUnitIds.add(targetUnit.id);
-        targetUnit.status = 'Atendida';
-        mag.status = 'Atribuído';
-        newMatchesCount++;
-      }
-    }
-
-    res.json({ success: true, newMatchesCount, matches });
+    log(edition.id, 'Administração', 'Vinculação',
+      `Vinculação automática executada: ${newMatchesCount} nova(s) vinculação(ões).`);
+    res.json({ success: true, newMatchesCount });
   });
 
   app.get('/api/waiting-list', (req, res) => {
-    const assignedMagIds = new Set(matches.map((m) => m.magistrateId));
-    const waitingMagistrates = magistrates.filter((m) => m.status !== 'Atribuído' && !assignedMagIds.has(m.id));
-    res.json(waitingMagistrates);
+    const edition = resolveEdition(req);
+    if (!edition) return res.json([]);
+    const assigned = new Set(matches.filter((m) => m.editionId === edition.id).map((m) => m.magistrateId));
+    res.json(magistrates.filter((m) => m.editionId === edition.id && m.status !== 'Atribuído' && !assigned.has(m.id)));
   });
 
-  // AI Recommendations
+  // ---------- AI recommendations ----------
   app.post('/api/ai/match-recommendations', async (req, res) => {
     if (!ai) {
       return res.status(500).json({ error: 'Chave da API Gemini não configurada.' });
     }
+    const edition = resolveEdition(req);
+    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
 
     try {
-      const unassignedMags = magistrates.filter((m) => m.status !== 'Atribuído' && !matches.some((mt) => mt.magistrateId === m.id));
-      const pendingUnits = units.filter((u) => u.status === 'Pendente');
+      const assigned = new Set(matches.filter((m) => m.editionId === edition.id).map((m) => m.magistrateId));
+      const unassignedMags = magistrates.filter(
+        (m) => m.editionId === edition.id && m.status !== 'Atribuído' && !assigned.has(m.id),
+      );
+      const pendingUnits = units.filter((u) => u.editionId === edition.id && u.status === 'Pendente');
 
       const prompt = `
         Você é o assistente de inteligência artificial de coordenação de um Mutirão de Julgamento do Tribunal de Justiça.
@@ -469,12 +786,11 @@ async function startServer() {
       const response = await ai.models.generateContent({
         model: 'gemini-3.8-flash',
         contents: prompt,
-        config: {
-          responseMimeType: 'application/json',
-        },
+        config: { responseMimeType: 'application/json' },
       });
 
       const result = JSON.parse(response.text || '[]');
+      log(edition.id, 'Sistema', 'Vinculação', `Recomendações de IA geradas (${Array.isArray(result) ? result.length : 0}).`);
       res.json({ success: true, recommendations: result });
     } catch (err: any) {
       console.error('Gemini AI error:', err);
@@ -482,65 +798,77 @@ async function startServer() {
     }
   });
 
-  // XLSX Export for matches: Nome, Área, Unidade
+  // ---------- Exports ----------
   app.get('/api/export/xlsx/matches', (req, res) => {
-    const data = matches.map((mt) => {
-      const mag = magistrates.find((m) => m.id === mt.magistrateId);
-      const un = units.find((u) => u.id === mt.unitId);
-      return {
-        'Nome': mag?.name || 'Magistrado Removido',
+    const edition = resolveEdition(req);
+    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+
+    const data = matches
+      .filter((m) => m.editionId === edition.id)
+      .map((mt) => ({
+        'Nome': magistrates.find((m) => m.id === mt.magistrateId)?.name || 'Magistrado Removido',
         'Área': mt.assignedArea,
-        'Unidade': un?.unitName || 'Unidade Removida',
-      };
-    });
+        'Unidade': units.find((u) => u.id === mt.unitId)?.unitName || 'Unidade Removida',
+      }));
 
-    const worksheet = XLSX.utils.json_to_sheet(data);
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Vinculacoes');
-
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(data), 'Vinculacoes');
     const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 
+    log(edition.id, 'Administração', 'Exportação', 'Planilha de vinculações (XLSX) exportada.');
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename=vinculacoes-mutirao-${Date.now()}.xlsx`);
+    res.setHeader('Content-Disposition', `attachment; filename=vinculacoes-${edition.id}-${Date.now()}.xlsx`);
     res.send(buffer);
   });
 
-  // CSV Export
   app.get('/api/export/csv', (req, res) => {
-    const type = req.query.type || 'all';
-    let csvContent = '\uFEFF';
+    const edition = resolveEdition(req);
+    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+
+    const type = (req.query.type as string) || 'all';
+    let csv = `﻿Edição: ${edition.title}\n\n`;
 
     if (type === 'magistrates' || type === 'all') {
-      csvContent += '=== MAGISTRADOS VOLUNTARIOS ===\n';
-      csvContent += 'ID,Nome,Email,Lotacao Atual,1ª Preferencia,2ª Preferencia,Status,Data Inscr.\n';
-      magistrates.forEach((m) => {
-        csvContent += `"${m.id}","${m.name}","${m.email}","${m.currentLocation}","${m.firstPreference}","${m.secondPreference || ''}","${m.status}","${m.createdAt}"\n`;
+      csv += '=== MAGISTRADOS VOLUNTARIOS ===\n';
+      csv += 'ID,Nome,Email,Lotacao Atual,1ª Preferencia,2ª Preferencia,Aceita Audiencia,Status,Data Inscr.\n';
+      magistrates.filter((m) => m.editionId === edition.id).forEach((m) => {
+        csv += [m.id, m.name, m.email, m.currentLocation, m.firstPreference, m.secondPreference, m.acceptsHearings ? 'Sim' : 'Nao', m.status, m.createdAt].map(csvCell).join(',') + '\n';
       });
-      csvContent += '\n\n';
+      csv += '\n\n';
     }
 
     if (type === 'units' || type === 'all') {
-      csvContent += '=== UNIDADES JUDICIAIS ===\n';
-      csvContent += 'ID,Unidade,Juiz(a) Responsavel,Email,Comarca,Areas,Status,Data Inscr.\n';
-      units.forEach((u) => {
-        csvContent += `"${u.id}","${u.unitName}","${u.judgeName}","${u.email}","${u.comarca}","${u.areas.join(' | ')}","${u.status}","${u.createdAt}"\n`;
+      csv += '=== UNIDADES JUDICIAIS ===\n';
+      csv += 'ID,Unidade,Juiz(a) Responsavel,Email,Comarca,Areas,Auxilio Necessario,Status,Data Inscr.\n';
+      units.filter((u) => u.editionId === edition.id).forEach((u) => {
+        csv += [u.id, u.unitName, u.judgeName, u.email, u.comarca, u.areas.join(' | '), u.supportNeeded, u.status, u.createdAt].map(csvCell).join(',') + '\n';
       });
-      csvContent += '\n\n';
+      csv += '\n\n';
     }
 
     if (type === 'matches' || type === 'all') {
-      csvContent += '=== VINCULACOES REALIZADAS ===\n';
-      csvContent += 'ID Vinculo,Magistrado,Unidade,Area Atribuida,Status,Data\n';
-      matches.forEach((mt) => {
+      csv += '=== VINCULACOES REALIZADAS ===\n';
+      csv += 'ID Vinculo,Magistrado,Unidade,Area Atribuida,Status,Data\n';
+      matches.filter((m) => m.editionId === edition.id).forEach((mt) => {
         const mag = magistrates.find((m) => m.id === mt.magistrateId);
         const un = units.find((u) => u.id === mt.unitId);
-        csvContent += `"${mt.id}","${mag?.name || mt.magistrateId}","${un?.unitName || mt.unitId}","${mt.assignedArea}","${mt.status}","${mt.createdAt}"\n`;
+        csv += [mt.id, mag?.name || mt.magistrateId, un?.unitName || mt.unitId, mt.assignedArea, mt.status, mt.createdAt].map(csvCell).join(',') + '\n';
+      });
+      csv += '\n\n';
+    }
+
+    if (type === 'log' || type === 'all') {
+      csv += '=== REGISTRO DE ATIVIDADES ===\n';
+      csv += 'Data/Hora,Responsavel,Categoria,Descricao\n';
+      activityLog.filter((l) => l.editionId === edition.id || l.editionId === null).forEach((l) => {
+        csv += [l.timestamp, l.actor, l.category, l.description].map(csvCell).join(',') + '\n';
       });
     }
 
+    log(edition.id, 'Administração', 'Exportação', `Exportação CSV (${type}).`);
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename=mutirao-export-${type}-${Date.now()}.csv`);
-    res.send(csvContent);
+    res.setHeader('Content-Disposition', `attachment; filename=mutirao-${edition.id}-${type}-${Date.now()}.csv`);
+    res.send(csv);
   });
 
   if (process.env.NODE_ENV !== 'production') {
