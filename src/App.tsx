@@ -238,9 +238,6 @@ function AppInner() {
         {tab === 'admin' && <Admin onEditionsChanged={loadEdition} />}
       </main>
 
-      <footer className="border-t border-line py-6 text-center text-xs text-muted">
-        Corregedoria-Geral da Justiça · Tribunal de Justiça do Estado do Paraná
-      </footer>
     </div>
   );
 }

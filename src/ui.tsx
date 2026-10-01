@@ -10,7 +10,7 @@ const TONES = {
 } as const;
 
 export function Badge({ tone = 'neutral', children }: { tone?: keyof typeof TONES; children: React.ReactNode }) {
-  return <span className={`inline-block px-2.5 py-0.5 rounded-full text-[11px] font-medium ${TONES[tone]}`}>{children}</span>;
+  return <span className={`inline-block whitespace-nowrap px-2.5 py-1 rounded text-[11px] font-medium leading-none ${TONES[tone]}`}>{children}</span>;
 }
 
 export const magistrateTone = (s: string) =>
