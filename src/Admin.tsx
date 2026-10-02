@@ -825,6 +825,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
               <button className="btn-secondary btn-sm !text-danger" onClick={() => startWipe('units')}><Trash2 className="w-4 h-4" /> Excluir tudo ({units.length})</button>
             )}
             <button className="btn-primary btn-sm" onClick={() => setModal('unit')}><Plus className="w-4 h-4" /> Cadastrar</button>
+            <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/xlsx/unlinked-units?${q}`, 'unidades-sem-magistrado.xlsx')}><Download className="w-4 h-4" /> Sem magistrado (XLSX)</button>
             <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/csv?type=units&${q}`, 'unidades.csv')}><Download className="w-4 h-4" /> CSV</button>
           </Toolbar>
           <Table head={['Unidade / Comarca', <SortHeader key="d" label="Inscrição" dir={sortDir.units} onToggle={() => toggleSort('units')} />, 'Áreas e auxílio', 'Triagem', 'Status', 'Ações']}>
@@ -888,7 +889,8 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             {matches.length > 0 && (
               <button className="btn-secondary btn-sm !text-danger" onClick={() => startWipe('matches')}><Trash2 className="w-4 h-4" /> Excluir tudo ({matches.length})</button>
             )}
-              <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/xlsx/matches?${q}`, 'vinculacoes.xlsx')}><Download className="w-4 h-4" /> XLSX</button>
+              <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/xlsx/unlinked-units?${q}`, 'unidades-sem-magistrado.xlsx')}><Download className="w-4 h-4" /> Unidades sem magistrado (XLSX)</button>
+              <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/xlsx/matches?${q}`, 'vinculacoes.xlsx')}><Download className="w-4 h-4" /> Vinculações (XLSX)</button>
             </Toolbar>
             <p className="text-sm text-muted mb-4">
               Unidades escolhidas para o mutirão. Selecione o magistrado no menu e informe se a atuação será em <strong className="text-ink">audiências</strong>, <strong className="text-ink">sentenças</strong> ou em ambas. A regra é <strong className="text-ink">um magistrado por unidade</strong>; um segundo só em caráter de exceção, com motivo.

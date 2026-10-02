@@ -1435,6 +1435,30 @@ async function startServer() {
   });
 
   // ---------- Exports ----------
+  // Planilha das unidades escolhidas para o mutirão que ainda não têm magistrado: Comarca, Unidade, Juiz(a) responsável.
+  app.get('/api/export/xlsx/unlinked-units', (req, res) => {
+    const edition = resolveEdition(req);
+    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+
+    const linked = new Set(matches.filter((m) => m.editionId === edition.id).map((m) => m.unitId));
+    const header = ['Comarca', 'Unidade', 'Juiz(a) responsável'];
+    const data = units
+      .filter((u) => u.editionId === edition.id && u.selection === 'Escolhida' && !linked.has(u.id))
+      .sort((x, y) => x.comarca.localeCompare(y.comarca, 'pt-BR') || x.unitName.localeCompare(y.unitName, 'pt-BR'))
+      .map((u) => ({ 'Comarca': u.comarca, 'Unidade': u.unitName, 'Juiz(a) responsável': u.judgeName }));
+
+    const sheet = XLSX.utils.json_to_sheet(data, { header });
+    sheet['!cols'] = [{ wch: 24 }, { wch: 60 }, { wch: 32 }];
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, 'Sem magistrado');
+    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+    log(edition.id, 'Administração', 'Exportação', `Planilha de unidades sem magistrado (XLSX) exportada: ${data.length} unidade(s).`);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename=unidades-sem-magistrado-${edition.id}-${Date.now()}.xlsx`);
+    res.send(buffer);
+  });
+
   app.get('/api/export/xlsx/matches', (req, res) => {
     const edition = resolveEdition(req);
     if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
