@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Lock, Unlock, Plus, Trash2, Check, Pencil, Download, Sparkles, LogOut, Radio, Archive, RotateCcw, ChevronDown, ChevronRight, X } from 'lucide-react';
 import { api, download, getToken, setToken } from './api';
-import { Edition, LogEntry, Magistrate, Match, Unit, PREFERENCE_AREAS } from './types';
+import { Edition, LogEntry, Magistrate, Match, Unit, WorkType, WORK_TYPES } from './types';
 import { Badge, EmptyRow, Field, Modal, Notice, formatDate, formatDateTime, magistrateTone, useFeedback } from './ui';
 import { MagistrateForm, UnitForm } from './Forms';
 
@@ -74,32 +74,67 @@ function EditionForm({ initial, onSubmit }: { initial?: Edition; onSubmit: (v: a
   );
 }
 
-/* ---------- Detalhe da unidade: justificativa e vinculação por área ---------- */
+/* ---------- Regras de elegibilidade e modalidade da vinculação ---------- */
+interface Eligible { m: Magistrate; area: string; rank: 0 | 1 | 2 }
+
+/** Magistrados que podem ser vinculados à unidade, separados em "mesma área" (1ª/2ª preferência) e "outras áreas". */
+function eligibleFor(unit: Unit, magistrates: Magistrate[], matches: Match[]) {
+  const current = matches.find(x => x.unitId === unit.id);
+  const taken = new Set(matches.filter(x => x.unitId !== unit.id).map(x => x.magistrateId));
+  const list: Eligible[] = magistrates
+    .filter(m => m.status !== 'Rejeitado' && !taken.has(m.id)
+      && (m.status !== 'Aguardando Conferência' || m.id === current?.magistrateId))
+    .map(m => {
+      const first = unit.areas.includes(m.firstPreference);
+      const second = !first && !!m.secondPreference && unit.areas.includes(m.secondPreference);
+      return { m, area: first ? m.firstPreference : second ? m.secondPreference : unit.areas[0], rank: (first ? 1 : second ? 2 : 0) as 0 | 1 | 2 };
+    })
+    .sort((x, y) => (x.rank || 3) - (y.rank || 3) || x.m.name.localeCompare(y.m.name));
+  return { same: list.filter(e => e.rank > 0), other: list.filter(e => e.rank === 0) };
+}
+
+/** Mesma regra do servidor: o que o magistrado fará, dado o auxílio pedido e a disposição para audiências. */
+const defaultWorkType = (unit: Unit, mag: Magistrate): WorkType =>
+  unit.supportNeeded === 'Audiência' || unit.supportNeeded === 'Sentença'
+    ? unit.supportNeeded
+    : mag.acceptsHearings ? 'Audiência e Sentença' : 'Sentença';
+
+const workTypeTone = (w: WorkType) => (w === 'Sentença' ? 'neutral' : w === 'Audiência' ? 'info' : 'ok') as 'neutral' | 'info' | 'ok';
+
+function WorkTypeSelect({ value, onChange }: { value: WorkType; onChange: (v: WorkType) => void }) {
+  return (
+    <select className="input !py-2 text-sm" value={value} onChange={e => onChange(e.target.value as WorkType)} aria-label="Atuação do magistrado">
+      {WORK_TYPES.map(w => <option key={w} value={w}>{w === 'Audiência e Sentença' ? 'Audiência e sentença' : w === 'Audiência' ? 'Para audiências' : 'Para sentenças'}</option>)}
+    </select>
+  );
+}
+
+function WorkTypeWarnings({ unit, mag, workType }: { unit: Unit; mag?: Magistrate; workType: WorkType }) {
+  const hearings = workType !== 'Sentença';
+  return (
+    <>
+      {mag && hearings && !mag.acceptsHearings && <p className="text-[11px] text-warn mt-1.5">Este magistrado informou que não aceita realizar audiências.</p>}
+      {workType !== unit.supportNeeded && <p className="text-[11px] text-muted mt-1.5">A unidade pediu auxílio para <strong>{unit.supportNeeded.toLowerCase()}</strong>; esta vinculação cobre {workType.toLowerCase()}.</p>}
+    </>
+  );
+}
+
+/* ---------- Detalhe da unidade (aba Unidades): justificativa e vinculação por área ---------- */
 function UnitDetail({ unit, magistrates, matches, busy, onLink, onUnlink }: {
   unit: Unit;
   magistrates: Magistrate[];
   matches: Match[];
   busy: boolean;
-  onLink: (magistrateId: string, area: string) => void;
+  onLink: (magistrateId: string, area: string, workType: WorkType) => void;
   onUnlink: (matchId: string) => void;
 }) {
   const [picked, setPicked] = useState('');
+  const [workType, setWorkType] = useState<WorkType | ''>('');
   const match = matches.find(m => m.unitId === unit.id);
   const linked = match && magistrates.find(m => m.id === match.magistrateId);
-  const matchedIds = new Set(matches.map(m => m.magistrateId));
-
-  // Magistrados ainda sem vínculo cuja 1ª ou 2ª preferência está entre as áreas da unidade
-  const candidates = magistrates
-    .filter(m => !matchedIds.has(m.id) && m.status !== 'Atribuído' && m.status !== 'Rejeitado'
-      && (unit.areas.includes(m.firstPreference) || unit.areas.includes(m.secondPreference)))
-    .map(m => ({
-      m,
-      area: unit.areas.includes(m.firstPreference) ? m.firstPreference : m.secondPreference,
-      rank: unit.areas.includes(m.firstPreference) ? 1 : 2,
-    }))
-    .sort((a, b) => a.rank - b.rank || Number(a.m.status === 'Aguardando Conferência') - Number(b.m.status === 'Aguardando Conferência'));
-
+  const candidates = eligibleFor(unit, magistrates, matches).same;
   const chosen = candidates.find(c => c.m.id === picked);
+  const effective: WorkType = workType || (chosen ? defaultWorkType(unit, chosen.m) : unit.supportNeeded);
 
   return (
     <div className="grid md:grid-cols-2 gap-6">
@@ -113,38 +148,124 @@ function UnitDetail({ unit, magistrates, matches, busy, onLink, onUnlink }: {
 
       <div>
         <div className="text-[11px] font-semibold uppercase tracking-wider text-muted mb-2">Vincular magistrado da mesma área</div>
-        {match ? (
+        {unit.selection !== 'Escolhida' ? (
+          <p className="text-sm text-muted">Escolha a unidade para o mutirão antes de vincular um magistrado.</p>
+        ) : match ? (
           <div className="flex items-center justify-between gap-3 bg-ok-soft text-ok rounded-md px-3 py-2.5 text-sm">
-            <span>Vinculada a <strong>{linked?.name || 'magistrado removido'}</strong> · {match.assignedArea}</span>
+            <span>Vinculada a <strong>{linked?.name || 'magistrado removido'}</strong> · {match.assignedArea} · <strong>{match.workType}</strong></span>
             <button className="btn-secondary btn-sm shrink-0" disabled={busy} onClick={() => onUnlink(match.id)}>Desfazer</button>
           </div>
         ) : candidates.length === 0 ? (
-          <p className="text-sm text-muted">Nenhum magistrado disponível com preferência nas áreas desta unidade ({unit.areas.join(', ')}).</p>
+          <p className="text-sm text-muted">Nenhum magistrado aprovado e disponível com preferência nas áreas desta unidade ({unit.areas.join(', ')}).</p>
         ) : (
           <div className="space-y-2">
-            {candidates.map(({ m, area, rank }) => {
-              const warn = !m.acceptsHearings && unit.supportNeeded !== 'Sentença';
-              return (
-                <label key={m.id} className={`flex items-start gap-3 rounded-md border px-3 py-2.5 cursor-pointer transition-colors ${picked === m.id ? 'border-navy bg-navy/5' : 'border-line bg-surface hover:border-slate-300'}`}>
-                  <input type="checkbox" className="mt-1" checked={picked === m.id} onChange={() => setPicked(picked === m.id ? '' : m.id)} />
-                  <span className="text-sm min-w-0">
-                    <span className="font-medium">{m.name}</span>
-                    <span className="block text-xs text-muted">{m.currentLocation}</span>
-                    <span className="flex flex-wrap gap-1.5 mt-1.5">
-                      <Badge tone="info">{rank}ª preferência: {area}</Badge>
-                      {m.status === 'Aguardando Conferência' && <Badge tone="warn">Aguardando conferência</Badge>}
-                      <Badge tone={m.acceptsHearings ? 'ok' : 'neutral'}>{m.acceptsHearings ? 'Aceita audiências' : 'Não aceita audiências'}</Badge>
-                    </span>
-                    {warn && <span className="block text-[11px] text-warn mt-1">A unidade precisa de {unit.supportNeeded.toLowerCase()}, e o magistrado não aceita audiências.</span>}
+            {candidates.map(({ m, area, rank }) => (
+              <label key={m.id} className={`flex items-start gap-3 rounded-md border px-3 py-2.5 cursor-pointer transition-colors ${picked === m.id ? 'border-navy bg-navy/5' : 'border-line bg-surface hover:border-slate-300'}`}>
+                <input type="checkbox" className="mt-1" checked={picked === m.id} onChange={() => { setPicked(picked === m.id ? '' : m.id); setWorkType(''); }} />
+                <span className="text-sm min-w-0">
+                  <span className="font-medium">{m.name}</span>
+                  <span className="block text-xs text-muted">{m.currentLocation}</span>
+                  <span className="flex flex-wrap gap-1.5 mt-1.5">
+                    <Badge tone="info">{rank}ª preferência: {area}</Badge>
+                    <Badge tone={m.acceptsHearings ? 'ok' : 'neutral'}>{m.acceptsHearings ? 'Aceita audiências' : 'Não aceita audiências'}</Badge>
                   </span>
-                </label>
-              );
-            })}
-            <button className="btn-primary btn-sm" disabled={!chosen || busy} onClick={() => chosen && onLink(chosen.m.id, chosen.area)}>
+                </span>
+              </label>
+            ))}
+            {chosen && (
+              <div className="rounded-md bg-surface border border-line p-3">
+                <div className="label">O magistrado atuará em</div>
+                <WorkTypeSelect value={effective} onChange={setWorkType} />
+                <WorkTypeWarnings unit={unit} mag={chosen.m} workType={effective} />
+              </div>
+            )}
+            <button className="btn-primary btn-sm" disabled={!chosen || busy} onClick={() => chosen && onLink(chosen.m.id, chosen.area, effective)}>
               <Check className="w-4 h-4" /> Vincular selecionado
             </button>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Linha da aba Vinculações: uma unidade escolhida + dropdown de magistrados ---------- */
+function UnitLinkRow({ unit, magistrates, matches, busy, onSave, onUnlink }: {
+  unit: Unit;
+  magistrates: Magistrate[];
+  matches: Match[];
+  busy: boolean;
+  onSave: (unit: Unit, magistrateId: string, area: string, workType: WorkType, match?: Match) => void;
+  onUnlink: (matchId: string) => void;
+}) {
+  const match = matches.find(m => m.unitId === unit.id);
+  const { same, other } = eligibleFor(unit, magistrates, matches);
+  const all = [...same, ...other];
+  const [magId, setMagId] = useState(match?.magistrateId ?? '');
+  const [workType, setWorkType] = useState<WorkType | ''>(match?.workType ?? '');
+  const [showWhy, setShowWhy] = useState(false);
+
+  const sel = all.find(e => e.m.id === magId);
+  const effective: WorkType | '' = workType || (sel ? defaultWorkType(unit, sel.m) : '');
+  const changed = !!sel && (!match || match.magistrateId !== magId || match.workType !== effective);
+
+  const label = (e: Eligible) =>
+    `${e.m.name}${e.rank ? ` — ${e.rank}ª preferência` : ''}${e.m.acceptsHearings ? '' : ' — não aceita audiências'}`;
+
+  return (
+    <div className={`card p-4 sm:p-5 ${match ? 'border-ok/30' : ''}`}>
+      <div className="grid lg:grid-cols-[1fr_1.15fr] gap-5">
+        <div className="min-w-0">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="font-serif font-semibold text-navy leading-snug">{unit.unitName}</div>
+              <div className="text-xs text-muted mt-0.5">{unit.comarca} · {unit.judgeName}</div>
+            </div>
+            <Badge tone={match ? 'ok' : 'warn'}>{match ? 'Vinculada' : 'Sem magistrado'}</Badge>
+          </div>
+          <div className="flex flex-wrap gap-1.5 mt-3">
+            {unit.areas.map(a => <Badge key={a} tone="info">{a}</Badge>)}
+            <Badge tone={workTypeTone(unit.supportNeeded)}>Precisa de: {unit.supportNeeded}</Badge>
+          </div>
+          {unit.description.trim() && (
+            <div className="mt-3">
+              <button className="text-xs text-bronze hover:underline" onClick={() => setShowWhy(!showWhy)}>{showWhy ? 'Ocultar justificativa' : 'Ver justificativa'}</button>
+              {showWhy && <p className="text-sm leading-relaxed whitespace-pre-wrap mt-1.5 text-ink">{unit.description}</p>}
+            </div>
+          )}
+        </div>
+
+        <div className="space-y-3">
+          <div>
+            <label className="label">Magistrado</label>
+            <select className="input" value={magId} onChange={e => { setMagId(e.target.value); setWorkType(''); }}>
+              <option value="">{all.length ? 'Selecione um magistrado…' : 'Nenhum magistrado disponível'}</option>
+              {same.length > 0 && (
+                <optgroup label="Mesma área (preferência do magistrado)">
+                  {same.map(e => <option key={e.m.id} value={e.m.id}>{label(e)}</option>)}
+                </optgroup>
+              )}
+              {other.length > 0 && (
+                <optgroup label="Outras áreas">
+                  {other.map(e => <option key={e.m.id} value={e.m.id}>{label(e)}</option>)}
+                </optgroup>
+              )}
+            </select>
+          </div>
+          <div>
+            <label className="label">Atuação na unidade</label>
+            <WorkTypeSelect value={(effective || unit.supportNeeded) as WorkType} onChange={setWorkType} />
+            {sel && effective && <WorkTypeWarnings unit={unit} mag={sel.m} workType={effective} />}
+            {sel && sel.rank === 0 && <p className="text-[11px] text-warn mt-1.5">Área fora das preferências do magistrado; será registrada como {sel.area}.</p>}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button className="btn-primary btn-sm" disabled={!changed || busy}
+              onClick={() => sel && effective && onSave(unit, sel.m.id, sel.area, effective, match)}>
+              <Check className="w-4 h-4" /> {match ? 'Salvar alteração' : 'Vincular'}
+            </button>
+            {match && <button className="btn-secondary btn-sm" disabled={busy} onClick={() => onUnlink(match.id)}>Desfazer vinculação</button>}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -166,16 +287,15 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const [log, setLog] = useState<LogEntry[]>([]);
   const [logFilter, setLogFilter] = useState('');
 
-  const [modal, setModal] = useState<null | 'mag' | 'mag-edit' | 'reject' | 'unit' | 'unit-edit' | 'match' | 'edition-new' | 'edition-edit' | 'password'>(null);
-  const [editingMatch, setEditingMatch] = useState<Match | null>(null);
+  const [modal, setModal] = useState<null | 'mag' | 'mag-edit' | 'reject' | 'unit' | 'unit-edit' | 'edition-new' | 'edition-edit' | 'password'>(null);
+  const [matchFilter, setMatchFilter] = useState<'all' | 'open' | 'linked'>('all');
   const [editingEdition, setEditingEdition] = useState<Edition | null>(null);
   const [editingMag, setEditingMag] = useState<Magistrate | null>(null);
   const [editingUnit, setEditingUnit] = useState<Unit | null>(null);
   const [openUnitId, setOpenUnitId] = useState('');
-  const [rejecting, setRejecting] = useState<Magistrate | null>(null);
+  const [rejecting, setRejecting] = useState<{ kind: 'magistrates' | 'units'; id: string; name: string; linked: boolean } | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [linking, setLinking] = useState(false);
-  const [matchForm, setMatchForm] = useState({ magistrateId: '', unitId: '', assignedArea: PREFERENCE_AREAS[0] });
   const [pw, setPw] = useState({ currentPassword: '', newPassword: '' });
   const [ai, setAi] = useState<{ loading: boolean; items: any[] }>({ loading: false, items: [] });
 
@@ -264,15 +384,6 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   };
   const exportFile = (path: string, name: string) => run(() => download(path, name)).then(loadScoped);
 
-  const saveMatch = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const r = await run(() => editingMatch
-      ? api(`/matches/${editingMatch.id}`, { method: 'PUT', json: matchForm })
-      : api('/matches', { method: 'POST', json: withEdition(matchForm) }),
-      editingMatch ? 'Vinculação alterada.' : 'Vinculação efetivada.');
-    if (r) { setModal(null); refresh(); }
-  };
-
   const createEdition = async (v: any) => {
     const r = await run(() => api('/editions', { method: 'POST', json: v }), 'Edição criada.');
     if (r) { setModal(null); await loadEditions(); onEditionsChanged(); setSub('editions'); }
@@ -293,16 +404,23 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
     if (r) { setModal(null); setPw({ currentPassword: '', newPassword: '' }); }
   };
 
-  const rejectMag = async (e: React.FormEvent) => {
+  const rejectItem = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!rejecting) return;
-    const r = await run(() => api(`/magistrates/${rejecting.id}/reject`, { method: 'POST', json: { reason: rejectReason } }), 'Inscrição rejeitada.');
+    const r = await run(() => api(`/${rejecting.kind}/${rejecting.id}/reject`, { method: 'POST', json: { reason: rejectReason } }),
+      rejecting.kind === 'units' ? 'Unidade rejeitada.' : 'Inscrição rejeitada.');
     if (r) { setModal(null); refresh(); }
   };
+  const chooseUnit = async (id: string) => { await run(() => api(`/units/${id}/choose`, { method: 'POST' }), 'Unidade escolhida para o mutirão.'); refresh(); };
 
-  const linkFromUnit = async (unitId: string, magistrateId: string, area: string) => {
+  /** Cria ou altera uma vinculação (magistrado, área e atuação: audiência e/ou sentença) */
+  const saveLink = async (unit: Unit, magistrateId: string, area: string, workType: WorkType, match?: Match) => {
     setLinking(true);
-    const r = await run(() => api('/matches', { method: 'POST', json: withEdition({ magistrateId, unitId, assignedArea: area }) }), 'Vinculação efetivada.');
+    const body = { magistrateId, unitId: unit.id, assignedArea: area, workType };
+    const r = await run(() => match
+      ? api(`/matches/${match.id}`, { method: 'PUT', json: body })
+      : api('/matches', { method: 'POST', json: withEdition(body) }),
+      match ? 'Vinculação atualizada.' : 'Vinculação efetivada.');
     setLinking(false);
     if (r) refresh();
   };
@@ -312,12 +430,6 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
     await run(() => api(`/matches/${matchId}`, { method: 'DELETE' }), 'Vinculação desfeita.');
     setLinking(false);
     refresh();
-  };
-
-  const openMatchModal = (m?: Match) => {
-    setEditingMatch(m || null);
-    setMatchForm(m ? { magistrateId: m.magistrateId, unitId: m.unitId, assignedArea: m.assignedArea } : { magistrateId: '', unitId: '', assignedArea: PREFERENCE_AREAS[0] });
-    setModal('match');
   };
 
   const readOnlyEdition = selected?.status === 'Encerrada';
@@ -360,7 +472,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
           <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
             {[
               ['Magistrados', magistrates.length], ['Unidades', units.length], ['Vinculações', matches.length],
-              ['Em espera', waiting.length], ['Unidades pendentes', units.filter(u => u.status === 'Pendente').length],
+              ['Em espera', waiting.length], ['Unidades sem magistrado', units.filter(u => u.selection === 'Escolhida' && u.status === 'Pendente').length],
             ].map(([l, v]) => (
               <div key={l as string} className="card p-5">
                 <div className="text-3xl font-serif font-semibold text-navy">{v}</div>
@@ -482,7 +594,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
                 </td>
                 <td className="td text-right whitespace-nowrap">
                   {(m.status === 'Aguardando Conferência' || m.status === 'Rejeitado') && <button className="btn-secondary btn-sm mr-1" onClick={() => approve(m.id)}><Check className="w-3.5 h-3.5" /> {m.status === 'Rejeitado' ? 'Reconsiderar' : 'Aprovar'}</button>}
-                  {m.status !== 'Rejeitado' && <button className="btn-secondary btn-sm mr-1 !text-danger" onClick={() => { setRejecting(m); setRejectReason(''); setModal('reject'); }}><X className="w-3.5 h-3.5" /> Rejeitar</button>}
+                  {m.status !== 'Rejeitado' && <button className="btn-secondary btn-sm mr-1 !text-danger" onClick={() => { setRejecting({ kind: 'magistrates', id: m.id, name: m.name, linked: m.status === 'Atribuído' }); setRejectReason(''); setModal('reject'); }}><X className="w-3.5 h-3.5" /> Rejeitar</button>}
                   <button className="btn-ghost btn-sm" title="Editar" onClick={() => { setEditingMag(m); setModal('mag-edit'); }}><Pencil className="w-4 h-4" /></button>
                   <button className="btn-danger" title="Excluir" onClick={() => del('magistrates', m.id, `a inscrição de ${m.name}`)}><Trash2 className="w-4 h-4" /></button>
                 </td>
@@ -499,8 +611,8 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             <button className="btn-primary btn-sm" onClick={() => setModal('unit')}><Plus className="w-4 h-4" /> Cadastrar</button>
             <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/csv?type=units&${q}`, 'unidades.csv')}><Download className="w-4 h-4" /> CSV</button>
           </Toolbar>
-          <Table head={['Unidade / Comarca', 'Responsável', 'Áreas', 'Auxílio', 'Status', 'Ações']}>
-            {units.length === 0 && <EmptyRow cols={6}>Nenhuma unidade inscrita nesta edição.</EmptyRow>}
+          <Table head={['Unidade / Comarca', 'Áreas e auxílio', 'Triagem', 'Status', 'Ações']}>
+            {units.length === 0 && <EmptyRow cols={5}>Nenhuma unidade inscrita nesta edição.</EmptyRow>}
             {units.map(u => {
               const open = openUnitId === u.id;
               return (
@@ -509,24 +621,32 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
                     <td className="td">
                       <button className="flex items-start gap-1.5 text-left" onClick={() => setOpenUnitId(open ? '' : u.id)} aria-expanded={open} title="Ver justificativa e vincular magistrado">
                         {open ? <ChevronDown className="w-4 h-4 mt-0.5 shrink-0 text-bronze" /> : <ChevronRight className="w-4 h-4 mt-0.5 shrink-0 text-muted" />}
-                        <span><span className="font-medium block">{u.unitName}</span><span className="text-xs text-muted block">{u.comarca} · {u.email}</span><span className="text-[11px] text-muted/80 block">{u.registeredIp ? `IP ${u.registeredIp} · ` : ''}{formatDateTime(u.createdAt)}</span></span>
+                        <span><span className="font-medium block">{u.unitName}</span><span className="text-xs text-muted block">{u.comarca} · Resp.: {u.judgeName}</span><span className="text-xs text-muted block">{u.email}</span><span className="text-[11px] text-muted/80 block">{u.registeredIp ? `IP ${u.registeredIp} · ` : ''}{formatDateTime(u.createdAt)}</span></span>
                       </button>
                     </td>
-                    <td className="td text-muted">{u.judgeName}</td>
-                    <td className="td"><div className="flex flex-wrap gap-1">{u.areas.map(a => <Badge key={a} tone="info">{a}</Badge>)}</div></td>
-                    <td className="td"><Badge tone="neutral">{u.supportNeeded}</Badge></td>
-                    <td className="td"><Badge tone={u.status === 'Atendida' ? 'ok' : 'warn'}>{u.status}</Badge></td>
-                    <td className="td text-right whitespace-nowrap">
+                    <td className="td"><div className="flex flex-wrap gap-1">{u.areas.map(a => <Badge key={a} tone="info">{a}</Badge>)}<Badge tone="neutral">Precisa de: {u.supportNeeded}</Badge></div></td>
+                    <td className="td">
+                      <Badge tone={u.selection === 'Escolhida' ? 'ok' : u.selection === 'Rejeitada' ? 'danger' : 'warn'}>{u.selection}</Badge>
+                      {u.selection === 'Rejeitada' && u.rejectionReason && (
+                        <div className="text-[11px] text-danger mt-1.5 max-w-[12rem] leading-snug" title={u.rejectionReason}>Motivo: {u.rejectionReason}</div>
+                      )}
+                    </td>
+                    <td className="td">{u.selection === 'Escolhida' ? <Badge tone={u.status === 'Atendida' ? 'ok' : 'warn'}>{u.status}</Badge> : <span className="text-xs text-muted">—</span>}</td>
+                    <td className="td">
+                     <div className="flex flex-wrap justify-end gap-1.5">
+                      {u.selection !== 'Escolhida' && <button className="btn-secondary btn-sm" onClick={() => chooseUnit(u.id)}><Check className="w-3.5 h-3.5" /> Escolher</button>}
+                      {u.selection !== 'Rejeitada' && <button className="btn-secondary btn-sm !text-danger" onClick={() => { setRejecting({ kind: 'units', id: u.id, name: u.unitName, linked: u.status === 'Atendida' }); setRejectReason(''); setModal('reject'); }}><X className="w-3.5 h-3.5" /> Rejeitar</button>}
                       <button className="btn-ghost btn-sm" title="Justificativa e vinculação" onClick={() => setOpenUnitId(open ? '' : u.id)}>{open ? 'Fechar' : 'Detalhes'}</button>
                       <button className="btn-ghost btn-sm" title="Editar" onClick={() => { setEditingUnit(u); setModal('unit-edit'); }}><Pencil className="w-4 h-4" /></button>
                       <button className="btn-danger" title="Excluir" onClick={() => del('units', u.id, `a unidade ${u.unitName}`)}><Trash2 className="w-4 h-4" /></button>
+                     </div>
                     </td>
                   </tr>
                   {open && (
                     <tr className="bg-paper">
-                      <td colSpan={6} className="px-4 pb-5 pt-1">
+                      <td colSpan={5} className="px-4 pb-5 pt-1">
                         <UnitDetail unit={u} magistrates={magistrates} matches={matches} busy={linking}
-                          onLink={(magId, area) => linkFromUnit(u.id, magId, area)} onUnlink={unlinkFromUnit} />
+                          onLink={(magId, area, workType) => saveLink(u, magId, area, workType)} onUnlink={unlinkFromUnit} />
                       </td>
                     </tr>
                   )}
@@ -538,37 +658,45 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       )}
 
       {/* ---------- Vinculações ---------- */}
-      {sub === 'matches' && (
-        <div>
-          <Toolbar title="Vinculações">
-            <button className="btn-primary btn-sm" onClick={() => openMatchModal()}><Plus className="w-4 h-4" /> Nova vinculação</button>
-            <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/xlsx/matches?${q}`, 'vinculacoes.xlsx')}><Download className="w-4 h-4" /> XLSX</button>
-          </Toolbar>
-          <Table head={['Magistrado', 'Unidade', 'Área', 'Observações', 'Ações']}>
-            {matches.length === 0 && <EmptyRow cols={5}>Nenhuma vinculação nesta edição.</EmptyRow>}
-            {matches.map(mt => {
-              const mag = magistrates.find(m => m.id === mt.magistrateId);
-              const unit = units.find(u => u.id === mt.unitId);
-              return (
-                <tr key={mt.id}>
-                  <td className="td"><div className="font-medium">{mag?.name || 'Removido'}</div><div className="text-xs text-muted">{mag?.email}</div></td>
-                  <td className="td"><div className="font-medium">{unit?.unitName || 'Removida'}</div><div className="text-xs text-muted">{unit?.comarca}</div></td>
-                  <td className="td text-bronze font-medium">{mt.assignedArea}</td>
-                  <td className="td text-xs text-muted">
-                    {mag && <div>Audiências: {mag.acceptsHearings ? 'aceita' : 'não aceita'}</div>}
-                    {unit && <div>Unidade precisa de: {unit.supportNeeded}</div>}
-                    {mag && unit && !mag.acceptsHearings && unit.supportNeeded !== 'Sentença' && <div className="text-warn font-medium mt-0.5">Atenção: magistrado não aceita audiências</div>}
-                  </td>
-                  <td className="td text-right whitespace-nowrap">
-                    <button className="btn-ghost btn-sm" title="Alterar" onClick={() => openMatchModal(mt)}><Pencil className="w-4 h-4" /></button>
-                    <button className="btn-danger" title="Desfazer" onClick={() => del('matches', mt.id, 'esta vinculação')}><Trash2 className="w-4 h-4" /></button>
-                  </td>
-                </tr>
-              );
-            })}
-          </Table>
-        </div>
-      )}
+      {sub === 'matches' && (() => {
+        const chosenUnits = units.filter(u => u.selection === 'Escolhida');
+        const linkedCount = chosenUnits.filter(u => matches.some(m => m.unitId === u.id)).length;
+        const rows = chosenUnits.filter(u => {
+          const has = matches.some(m => m.unitId === u.id);
+          return matchFilter === 'all' || (matchFilter === 'linked' ? has : !has);
+        });
+        return (
+          <div>
+            <Toolbar title="Vinculações">
+              <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/xlsx/matches?${q}`, 'vinculacoes.xlsx')}><Download className="w-4 h-4" /> XLSX</button>
+            </Toolbar>
+            <p className="text-sm text-muted mb-4">
+              Unidades escolhidas para o mutirão. Selecione o magistrado no menu e informe se a atuação será em <strong className="text-ink">audiências</strong>, <strong className="text-ink">sentenças</strong> ou em ambas.
+              Os magistrados da mesma área aparecem primeiro; quem está aguardando conferência ou foi rejeitado não é listado.
+            </p>
+            <div className="flex flex-wrap items-center gap-2 mb-4">
+              {([['all', `Todas (${chosenUnits.length})`], ['open', `Sem magistrado (${chosenUnits.length - linkedCount})`], ['linked', `Vinculadas (${linkedCount})`]] as const).map(([id, text]) => (
+                <button key={id} onClick={() => setMatchFilter(id)}
+                  className={`px-3 py-1.5 rounded-full text-xs border transition-colors ${matchFilter === id ? 'bg-navy text-white border-navy' : 'bg-surface text-muted border-line hover:text-ink'}`}>{text}</button>
+              ))}
+            </div>
+            {chosenUnits.length === 0 && (
+              <div className="card p-10 text-center text-sm text-muted">Nenhuma unidade escolhida. Escolha as unidades na aba <strong>Unidades</strong> para vinculá-las aqui.</div>
+            )}
+            <div className="space-y-3">
+              {rows.map(u => {
+                const mt = matches.find(m => m.unitId === u.id);
+                return (
+                  <UnitLinkRow key={`${u.id}-${mt?.id ?? ''}-${mt?.magistrateId ?? ''}-${mt?.workType ?? ''}`}
+                    unit={u} magistrates={magistrates} matches={matches} busy={linking}
+                    onSave={saveLink} onUnlink={unlinkFromUnit} />
+                );
+              })}
+              {chosenUnits.length > 0 && rows.length === 0 && <div className="card p-8 text-center text-sm text-muted">Nenhuma unidade neste filtro.</div>}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ---------- Espera ---------- */}
       {sub === 'waiting' && (
@@ -635,18 +763,18 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
         </Modal>
       )}
       {modal === 'reject' && rejecting && (
-        <Modal title="Rejeitar inscrição" onClose={() => setModal(null)}>
-          <form onSubmit={rejectMag} className="space-y-4">
+        <Modal title={rejecting.kind === 'units' ? 'Rejeitar unidade' : 'Rejeitar inscrição'} onClose={() => setModal(null)}>
+          <form onSubmit={rejectItem} className="space-y-4">
             <p className="text-sm text-muted">
-              Inscrição de <strong className="text-ink">{rejecting.name}</strong>.
-              {rejecting.status === 'Atribuído' && <span className="block mt-1 text-warn">O magistrado está vinculado a uma unidade: a vinculação será desfeita e a unidade voltará a ficar pendente.</span>}
+              {rejecting.kind === 'units' ? 'Unidade' : 'Inscrição de'} <strong className="text-ink">{rejecting.name}</strong>.
+              {rejecting.linked && <span className="block mt-1 text-warn">{rejecting.kind === 'units' ? 'A unidade está vinculada a um magistrado: a vinculação será desfeita e ele voltará à lista de espera.' : 'O magistrado está vinculado a uma unidade: a vinculação será desfeita e a unidade voltará a ficar sem magistrado.'}</span>}
             </p>
             <Field label="Motivo da rejeição (uso interno; o inscrito vê apenas o status)">
-              <textarea required autoFocus rows={4} className="input" value={rejectReason} onChange={e => setRejectReason(e.target.value)} placeholder="Ex.: Declaração de regularidade incompatível com os registros funcionais." />
+              <textarea required autoFocus rows={4} className="input" value={rejectReason} onChange={e => setRejectReason(e.target.value)} placeholder={rejecting.kind === 'units' ? 'Ex.: Demanda não se enquadra nos critérios do mutirão.' : 'Ex.: Declaração de regularidade incompatível com os registros funcionais.'} />
             </Field>
             <div className="flex justify-end gap-2">
               <button type="button" className="btn-secondary" onClick={() => setModal(null)}>Cancelar</button>
-              <button className="btn-primary" disabled={!rejectReason.trim()}>Rejeitar inscrição</button>
+              <button className="btn-primary" disabled={!rejectReason.trim()}>{rejecting.kind === 'units' ? 'Rejeitar unidade' : 'Rejeitar inscrição'}</button>
             </div>
           </form>
         </Modal>
@@ -667,30 +795,6 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             if (r) { setModal(null); refresh(); }
             return !!r;
           }} />
-        </Modal>
-      )}
-      {modal === 'match' && (
-        <Modal title={editingMatch ? 'Alterar vinculação' : 'Nova vinculação'} onClose={() => setModal(null)}>
-          <form onSubmit={saveMatch} className="space-y-4">
-            <Field label="Magistrado">
-              <select required className="input" value={matchForm.magistrateId} onChange={e => setMatchForm({ ...matchForm, magistrateId: e.target.value })}>
-                <option value="">Selecione…</option>
-                {magistrates.filter(m => (m.status !== 'Atribuído' && m.status !== 'Rejeitado') || m.id === matchForm.magistrateId).map(m => <option key={m.id} value={m.id}>{m.name} — {m.status}</option>)}
-              </select>
-            </Field>
-            <Field label="Unidade judicial">
-              <select required className="input" value={matchForm.unitId} onChange={e => setMatchForm({ ...matchForm, unitId: e.target.value })}>
-                <option value="">Selecione…</option>
-                {units.map(u => <option key={u.id} value={u.id}>{u.unitName} ({u.comarca}) — {u.supportNeeded}</option>)}
-              </select>
-            </Field>
-            <Field label="Área atribuída">
-              <select className="input" value={matchForm.assignedArea} onChange={e => setMatchForm({ ...matchForm, assignedArea: e.target.value })}>
-                {PREFERENCE_AREAS.map(a => <option key={a}>{a}</option>)}
-              </select>
-            </Field>
-            <button className="btn-primary w-full">{editingMatch ? 'Salvar alteração' : 'Efetivar vinculação'}</button>
-          </form>
         </Modal>
       )}
       {modal === 'edition-new' && <Modal title="Nova edição" onClose={() => setModal(null)}><EditionForm onSubmit={createEdition} /></Modal>}

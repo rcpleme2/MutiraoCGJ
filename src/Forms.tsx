@@ -71,14 +71,15 @@ export function MagistrateForm({
       </Field>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <Field label="1ª escolha (área)">
-          <select className="input" value={f.firstPreference} onChange={set('firstPreference')}>
+          <select className="input" value={f.firstPreference}
+            onChange={e => setF({ ...f, firstPreference: e.target.value, secondPreference: f.secondPreference === e.target.value ? '' : f.secondPreference })}>
             {PREFERENCE_AREAS.map(a => <option key={a}>{a}</option>)}
           </select>
         </Field>
         <Field label="2ª escolha (área)">
           <select className="input" value={f.secondPreference} onChange={set('secondPreference')}>
             <option value="">Nenhuma</option>
-            {PREFERENCE_AREAS.map(a => <option key={a}>{a}</option>)}
+            {PREFERENCE_AREAS.filter(a => a !== f.firstPreference).map(a => <option key={a}>{a}</option>)}
           </select>
         </Field>
       </div>

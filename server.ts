@@ -49,6 +49,10 @@ interface Magistrate {
   status: MagistrateStatus;
 }
 
+type UnitSelection = 'Em análise' | 'Escolhida' | 'Rejeitada';
+type WorkType = 'Audiência' | 'Sentença' | 'Audiência e Sentença';
+const WORK_TYPES: WorkType[] = ['Audiência', 'Sentença', 'Audiência e Sentença'];
+
 interface Unit {
   id: string;
   editionId: string;
@@ -61,7 +65,12 @@ interface Unit {
   description: string;
   registeredIp?: string;
   createdAt: string;
+  /** Atendimento: Pendente (sem magistrado), Atendida (vinculada) ou Em Andamento */
   status: 'Pendente' | 'Atendida' | 'Em Andamento';
+  /** Triagem da administração: só unidades "Escolhida" entram na vinculação */
+  selection: UnitSelection;
+  rejectionReason?: string;
+  rejectedAt?: string;
 }
 
 interface Match {
@@ -70,6 +79,8 @@ interface Match {
   magistrateId: string;
   unitId: string;
   assignedArea: string;
+  /** O que o magistrado fará na unidade: audiências, sentenças ou ambos */
+  workType: WorkType;
   status: 'Vinculado' | 'Concluído';
   createdAt: string;
 }
@@ -183,6 +194,7 @@ let units: Unit[] = [
     description: 'Acervo elevado de processos conclusos para sentença há mais de 100 dias.',
     createdAt: '2026-04-02T11:00:00Z',
     status: 'Pendente',
+    selection: 'Escolhida',
   },
   {
     id: 'unit-2',
@@ -196,6 +208,7 @@ let units: Unit[] = [
     description: 'Demanda reprimida em execuções fiscais e ações de cobrança.',
     createdAt: '2026-04-03T16:45:00Z',
     status: 'Pendente',
+    selection: 'Escolhida',
   },
   {
     id: 'unit-3',
@@ -209,6 +222,7 @@ let units: Unit[] = [
     description: 'Necessidade de mutirão em audiências concentradas e medidas protetivas.',
     createdAt: '2026-04-04T11:10:00Z',
     status: 'Atendida',
+    selection: 'Escolhida',
   },
 ];
 
@@ -219,6 +233,7 @@ let matches: Match[] = [
     magistrateId: 'mag-3',
     unitId: 'unit-3',
     assignedArea: 'Família e Infância',
+    workType: 'Audiência',
     status: 'Vinculado',
     createdAt: '2026-04-04T14:00:00Z',
   },
@@ -257,6 +272,24 @@ function log(
 
 const clientIp = (req: express.Request) => (req.ip || 'desconhecido').replace(/^::ffff:/, '');
 
+/** Modalidade padrão da vinculação, conforme o auxílio pedido pela unidade e a disposição do magistrado */
+const defaultWorkType = (unit: Unit, mag: Magistrate): WorkType => {
+  if (unit.supportNeeded === 'Audiência' || unit.supportNeeded === 'Sentença') return unit.supportNeeded;
+  return mag.acceptsHearings ? 'Audiência e Sentença' : 'Sentença';
+};
+
+/** Dados gravados antes de existirem a triagem de unidades e a modalidade recebem valores coerentes */
+function normalizeLegacy() {
+  units.forEach((u) => { if (!u.selection) u.selection = 'Escolhida'; });
+  matches.forEach((m) => {
+    if (!m.workType) {
+      const u = units.find((x) => x.id === m.unitId);
+      const g = magistrates.find((x) => x.id === m.magistrateId);
+      m.workType = u && g ? defaultWorkType(u, g) : 'Sentença';
+    }
+  });
+}
+
 const actorOf = (source: unknown): LogEntry['actor'] => (source === 'admin' ? 'Administração' : 'Público');
 
 const editionById = (id: string | undefined) => editions.find((e) => e.id === id);
@@ -278,7 +311,7 @@ function editionStats(e: Edition) {
     units: us.length,
     matches: ms.length,
     waiting: mags.filter((m) => m.status !== 'Atribuído' && m.status !== 'Rejeitado').length,
-    pendingUnits: us.filter((u) => u.status === 'Pendente').length,
+    pendingUnits: us.filter((u) => u.selection === 'Escolhida' && u.status === 'Pendente').length,
   };
 }
 
@@ -395,6 +428,7 @@ async function startServer() {
   const app = express();
   app.use(express.json({ limit: '100kb' }));
   await loadState();
+  normalizeLegacy();
   app.set('trust proxy', 1); // Cloud Run: IP real do cliente para o limitador
 
   // Proteção das rotas: somente o necessário é público; o resto exige sessão administrativa.
@@ -588,7 +622,10 @@ async function startServer() {
           match: match ? { ...match, unit: assignedUnit } : null,
         };
       }),
-      units: matchedUnits.map((u) => ({ ...u, editionTitle: titleOf(u.editionId) })),
+      units: matchedUnits.map((u) => {
+        const { rejectionReason: _r, rejectedAt: _a, ...publicUnit } = u;
+        return { ...publicUnit, editionTitle: titleOf(u.editionId) };
+      }),
     });
   });
 
@@ -601,6 +638,9 @@ async function startServer() {
     }
     if (source !== 'admin' && (!edition.isRegistrationOpen || edition.status === 'Encerrada')) {
       return res.status(403).json({ error: 'As inscrições desta edição estão encerradas.' });
+    }
+    if (secondPreference && secondPreference === firstPreference) {
+      return res.status(400).json({ error: 'A 2ª escolha não pode ser igual à 1ª escolha.' });
     }
     if (source !== 'admin' && declaration !== true) {
       return res.status(400).json({ error: 'É necessário aceitar a declaração de regularidade para concluir a inscrição.' });
@@ -644,6 +684,9 @@ async function startServer() {
     };
     if (!next.name || !next.email || !next.currentLocation || !next.firstPreference) {
       return res.status(400).json({ error: 'Preencha todos os campos obrigatórios do magistrado.' });
+    }
+    if (next.secondPreference && next.secondPreference === next.firstPreference) {
+      return res.status(400).json({ error: 'A 2ª escolha não pode ser igual à 1ª escolha.' });
     }
     if (magistrates.some((m) => m.id !== mag.id && m.editionId === mag.editionId && m.email.toLowerCase() === next.email.toLowerCase())) {
       return res.status(409).json({ error: 'Já existe outra inscrição de magistrado com este e-mail nesta edição.' });
@@ -755,11 +798,47 @@ async function startServer() {
       registeredIp: source === 'admin' ? undefined : clientIp(req),
       createdAt: new Date().toISOString(),
       status: 'Pendente',
+      selection: source === 'admin' ? 'Escolhida' : 'Em análise',
     };
 
     units.unshift(newUnit);
     log(edition.id, actorOf(source), 'Unidade', `Inscrição da unidade "${newUnit.unitName}" (${newUnit.comarca}) registrada${newUnit.registeredIp ? ` (IP ${newUnit.registeredIp})` : ''}.`);
     res.status(201).json({ success: true, unit: newUnit });
+  });
+
+  app.post('/api/units/:id/choose', (req, res) => {
+    const unit = units.find((u) => u.id === req.params.id);
+    if (!unit) return res.status(404).json({ error: 'Unidade não encontrada.' });
+    const was = unit.selection;
+    unit.selection = 'Escolhida';
+    unit.rejectionReason = undefined;
+    unit.rejectedAt = undefined;
+    log(unit.editionId, 'Administração', 'Unidade',
+      `Unidade "${unit.unitName}" ${was === 'Rejeitada' ? 'reconsiderada e escolhida' : 'escolhida'} para o mutirão.`);
+    res.json({ success: true, unit });
+  });
+
+  app.post('/api/units/:id/reject', (req, res) => {
+    const unit = units.find((u) => u.id === req.params.id);
+    if (!unit) return res.status(404).json({ error: 'Unidade não encontrada.' });
+    const reason = String(req.body?.reason ?? '').trim();
+    if (!reason) return res.status(400).json({ error: 'Informe o motivo da rejeição.' });
+
+    // Se havia magistrado vinculado, a vinculação é desfeita e ele volta à lista de espera
+    const linked = matches.filter((m) => m.unitId === unit.id);
+    linked.forEach((m) => {
+      const g = magistrates.find((x) => x.id === m.magistrateId);
+      if (g) g.status = 'Lista de Espera';
+    });
+    matches = matches.filter((m) => m.unitId !== unit.id);
+
+    unit.selection = 'Rejeitada';
+    unit.status = 'Pendente';
+    unit.rejectionReason = reason;
+    unit.rejectedAt = new Date().toISOString();
+    log(unit.editionId, 'Administração', 'Unidade',
+      `Unidade "${unit.unitName}" rejeitada${linked.length ? ' (vinculação desfeita)' : ''}. Motivo: ${reason}`);
+    res.json({ success: true, unit });
   });
 
   app.put('/api/units/:id', (req, res) => {
@@ -827,11 +906,11 @@ async function startServer() {
   const describeMatch = (mt: Match) => {
     const mag = magistrates.find((m) => m.id === mt.magistrateId);
     const un = units.find((u) => u.id === mt.unitId);
-    return `${mag?.name || 'Magistrado'} → ${un?.unitName || 'Unidade'} (${mt.assignedArea})`;
+    return `${mag?.name || 'Magistrado'} → ${un?.unitName || 'Unidade'} (${mt.assignedArea}; ${mt.workType})`;
   };
 
   app.post('/api/matches', (req, res) => {
-    const { magistrateId, unitId, assignedArea, source } = req.body;
+    const { magistrateId, unitId, assignedArea, workType, source } = req.body;
     if (!magistrateId || !unitId || !assignedArea) {
       return res.status(400).json({ error: 'Magistrado, Unidade e Área são obrigatórios para a vinculação.' });
     }
@@ -843,6 +922,12 @@ async function startServer() {
     }
     if (mag.status === 'Rejeitado') {
       return res.status(400).json({ error: 'A inscrição deste magistrado foi rejeitada. Reconsidere-a antes de vincular.' });
+    }
+    if (unit.selection !== 'Escolhida') {
+      return res.status(400).json({ error: 'Só é possível vincular unidades escolhidas para o mutirão.' });
+    }
+    if (workType && !WORK_TYPES.includes(workType)) {
+      return res.status(400).json({ error: 'Modalidade inválida. Use Audiência, Sentença ou Audiência e Sentença.' });
     }
 
     const existingMatch = matches.find((m) => m.magistrateId === magistrateId);
@@ -859,6 +944,7 @@ async function startServer() {
       magistrateId,
       unitId,
       assignedArea,
+      workType: workType || defaultWorkType(unit, mag),
       status: 'Vinculado',
       createdAt: new Date().toISOString(),
     };
@@ -875,7 +961,10 @@ async function startServer() {
     if (!match) return res.status(404).json({ error: 'Vinculação não encontrada.' });
 
     const before = describeMatch(match);
-    const { magistrateId, unitId, assignedArea } = req.body;
+    const { magistrateId, unitId, assignedArea, workType } = req.body;
+    if (workType && !WORK_TYPES.includes(workType)) {
+      return res.status(400).json({ error: 'Modalidade inválida. Use Audiência, Sentença ou Audiência e Sentença.' });
+    }
 
     const nextMag = magistrates.find((m) => m.id === (magistrateId || match.magistrateId));
     const nextUnit = units.find((u) => u.id === (unitId || match.unitId));
@@ -886,6 +975,10 @@ async function startServer() {
       return res.status(400).json({ error: 'A inscrição deste magistrado foi rejeitada. Reconsidere-a antes de vincular.' });
     }
 
+    if (nextUnit.selection !== 'Escolhida') {
+      return res.status(400).json({ error: 'Só é possível vincular unidades escolhidas para o mutirão.' });
+    }
+
     const oldUnit = units.find((u) => u.id === match.unitId);
     if (oldUnit) oldUnit.status = 'Pendente';
     const oldMag = magistrates.find((m) => m.id === match.magistrateId);
@@ -894,6 +987,7 @@ async function startServer() {
     match.magistrateId = nextMag.id;
     match.unitId = nextUnit.id;
     match.assignedArea = assignedArea || match.assignedArea;
+    match.workType = workType || (nextUnit.id !== (oldUnit?.id) || nextMag.id !== oldMag?.id ? defaultWorkType(nextUnit, nextMag) : match.workType);
     nextMag.status = 'Atribuído';
     nextUnit.status = 'Atendida';
 
@@ -921,7 +1015,7 @@ async function startServer() {
     if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
 
     const eMags = magistrates.filter((m) => m.editionId === edition.id);
-    const eUnits = units.filter((u) => u.editionId === edition.id);
+    const eUnits = units.filter((u) => u.editionId === edition.id && u.selection === 'Escolhida');
     const assignedMagIds = new Set(matches.filter((m) => m.editionId === edition.id).map((m) => m.magistrateId));
     const assignedUnitIds = new Set(matches.filter((m) => m.editionId === edition.id).map((m) => m.unitId));
     let newMatchesCount = 0;
@@ -938,6 +1032,7 @@ async function startServer() {
           magistrateId: mag.id,
           unitId: target.id,
           assignedArea: area,
+          workType: defaultWorkType(target, mag),
           status: 'Vinculado',
           createdAt: new Date().toISOString(),
         });
@@ -976,7 +1071,7 @@ async function startServer() {
       const unassignedMags = magistrates.filter(
         (m) => m.editionId === edition.id && m.status !== 'Atribuído' && m.status !== 'Rejeitado' && !assigned.has(m.id),
       );
-      const pendingUnits = units.filter((u) => u.editionId === edition.id && u.status === 'Pendente');
+      const pendingUnits = units.filter((u) => u.editionId === edition.id && u.selection === 'Escolhida' && u.status === 'Pendente');
 
       const prompt = `
         Você é o assistente de inteligência artificial de coordenação de um Mutirão de Julgamento do Tribunal de Justiça.
@@ -1024,6 +1119,7 @@ async function startServer() {
       .map((mt) => ({
         'Nome': magistrates.find((m) => m.id === mt.magistrateId)?.name || 'Magistrado Removido',
         'Área': mt.assignedArea,
+        'Modalidade': mt.workType,
         'Unidade': units.find((u) => u.id === mt.unitId)?.unitName || 'Unidade Removida',
       }));
 
@@ -1055,20 +1151,20 @@ async function startServer() {
 
     if (type === 'units' || type === 'all') {
       csv += '=== UNIDADES JUDICIAIS ===\n';
-      csv += 'ID,Unidade,Juiz(a) Responsavel,Email,Comarca,Areas,Auxilio Necessario,IP,Status,Data Inscr.\n';
+      csv += 'ID,Unidade,Juiz(a) Responsavel,Email,Comarca,Areas,Auxilio Necessario,IP,Triagem,Status,Motivo Rejeicao,Data Inscr.\n';
       units.filter((u) => u.editionId === edition.id).forEach((u) => {
-        csv += [u.id, u.unitName, u.judgeName, u.email, u.comarca, u.areas.join(' | '), u.supportNeeded, u.registeredIp ?? '', u.status, u.createdAt].map(csvCell).join(',') + '\n';
+        csv += [u.id, u.unitName, u.judgeName, u.email, u.comarca, u.areas.join(' | '), u.supportNeeded, u.registeredIp ?? '', u.selection, u.status, u.rejectionReason ?? '', u.createdAt].map(csvCell).join(',') + '\n';
       });
       csv += '\n\n';
     }
 
     if (type === 'matches' || type === 'all') {
       csv += '=== VINCULACOES REALIZADAS ===\n';
-      csv += 'ID Vinculo,Magistrado,Unidade,Area Atribuida,Status,Data\n';
+      csv += 'ID Vinculo,Magistrado,Unidade,Area Atribuida,Modalidade,Status,Data\n';
       matches.filter((m) => m.editionId === edition.id).forEach((mt) => {
         const mag = magistrates.find((m) => m.id === mt.magistrateId);
         const un = units.find((u) => u.id === mt.unitId);
-        csv += [mt.id, mag?.name || mt.magistrateId, un?.unitName || mt.unitId, mt.assignedArea, mt.status, mt.createdAt].map(csvCell).join(',') + '\n';
+        csv += [mt.id, mag?.name || mt.magistrateId, un?.unitName || mt.unitId, mt.assignedArea, mt.workType, mt.status, mt.createdAt].map(csvCell).join(',') + '\n';
       });
       csv += '\n\n';
     }
