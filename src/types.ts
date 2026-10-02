@@ -73,6 +73,7 @@ export interface Match {
   unitId: string;
   assignedArea: string;
   workType: WorkType;
+  exceptionReason?: string;
   status: string;
   createdAt: string;
 }

@@ -77,10 +77,13 @@ function EditionForm({ initial, onSubmit }: { initial?: Edition; onSubmit: (v: a
 /* ---------- Regras de elegibilidade e modalidade da vinculação ---------- */
 interface Eligible { m: Magistrate; area: string; rank: 0 | 1 | 2 }
 
-/** Magistrados que podem ser vinculados à unidade, separados em "mesma área" (1ª/2ª preferência) e "outras áreas". */
-function eligibleFor(unit: Unit, magistrates: Magistrate[], matches: Match[]) {
-  const current = matches.find(x => x.unitId === unit.id);
-  const taken = new Set(matches.filter(x => x.unitId !== unit.id).map(x => x.magistrateId));
+/**
+ * Magistrados que podem ser vinculados à unidade, separados em "mesma área" (1ª/2ª preferência) e "outras áreas".
+ * `current` é a vinculação em edição (o magistrado dela continua na lista); quem está vinculado em qualquer
+ * outro lugar, inclusive nesta mesma unidade, não é oferecido.
+ */
+function eligibleFor(unit: Unit, magistrates: Magistrate[], matches: Match[], current?: Match) {
+  const taken = new Set(matches.filter(x => x.id !== current?.id).map(x => x.magistrateId));
   const list: Eligible[] = magistrates
     .filter(m => m.status !== 'Rejeitado' && !taken.has(m.id)
       && (m.status !== 'Aguardando Conferência' || m.id === current?.magistrateId))
@@ -100,6 +103,8 @@ const defaultWorkType = (unit: Unit, mag: Magistrate): WorkType =>
     : mag.acceptsHearings ? 'Audiência e Sentença' : 'Sentença';
 
 const workTypeTone = (w: WorkType) => (w === 'Sentença' ? 'neutral' : w === 'Audiência' ? 'info' : 'ok') as 'neutral' | 'info' | 'ok';
+const unitMatchesOf = (unit: Unit, matches: Match[]) =>
+  matches.filter(m => m.unitId === unit.id).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 
 function WorkTypeSelect({ value, onChange }: { value: WorkType; onChange: (v: WorkType) => void }) {
   return (
@@ -130,8 +135,7 @@ function UnitDetail({ unit, magistrates, matches, busy, onLink, onUnlink }: {
 }) {
   const [picked, setPicked] = useState('');
   const [workType, setWorkType] = useState<WorkType | ''>('');
-  const match = matches.find(m => m.unitId === unit.id);
-  const linked = match && magistrates.find(m => m.id === match.magistrateId);
+  const linked = unitMatchesOf(unit, matches);
   const candidates = eligibleFor(unit, magistrates, matches).same;
   const chosen = candidates.find(c => c.m.id === picked);
   const effective: WorkType = workType || (chosen ? defaultWorkType(unit, chosen.m) : unit.supportNeeded);
@@ -150,10 +154,22 @@ function UnitDetail({ unit, magistrates, matches, busy, onLink, onUnlink }: {
         <div className="text-[11px] font-semibold uppercase tracking-wider text-muted mb-2">Vincular magistrado da mesma área</div>
         {unit.selection !== 'Escolhida' ? (
           <p className="text-sm text-muted">Escolha a unidade para o mutirão antes de vincular um magistrado.</p>
-        ) : match ? (
-          <div className="flex items-center justify-between gap-3 bg-ok-soft text-ok rounded-md px-3 py-2.5 text-sm">
-            <span>Vinculada a <strong>{linked?.name || 'magistrado removido'}</strong> · {match.assignedArea} · <strong>{match.workType}</strong></span>
-            <button className="btn-secondary btn-sm shrink-0" disabled={busy} onClick={() => onUnlink(match.id)}>Desfazer</button>
+        ) : linked.length > 0 ? (
+          <div className="space-y-2">
+            {linked.map(match => {
+              const mag = magistrates.find(m => m.id === match.magistrateId);
+              return (
+                <div key={match.id} className="flex items-center justify-between gap-3 bg-ok-soft text-ok rounded-md px-3 py-2.5 text-sm">
+                  <span>
+                    {match.exceptionReason && <strong>Exceção · </strong>}
+                    <strong>{mag?.name || 'magistrado removido'}</strong> · {match.assignedArea} · <strong>{match.workType}</strong>
+                    {match.exceptionReason && <span className="block text-xs opacity-80 mt-0.5">Motivo: {match.exceptionReason}</span>}
+                  </span>
+                  <button className="btn-secondary btn-sm shrink-0" disabled={busy} onClick={() => onUnlink(match.id)}>Desfazer</button>
+                </div>
+              );
+            })}
+            <p className="text-xs text-muted">A regra é um magistrado por unidade. Para incluir outro, em caráter de exceção, use a aba <strong>Vinculações</strong>.</p>
           </div>
         ) : candidates.length === 0 ? (
           <p className="text-sm text-muted">Nenhum magistrado aprovado e disponível com preferência nas áreas desta unidade ({unit.areas.join(', ')}).</p>
@@ -189,83 +205,142 @@ function UnitDetail({ unit, magistrates, matches, busy, onLink, onUnlink }: {
   );
 }
 
-/* ---------- Linha da aba Vinculações: uma unidade escolhida + dropdown de magistrados ---------- */
-function UnitLinkRow({ unit, magistrates, matches, busy, onSave, onUnlink }: {
+type SaveLink = (unit: Unit, magistrateId: string, area: string, workType: WorkType, match?: Match, exceptionReason?: string) => void;
+
+/* ---------- Um magistrado vinculado (ou a vincular) à unidade ---------- */
+function LinkSlot({ unit, magistrates, matches, match, exception, busy, onSave, onUnlink, onCancel }: {
   unit: Unit;
   magistrates: Magistrate[];
   matches: Match[];
+  match?: Match;
+  /** vínculo novo adicional (exceção): exige motivo */
+  exception?: boolean;
   busy: boolean;
-  onSave: (unit: Unit, magistrateId: string, area: string, workType: WorkType, match?: Match) => void;
+  onSave: SaveLink;
   onUnlink: (matchId: string) => void;
+  onCancel?: () => void;
 }) {
-  const match = matches.find(m => m.unitId === unit.id);
-  const { same, other } = eligibleFor(unit, magistrates, matches);
+  const { same, other } = eligibleFor(unit, magistrates, matches, match);
   const all = [...same, ...other];
   const [magId, setMagId] = useState(match?.magistrateId ?? '');
   const [workType, setWorkType] = useState<WorkType | ''>(match?.workType ?? '');
-  const [showWhy, setShowWhy] = useState(false);
+  const [reason, setReason] = useState('');
 
   const sel = all.find(e => e.m.id === magId);
   const effective: WorkType | '' = workType || (sel ? defaultWorkType(unit, sel.m) : '');
   const changed = !!sel && (!match || match.magistrateId !== magId || match.workType !== effective);
+  const reasonOk = !exception || reason.trim().length > 0;
 
   const label = (e: Eligible) =>
     `${e.m.name}${e.rank ? ` — ${e.rank}ª preferência` : ''}${e.m.acceptsHearings ? '' : ' — não aceita audiências'}`;
 
   return (
-    <div className={`card p-4 sm:p-5 ${match ? 'border-ok/30' : ''}`}>
-      <div className="grid lg:grid-cols-[1fr_1.15fr] gap-5">
+    <div className={exception ? 'rounded-md border border-warn/40 bg-warn-soft/40 p-3 sm:p-4' : ''}>
+      {exception && (
+        <p className="text-xs text-warn mb-3"><strong>Vinculação excepcional.</strong> A regra é um magistrado por unidade; registre o motivo para incluir mais um.</p>
+      )}
+      {match?.exceptionReason && (
+        <p className="text-xs mb-2"><Badge tone="warn">Exceção</Badge> <span className="text-muted ml-1">Motivo: {match.exceptionReason}</span></p>
+      )}
+      <div className="grid md:grid-cols-[1.4fr_1fr_auto] gap-3 items-start">
+        <div>
+          <label className="label">Magistrado</label>
+          <select className="input" value={magId} onChange={e => { setMagId(e.target.value); setWorkType(''); }}>
+            <option value="">{all.length ? 'Selecione um magistrado…' : 'Nenhum magistrado disponível'}</option>
+            {same.length > 0 && (
+              <optgroup label="Mesma área (preferência do magistrado)">
+                {same.map(e => <option key={e.m.id} value={e.m.id}>{label(e)}</option>)}
+              </optgroup>
+            )}
+            {other.length > 0 && (
+              <optgroup label="Outras áreas">
+                {other.map(e => <option key={e.m.id} value={e.m.id}>{label(e)}</option>)}
+              </optgroup>
+            )}
+          </select>
+        </div>
+        <div>
+          <label className="label">Atuação na unidade</label>
+          <WorkTypeSelect value={(effective || unit.supportNeeded) as WorkType} onChange={setWorkType} />
+        </div>
+        <div className="flex flex-wrap items-end gap-2 md:pt-[1.55rem]">
+          <button className="btn-primary btn-sm" disabled={!changed || !reasonOk || busy}
+            onClick={() => sel && effective && onSave(unit, sel.m.id, sel.area, effective, match, exception ? reason.trim() : undefined)}>
+            <Check className="w-4 h-4" /> {match ? 'Salvar' : 'Vincular'}
+          </button>
+          {match && <button className="btn-secondary btn-sm" disabled={busy} onClick={() => onUnlink(match.id)}>Desfazer</button>}
+          {!match && onCancel && <button className="btn-ghost btn-sm" onClick={onCancel}>Cancelar</button>}
+        </div>
+      </div>
+      {sel && effective && <WorkTypeWarnings unit={unit} mag={sel.m} workType={effective} />}
+      {sel && sel.rank === 0 && <p className="text-[11px] text-warn mt-1.5">Área fora das preferências do magistrado; será registrada como {sel.area}.</p>}
+      {exception && (
+        <div className="mt-3">
+          <label className="label">Motivo da exceção (obrigatório)</label>
+          <textarea rows={2} className="input" value={reason} onChange={e => setReason(e.target.value)}
+            placeholder="Ex.: Acervo de 900 processos; um único magistrado não comporta o volume no período." />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------- Linha da aba Vinculações: uma unidade escolhida e seus magistrados ---------- */
+function UnitLinkRow({ unit, magistrates, matches, busy, onSave, onUnlink }: {
+  unit: Unit;
+  magistrates: Magistrate[];
+  matches: Match[];
+  busy: boolean;
+  onSave: SaveLink;
+  onUnlink: (matchId: string) => void;
+}) {
+  const linked = unitMatchesOf(unit, matches);
+  const [adding, setAdding] = useState(false);
+  const [showWhy, setShowWhy] = useState(false);
+  const canAddMore = linked.length > 0 && eligibleFor(unit, magistrates, matches).same.length + eligibleFor(unit, magistrates, matches).other.length > 0;
+
+  return (
+    <div className={`card p-4 sm:p-5 ${linked.length ? 'border-ok/30' : ''}`}>
+      <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <div className="font-serif font-semibold text-navy leading-snug">{unit.unitName}</div>
-              <div className="text-xs text-muted mt-0.5">{unit.comarca} · {unit.judgeName}</div>
-            </div>
-            <Badge tone={match ? 'ok' : 'warn'}>{match ? 'Vinculada' : 'Sem magistrado'}</Badge>
-          </div>
+          <div className="font-serif font-semibold text-navy leading-snug">{unit.unitName}</div>
+          <div className="text-xs text-muted mt-0.5">{unit.comarca} · {unit.judgeName}</div>
           <div className="flex flex-wrap gap-1.5 mt-3">
             {unit.areas.map(a => <Badge key={a} tone="info">{a}</Badge>)}
             <Badge tone={workTypeTone(unit.supportNeeded)}>Precisa de: {unit.supportNeeded}</Badge>
           </div>
           {unit.description.trim() && (
-            <div className="mt-3">
+            <div className="mt-2.5">
               <button className="text-xs text-bronze hover:underline" onClick={() => setShowWhy(!showWhy)}>{showWhy ? 'Ocultar justificativa' : 'Ver justificativa'}</button>
               {showWhy && <p className="text-sm leading-relaxed whitespace-pre-wrap mt-1.5 text-ink">{unit.description}</p>}
             </div>
           )}
         </div>
-
-        <div className="space-y-3">
-          <div>
-            <label className="label">Magistrado</label>
-            <select className="input" value={magId} onChange={e => { setMagId(e.target.value); setWorkType(''); }}>
-              <option value="">{all.length ? 'Selecione um magistrado…' : 'Nenhum magistrado disponível'}</option>
-              {same.length > 0 && (
-                <optgroup label="Mesma área (preferência do magistrado)">
-                  {same.map(e => <option key={e.m.id} value={e.m.id}>{label(e)}</option>)}
-                </optgroup>
-              )}
-              {other.length > 0 && (
-                <optgroup label="Outras áreas">
-                  {other.map(e => <option key={e.m.id} value={e.m.id}>{label(e)}</option>)}
-                </optgroup>
-              )}
-            </select>
-          </div>
-          <div>
-            <label className="label">Atuação na unidade</label>
-            <WorkTypeSelect value={(effective || unit.supportNeeded) as WorkType} onChange={setWorkType} />
-            {sel && effective && <WorkTypeWarnings unit={unit} mag={sel.m} workType={effective} />}
-            {sel && sel.rank === 0 && <p className="text-[11px] text-warn mt-1.5">Área fora das preferências do magistrado; será registrada como {sel.area}.</p>}
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <button className="btn-primary btn-sm" disabled={!changed || busy}
-              onClick={() => sel && effective && onSave(unit, sel.m.id, sel.area, effective, match)}>
-              <Check className="w-4 h-4" /> {match ? 'Salvar alteração' : 'Vincular'}
-            </button>
-            {match && <button className="btn-secondary btn-sm" disabled={busy} onClick={() => onUnlink(match.id)}>Desfazer vinculação</button>}
-          </div>
+        <div className="flex flex-col items-end gap-1.5 shrink-0">
+          <Badge tone={linked.length ? 'ok' : 'warn'}>{linked.length ? 'Vinculada' : 'Sem magistrado'}</Badge>
+          {linked.length > 1 && <Badge tone="warn">Exceção: {linked.length} magistrados</Badge>}
         </div>
+      </div>
+
+      <div className="mt-4 space-y-4 border-t border-line pt-4">
+        {linked.length === 0 && (
+          <LinkSlot unit={unit} magistrates={magistrates} matches={matches} busy={busy} onSave={onSave} onUnlink={onUnlink} />
+        )}
+        {linked.map(m => (
+          <LinkSlot key={`${m.id}-${m.magistrateId}-${m.workType}`} unit={unit} magistrates={magistrates} matches={matches} match={m}
+            busy={busy} onSave={onSave} onUnlink={onUnlink} />
+        ))}
+        {adding && (
+          <LinkSlot exception unit={unit} magistrates={magistrates} matches={matches} busy={busy}
+            onSave={onSave} onUnlink={onUnlink} onCancel={() => setAdding(false)} />
+        )}
+        {linked.length > 0 && !adding && (
+          <button className="text-xs text-bronze hover:underline disabled:opacity-50 disabled:no-underline" disabled={!canAddMore}
+            title={canAddMore ? '' : 'Não há outro magistrado disponível'}
+            onClick={() => setAdding(true)}>
+            + Vincular outro magistrado (exceção)
+          </button>
+        )}
       </div>
     </div>
   );
@@ -414,13 +489,13 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const chooseUnit = async (id: string) => { await run(() => api(`/units/${id}/choose`, { method: 'POST' }), 'Unidade escolhida para o mutirão.'); refresh(); };
 
   /** Cria ou altera uma vinculação (magistrado, área e atuação: audiência e/ou sentença) */
-  const saveLink = async (unit: Unit, magistrateId: string, area: string, workType: WorkType, match?: Match) => {
+  const saveLink = async (unit: Unit, magistrateId: string, area: string, workType: WorkType, match?: Match, exceptionReason?: string) => {
     setLinking(true);
-    const body = { magistrateId, unitId: unit.id, assignedArea: area, workType };
+    const body = { magistrateId, unitId: unit.id, assignedArea: area, workType, ...(exceptionReason ? { exceptionReason } : {}) };
     const r = await run(() => match
       ? api(`/matches/${match.id}`, { method: 'PUT', json: body })
       : api('/matches', { method: 'POST', json: withEdition(body) }),
-      match ? 'Vinculação atualizada.' : 'Vinculação efetivada.');
+      match ? 'Vinculação atualizada.' : exceptionReason ? 'Vinculação excepcional registrada.' : 'Vinculação efetivada.');
     setLinking(false);
     if (r) refresh();
   };
@@ -671,7 +746,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
               <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/xlsx/matches?${q}`, 'vinculacoes.xlsx')}><Download className="w-4 h-4" /> XLSX</button>
             </Toolbar>
             <p className="text-sm text-muted mb-4">
-              Unidades escolhidas para o mutirão. Selecione o magistrado no menu e informe se a atuação será em <strong className="text-ink">audiências</strong>, <strong className="text-ink">sentenças</strong> ou em ambas.
+              Unidades escolhidas para o mutirão. Selecione o magistrado no menu e informe se a atuação será em <strong className="text-ink">audiências</strong>, <strong className="text-ink">sentenças</strong> ou em ambas. A regra é <strong className="text-ink">um magistrado por unidade</strong>; um segundo só em caráter de exceção, com motivo.
               Os magistrados da mesma área aparecem primeiro; quem está aguardando conferência ou foi rejeitado não é listado.
             </p>
             <div className="flex flex-wrap items-center gap-2 mb-4">
@@ -685,9 +760,9 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             )}
             <div className="space-y-3">
               {rows.map(u => {
-                const mt = matches.find(m => m.unitId === u.id);
+                const sig = unitMatchesOf(u, matches).map(m => `${m.id}:${m.magistrateId}:${m.workType}`).join('|');
                 return (
-                  <UnitLinkRow key={`${u.id}-${mt?.id ?? ''}-${mt?.magistrateId ?? ''}-${mt?.workType ?? ''}`}
+                  <UnitLinkRow key={`${u.id}-${sig}`}
                     unit={u} magistrates={magistrates} matches={matches} busy={linking}
                     onSave={saveLink} onUnlink={unlinkFromUnit} />
                 );

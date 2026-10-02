@@ -81,6 +81,8 @@ interface Match {
   assignedArea: string;
   /** O que o magistrado fará na unidade: audiências, sentenças ou ambos */
   workType: WorkType;
+  /** Preenchido quando a unidade já tinha outro magistrado: vinculação adicional, em caráter excepcional */
+  exceptionReason?: string;
   status: 'Vinculado' | 'Concluído';
   createdAt: string;
 }
@@ -277,6 +279,14 @@ const defaultWorkType = (unit: Unit, mag: Magistrate): WorkType => {
   if (unit.supportNeeded === 'Audiência' || unit.supportNeeded === 'Sentença') return unit.supportNeeded;
   return mag.acceptsHearings ? 'Audiência e Sentença' : 'Sentença';
 };
+
+/** Atendimento da unidade conforme as vinculações existentes (regra: 1 magistrado; exceção: mais de um). */
+function refreshUnitStatus(unitId: string) {
+  const unit = units.find((u) => u.id === unitId);
+  if (!unit) return;
+  if (matches.some((m) => m.unitId === unitId)) unit.status = 'Atendida';
+  else if (unit.status === 'Atendida') unit.status = 'Pendente';
+}
 
 /** Dados gravados antes de existirem a triagem de unidades e a modalidade recebem valores coerentes */
 function normalizeLegacy() {
@@ -737,13 +747,11 @@ async function startServer() {
     const reason = String(req.body?.reason ?? '').trim();
     if (!reason) return res.status(400).json({ error: 'Informe o motivo da rejeição.' });
 
-    // Se havia vinculação, ela é desfeita e a unidade volta a ficar disponível
-    matches.filter((m) => m.magistrateId === mag.id).forEach((m) => {
-      const u = units.find((x) => x.id === m.unitId);
-      if (u) u.status = 'Pendente';
-    });
+    // Se havia vinculação, ela é desfeita (a unidade só volta a ficar pendente se não restar outro magistrado)
     const hadMatch = matches.some((m) => m.magistrateId === mag.id);
+    const freedUnits = matches.filter((m) => m.magistrateId === mag.id).map((m) => m.unitId);
     matches = matches.filter((m) => m.magistrateId !== mag.id);
+    freedUnits.forEach(refreshUnitStatus);
 
     mag.status = 'Rejeitado';
     mag.rejectionReason = reason;
@@ -757,14 +765,12 @@ async function startServer() {
     const { id } = req.params;
     const mag = magistrates.find((m) => m.id === id);
     if (mag) {
-      matches.filter((m) => m.magistrateId === id).forEach((m) => {
-        const u = units.find((x) => x.id === m.unitId);
-        if (u) u.status = 'Pendente';
-      });
       log(mag.editionId, 'Administração', 'Magistrado', `Inscrição de ${mag.name} excluída.`);
     }
+    const freedUnits = matches.filter((m) => m.magistrateId === id).map((m) => m.unitId);
     magistrates = magistrates.filter((m) => m.id !== id);
     matches = matches.filter((m) => m.magistrateId !== id);
+    freedUnits.forEach(refreshUnitStatus);
     res.json({ success: true, id });
   });
 
@@ -930,11 +936,17 @@ async function startServer() {
       return res.status(400).json({ error: 'Modalidade inválida. Use Audiência, Sentença ou Audiência e Sentença.' });
     }
 
+    // Regra: um magistrado por unidade. Um segundo (ou mais) só em caráter de exceção, com motivo.
+    const hasOthers = matches.some((m) => m.unitId === unitId && m.magistrateId !== magistrateId);
+    const exceptionReason = String(req.body.exceptionReason ?? '').trim();
+    if (hasOthers && !exceptionReason) {
+      return res.status(409).json({ error: 'Esta unidade já tem magistrado vinculado. Para incluir outro, informe o motivo da exceção.' });
+    }
+
     const existingMatch = matches.find((m) => m.magistrateId === magistrateId);
     if (existingMatch) {
-      const oldUnit = units.find((u) => u.id === existingMatch.unitId);
-      if (oldUnit) oldUnit.status = 'Pendente';
       matches = matches.filter((m) => m.id !== existingMatch.id);
+      refreshUnitStatus(existingMatch.unitId);
     }
 
     mag.status = 'Atribuído';
@@ -945,14 +957,15 @@ async function startServer() {
       unitId,
       assignedArea,
       workType: workType || defaultWorkType(unit, mag),
+      exceptionReason: hasOthers ? exceptionReason : undefined,
       status: 'Vinculado',
       createdAt: new Date().toISOString(),
     };
     matches.unshift(newMatch);
-    unit.status = 'Atendida';
+    refreshUnitStatus(unit.id);
 
     log(mag.editionId, source === 'ai' ? 'Sistema' : 'Administração', 'Vinculação',
-      `Vinculação ${source === 'ai' ? 'sugerida por IA e efetivada' : 'manual'}: ${describeMatch(newMatch)}.`);
+      `Vinculação ${hasOthers ? 'EXCEPCIONAL (mais de um magistrado na unidade)' : source === 'ai' ? 'sugerida por IA e efetivada' : 'manual'}: ${describeMatch(newMatch)}.${hasOthers ? ` Motivo da exceção: ${exceptionReason}` : ''}`);
     res.status(201).json({ success: true, match: newMatch });
   });
 
@@ -979,17 +992,31 @@ async function startServer() {
       return res.status(400).json({ error: 'Só é possível vincular unidades escolhidas para o mutirão.' });
     }
 
-    const oldUnit = units.find((u) => u.id === match.unitId);
-    if (oldUnit) oldUnit.status = 'Pendente';
+    // O magistrado escolhido não pode estar vinculado em outra unidade, e mover para unidade que já tem magistrado exige exceção
+    if (matches.some((m) => m.id !== match.id && m.magistrateId === nextMag.id)) {
+      return res.status(409).json({ error: 'Este magistrado já está vinculado a outra unidade. Desfaça essa vinculação antes.' });
+    }
+    const movingUnit = nextUnit.id !== match.unitId;
+    const othersInTarget = matches.some((m) => m.id !== match.id && m.unitId === nextUnit.id);
+    const newReason = String(req.body.exceptionReason ?? '').trim();
+    if (movingUnit && othersInTarget && !newReason) {
+      return res.status(409).json({ error: 'A unidade de destino já tem magistrado vinculado. Informe o motivo da exceção.' });
+    }
+
+    const oldUnitId = match.unitId;
     const oldMag = magistrates.find((m) => m.id === match.magistrateId);
-    if (oldMag) oldMag.status = 'Lista de Espera';
+    const changedMag = nextMag.id !== oldMag?.id;
+    if (oldMag && changedMag) oldMag.status = 'Lista de Espera';
 
     match.magistrateId = nextMag.id;
     match.unitId = nextUnit.id;
     match.assignedArea = assignedArea || match.assignedArea;
-    match.workType = workType || (nextUnit.id !== (oldUnit?.id) || nextMag.id !== oldMag?.id ? defaultWorkType(nextUnit, nextMag) : match.workType);
+    match.workType = workType || (movingUnit || changedMag ? defaultWorkType(nextUnit, nextMag) : match.workType);
+    if (movingUnit) match.exceptionReason = othersInTarget ? newReason : undefined;
+    else if (req.body.exceptionReason !== undefined && match.exceptionReason) match.exceptionReason = newReason || match.exceptionReason;
     nextMag.status = 'Atribuído';
-    nextUnit.status = 'Atendida';
+    refreshUnitStatus(oldUnitId);
+    refreshUnitStatus(nextUnit.id);
 
     log(match.editionId, 'Administração', 'Vinculação', `Vinculação alterada: de ${before} para ${describeMatch(match)}.`);
     res.json({ success: true, match });
@@ -999,13 +1026,12 @@ async function startServer() {
     const { id } = req.params;
     const match = matches.find((m) => m.id === id);
     if (match) {
-      const unit = units.find((u) => u.id === match.unitId);
-      if (unit) unit.status = 'Pendente';
       const mag = magistrates.find((m) => m.id === match.magistrateId);
       if (mag) mag.status = 'Lista de Espera';
       log(match.editionId, 'Administração', 'Vinculação', `Vinculação desfeita: ${describeMatch(match)}.`);
     }
     matches = matches.filter((m) => m.id !== id);
+    if (match) refreshUnitStatus(match.unitId);
     res.json({ success: true, id });
   });
 
@@ -1120,6 +1146,7 @@ async function startServer() {
         'Nome': magistrates.find((m) => m.id === mt.magistrateId)?.name || 'Magistrado Removido',
         'Área': mt.assignedArea,
         'Modalidade': mt.workType,
+        'Exceção (motivo)': mt.exceptionReason ?? '',
         'Unidade': units.find((u) => u.id === mt.unitId)?.unitName || 'Unidade Removida',
       }));
 
@@ -1160,11 +1187,11 @@ async function startServer() {
 
     if (type === 'matches' || type === 'all') {
       csv += '=== VINCULACOES REALIZADAS ===\n';
-      csv += 'ID Vinculo,Magistrado,Unidade,Area Atribuida,Modalidade,Status,Data\n';
+      csv += 'ID Vinculo,Magistrado,Unidade,Area Atribuida,Modalidade,Excecao (motivo),Status,Data\n';
       matches.filter((m) => m.editionId === edition.id).forEach((mt) => {
         const mag = magistrates.find((m) => m.id === mt.magistrateId);
         const un = units.find((u) => u.id === mt.unitId);
-        csv += [mt.id, mag?.name || mt.magistrateId, un?.unitName || mt.unitId, mt.assignedArea, mt.workType, mt.status, mt.createdAt].map(csvCell).join(',') + '\n';
+        csv += [mt.id, mag?.name || mt.magistrateId, un?.unitName || mt.unitId, mt.assignedArea, mt.workType, mt.exceptionReason ?? '', mt.status, mt.createdAt].map(csvCell).join(',') + '\n';
       });
       csv += '\n\n';
     }
