@@ -3,6 +3,10 @@ export type MagistrateStatus = 'Aguardando Conferência' | 'Aprovado' | 'Lista d
 export type SupportNeeded = 'Audiência' | 'Sentença' | 'Audiência e Sentença';
 export const SUPPORT_OPTIONS: SupportNeeded[] = ['Audiência', 'Sentença', 'Audiência e Sentença'];
 
+export type UnitSelection = 'Em análise' | 'Escolhida' | 'Rejeitada';
+export type WorkType = 'Audiência' | 'Sentença' | 'Audiência e Sentença';
+export const WORK_TYPES: WorkType[] = ['Audiência', 'Sentença', 'Audiência e Sentença'];
+
 export interface EditionStats {
   magistrates: number;
   units: number;
@@ -56,6 +60,9 @@ export interface Unit {
   registeredIp?: string;
   createdAt: string;
   status: string;
+  selection: UnitSelection;
+  rejectionReason?: string;
+  rejectedAt?: string;
   editionTitle?: string;
 }
 
@@ -65,6 +72,7 @@ export interface Match {
   magistrateId: string;
   unitId: string;
   assignedArea: string;
+  workType: WorkType;
   status: string;
   createdAt: string;
 }

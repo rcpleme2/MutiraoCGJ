@@ -218,7 +218,7 @@ function AppInner() {
                         </div>
                         {m.match && (
                           <div className="bg-ok-soft text-ok text-sm rounded-md px-3 py-2.5">
-                            <strong>Unidade atribuída:</strong> {m.match.unit?.unitName} ({m.match.unit?.comarca}) · {m.match.assignedArea}
+                            <strong>Unidade atribuída:</strong> {m.match.unit?.unitName} ({m.match.unit?.comarca}) · {m.match.assignedArea} · <strong>{m.match.workType}</strong>
                           </div>
                         )}
                       </div>
@@ -235,7 +235,9 @@ function AppInner() {
                             <div className="font-serif font-semibold text-navy">{u.unitName}</div>
                             <div className="text-xs text-muted">{u.editionTitle} · {u.comarca} · {u.judgeName}</div>
                           </div>
-                          <Badge tone={u.status === 'Atendida' ? 'ok' : 'warn'}>{u.status}</Badge>
+                          <Badge tone={u.selection === 'Rejeitada' ? 'danger' : u.selection === 'Em análise' ? 'neutral' : u.status === 'Atendida' ? 'ok' : 'warn'}>
+                            {u.selection === 'Rejeitada' ? 'Rejeitada' : u.selection === 'Em análise' ? 'Em análise' : u.status}
+                          </Badge>
                         </div>
                         <div className="text-xs text-muted">Áreas: <span className="text-ink">{u.areas.join(', ')}</span> · Auxílio: <span className="text-ink">{u.supportNeeded}</span></div>
                       </div>
