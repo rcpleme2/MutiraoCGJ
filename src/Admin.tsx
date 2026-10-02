@@ -362,7 +362,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const [log, setLog] = useState<LogEntry[]>([]);
   const [logFilter, setLogFilter] = useState('');
 
-  const [modal, setModal] = useState<null | 'mag' | 'mag-edit' | 'reject' | 'unit' | 'unit-edit' | 'edition-new' | 'edition-edit' | 'password'>(null);
+  const [modal, setModal] = useState<null | 'mag' | 'mag-edit' | 'reject' | 'wipe' | 'unit' | 'unit-edit' | 'edition-new' | 'edition-edit' | 'password'>(null);
   const [matchFilter, setMatchFilter] = useState<'all' | 'open' | 'linked'>('all');
   const [editingEdition, setEditingEdition] = useState<Edition | null>(null);
   const [editingMag, setEditingMag] = useState<Magistrate | null>(null);
@@ -370,6 +370,8 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const [openUnitId, setOpenUnitId] = useState('');
   const [rejecting, setRejecting] = useState<{ kind: 'magistrates' | 'units'; id: string; name: string; linked: boolean } | null>(null);
   const [rejectReason, setRejectReason] = useState('');
+  const [wiping, setWiping] = useState<'magistrates' | 'units' | 'matches' | null>(null);
+  const [wipeText, setWipeText] = useState('');
   const [linking, setLinking] = useState(false);
   const [pw, setPw] = useState({ currentPassword: '', newPassword: '' });
   const [ai, setAi] = useState<{ loading: boolean; items: any[] }>({ loading: false, items: [] });
@@ -486,6 +488,22 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       rejecting.kind === 'units' ? 'Unidade rejeitada.' : 'Inscrição rejeitada.');
     if (r) { setModal(null); refresh(); }
   };
+  const WIPE = {
+    magistrates: { path: '/magistrates/delete-all', label: 'inscrições de magistrados', count: () => magistrates.length,
+      effect: 'As vinculações desses magistrados também serão removidas, e as unidades afetadas voltarão a ficar sem magistrado.' },
+    units: { path: '/units/delete-all', label: 'unidades judiciais', count: () => units.length,
+      effect: 'As vinculações dessas unidades também serão removidas, e os magistrados afetados voltarão à lista de espera.' },
+    matches: { path: '/matches/delete-all', label: 'vinculações', count: () => matches.length,
+      effect: 'Os magistrados voltarão à lista de espera e as unidades ficarão sem magistrado. As inscrições são mantidas.' },
+  } as const;
+  const startWipe = (kind: 'magistrates' | 'units' | 'matches') => { setWiping(kind); setWipeText(''); setModal('wipe'); };
+  const confirmWipe = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!wiping || wipeText.trim() !== 'EXCLUIR') return;
+    const r = await run(() => api<{ count: number }>(`${WIPE[wiping].path}?${q}`, { method: 'POST', json: { confirm: 'EXCLUIR' } }));
+    if (r) { toast(`${r.count} registro(s) excluído(s).`); setModal(null); refresh(); }
+  };
+
   const approveAll = async () => {
     const n = magistrates.filter(m => m.status === 'Aguardando Conferência').length;
     if (!(await confirm(`Aprovar as ${n} inscrição(ões) de magistrado(s) pendente(s)? Inscrições rejeitadas não serão alteradas.`, 'Aprovar todos'))) return;
@@ -669,6 +687,9 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
                 <Check className="w-4 h-4" /> Aprovar todos pendentes ({magistrates.filter(m => m.status === 'Aguardando Conferência').length})
               </button>
             )}
+            {magistrates.length > 0 && (
+              <button className="btn-secondary btn-sm !text-danger" onClick={() => startWipe('magistrates')}><Trash2 className="w-4 h-4" /> Excluir tudo ({magistrates.length})</button>
+            )}
             <button className="btn-primary btn-sm" onClick={() => setModal('mag')}><Plus className="w-4 h-4" /> Cadastrar</button>
             <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/csv?type=magistrates&${q}`, 'magistrados.csv')}><Download className="w-4 h-4" /> CSV</button>
           </Toolbar>
@@ -706,6 +727,9 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
               <button className="btn-secondary btn-sm" onClick={chooseAll}>
                 <Check className="w-4 h-4" /> Aprovar todas pendentes ({units.filter(u => u.selection === 'Em análise').length})
               </button>
+            )}
+            {units.length > 0 && (
+              <button className="btn-secondary btn-sm !text-danger" onClick={() => startWipe('units')}><Trash2 className="w-4 h-4" /> Excluir tudo ({units.length})</button>
             )}
             <button className="btn-primary btn-sm" onClick={() => setModal('unit')}><Plus className="w-4 h-4" /> Cadastrar</button>
             <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/csv?type=units&${q}`, 'unidades.csv')}><Download className="w-4 h-4" /> CSV</button>
@@ -767,6 +791,9 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
         return (
           <div>
             <Toolbar title="Vinculações">
+            {matches.length > 0 && (
+              <button className="btn-secondary btn-sm !text-danger" onClick={() => startWipe('matches')}><Trash2 className="w-4 h-4" /> Excluir tudo ({matches.length})</button>
+            )}
               <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/xlsx/matches?${q}`, 'vinculacoes.xlsx')}><Download className="w-4 h-4" /> XLSX</button>
             </Toolbar>
             <p className="text-sm text-muted mb-4">
@@ -859,6 +886,24 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             if (r) { setModal(null); refresh(); }
             return !!r;
           }} />
+        </Modal>
+      )}
+      {modal === 'wipe' && wiping && (
+        <Modal title="Excluir tudo" onClose={() => setModal(null)}>
+          <form onSubmit={confirmWipe} className="space-y-4">
+            <div className="rounded-md bg-danger-soft text-danger px-4 py-3 text-sm leading-relaxed">
+              <strong>Ação irreversível.</strong> Serão excluídas <strong>{WIPE[wiping].count()}</strong> {WIPE[wiping].label} da edição
+              {' '}<strong>{selected?.title}</strong>. {WIPE[wiping].effect}
+            </div>
+            <p className="text-xs text-muted">Edições anteriores não são afetadas. A exclusão fica registrada no histórico de atividades. Recomenda-se exportar o CSV antes de continuar.</p>
+            <Field label='Para confirmar, digite EXCLUIR'>
+              <input autoFocus className="input" value={wipeText} onChange={e => setWipeText(e.target.value)} placeholder="EXCLUIR" autoComplete="off" />
+            </Field>
+            <div className="flex justify-end gap-2">
+              <button type="button" className="btn-secondary" onClick={() => setModal(null)}>Cancelar</button>
+              <button className="btn-primary !bg-danger" disabled={wipeText.trim() !== 'EXCLUIR'}>Excluir tudo</button>
+            </div>
+          </form>
         </Modal>
       )}
       {modal === 'reject' && rejecting && (

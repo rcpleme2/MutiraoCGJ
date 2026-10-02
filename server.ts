@@ -300,6 +300,9 @@ function normalizeLegacy() {
   });
 }
 
+/** Exclusões em lote exigem confirmação explícita no corpo da requisição (proteção contra chamadas acidentais). */
+const confirmedWipe = (req: express.Request) => req.body?.confirm === 'EXCLUIR';
+
 const actorOf = (source: unknown): LogEntry['actor'] => (source === 'admin' ? 'Administração' : 'Público');
 
 const editionById = (id: string | undefined) => editions.find((e) => e.id === id);
@@ -726,6 +729,57 @@ async function startServer() {
       log(mag.editionId, 'Administração', 'Magistrado', `Inscrição de ${mag.name} editada: ${changed.join(', ')}.`);
     }
     res.json({ success: true, magistrate: mag });
+  });
+
+  // ---------- Exclusão em lote (somente a edição indicada; exige confirm: "EXCLUIR") ----------
+  app.post('/api/magistrates/delete-all', (req, res) => {
+    const edition = resolveEdition(req);
+    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+    if (!confirmedWipe(req)) return res.status(400).json({ error: 'Confirmação ausente.' });
+
+    const ids = new Set(magistrates.filter((m) => m.editionId === edition.id).map((m) => m.id));
+    const freedUnits = matches.filter((m) => ids.has(m.magistrateId)).map((m) => m.unitId);
+    const removedMatches = freedUnits.length;
+    magistrates = magistrates.filter((m) => !ids.has(m.id));
+    matches = matches.filter((m) => !ids.has(m.magistrateId));
+    freedUnits.forEach(refreshUnitStatus);
+    log(edition.id, 'Administração', 'Magistrado',
+      `EXCLUSÃO EM LOTE: ${ids.size} inscrição(ões) de magistrado(s) excluída(s)${removedMatches ? `, com ${removedMatches} vinculação(ões)` : ''}.`);
+    res.json({ success: true, count: ids.size, removedMatches });
+  });
+
+  app.post('/api/units/delete-all', (req, res) => {
+    const edition = resolveEdition(req);
+    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+    if (!confirmedWipe(req)) return res.status(400).json({ error: 'Confirmação ausente.' });
+
+    const ids = new Set(units.filter((u) => u.editionId === edition.id).map((u) => u.id));
+    const removed = matches.filter((m) => ids.has(m.unitId));
+    removed.forEach((m) => {
+      const g = magistrates.find((x) => x.id === m.magistrateId);
+      if (g) g.status = 'Lista de Espera';
+    });
+    units = units.filter((u) => !ids.has(u.id));
+    matches = matches.filter((m) => !ids.has(m.unitId));
+    log(edition.id, 'Administração', 'Unidade',
+      `EXCLUSÃO EM LOTE: ${ids.size} unidade(s) excluída(s)${removed.length ? `, com ${removed.length} vinculação(ões)` : ''}.`);
+    res.json({ success: true, count: ids.size, removedMatches: removed.length });
+  });
+
+  app.post('/api/matches/delete-all', (req, res) => {
+    const edition = resolveEdition(req);
+    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+    if (!confirmedWipe(req)) return res.status(400).json({ error: 'Confirmação ausente.' });
+
+    const removed = matches.filter((m) => m.editionId === edition.id);
+    removed.forEach((m) => {
+      const g = magistrates.find((x) => x.id === m.magistrateId);
+      if (g && g.status === 'Atribuído') g.status = 'Lista de Espera';
+    });
+    matches = matches.filter((m) => m.editionId !== edition.id);
+    units.filter((u) => u.editionId === edition.id).forEach((u) => refreshUnitStatus(u.id));
+    log(edition.id, 'Administração', 'Vinculação', `EXCLUSÃO EM LOTE: ${removed.length} vinculação(ões) desfeita(s).`);
+    res.json({ success: true, count: removed.length });
   });
 
   // Aprova em lote todas as inscrições pendentes (Aguardando Conferência) da edição. Rejeitadas não são alteradas.
