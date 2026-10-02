@@ -56,6 +56,16 @@ Depois da primeira publicação, faça uma inscrição de teste e confira que o 
 é o seu IP real; se aparecer um IP do Google, ajuste `trust proxy` em `server.ts`.
 Defina também um **alerta de orçamento** (Faturamento → Orçamentos) para se proteger de uso abusivo.
 
+## Limite de inscrições por IP
+Para frear spam, cada IP pode concluir até **30 inscrições a cada 10 minutos** (e 600 por hora no total). Só contam as inscrições
+efetivamente criadas: erros de preenchimento não consomem o limite. Como servidores do tribunal podem sair pelo mesmo IP,
+o valor é ajustável sem alterar o código:
+
+```bash
+gcloud run services update mutirao-cgj --region southamerica-east1 \
+  --update-env-vars SIGNUP_MAX_PER_IP=100,SIGNUP_MAX_GLOBAL_PER_HOUR=1500
+```
+
 ## Atualizar o site depois de mudanças no código
 Com as mudanças já na branch `main` do GitHub, no Cloud Shell:
 

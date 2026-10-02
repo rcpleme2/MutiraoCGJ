@@ -127,6 +127,11 @@ const hasValidToken = (req: express.Request) => {
   return true;
 };
 
+// Limite de inscrições públicas por IP a cada 10 minutos. Vários servidores do tribunal podem sair pelo
+// mesmo IP, então o valor é ajustável sem alterar o código: defina SIGNUP_MAX_PER_IP no Cloud Run.
+const SIGNUP_MAX_PER_IP = Math.max(1, Number(process.env.SIGNUP_MAX_PER_IP) || 30);
+const SIGNUP_MAX_GLOBAL_PER_HOUR = Math.max(1, Number(process.env.SIGNUP_MAX_GLOBAL_PER_HOUR) || 600);
+
 // Limitador simples por IP (tentativas de login e consultas por e-mail)
 const hits = new Map<string, number[]>();
 const rateLimited = (key: string, max: number, windowMs: number) => {
@@ -136,6 +141,8 @@ const rateLimited = (key: string, max: number, windowMs: number) => {
   hits.set(key, list);
   return list.length > max;
 };
+/** Devolve a "vaga" reservada por rateLimited (usado quando a requisição não resultou em inscrição). */
+const refund = (key: string) => { hits.get(key)?.pop(); };
 
 // Limpeza periódica: sessões expiradas e janelas do limitador, para a memória não crescer indefinidamente
 setInterval(() => {
@@ -598,7 +605,15 @@ async function startServer() {
       if (typeof req.body?.website === 'string' && req.body.website.trim() !== '') {
         return res.status(201).json({ success: true });
       }
-      if (rateLimited(`signup:${ip}`, 15, 10 * 60_000) || rateLimited('signup:global', 600, 60 * 60_000)) {
+      // A vaga é reservada já (protege contra rajadas simultâneas) e devolvida se a requisição não
+      // gerar uma inscrição: erros de preenchimento, e-mail duplicado etc. não consomem o limite.
+      const ipKey = `signup:${ip}`;
+      const limited = rateLimited(ipKey, SIGNUP_MAX_PER_IP, 10 * 60_000);
+      const globalLimited = rateLimited('signup:global', SIGNUP_MAX_GLOBAL_PER_HOUR, 60 * 60_000);
+      res.on('finish', () => {
+        if (res.statusCode !== 201 || limited || globalLimited) { refund(ipKey); refund('signup:global'); }
+      });
+      if (limited || globalLimited) {
         return res.status(429).json({ error: 'Muitas inscrições em pouco tempo. Aguarde alguns minutos e tente novamente.' });
       }
       // Inscrição pública: sempre na edição vigente, sem poder de definir status/origem.
