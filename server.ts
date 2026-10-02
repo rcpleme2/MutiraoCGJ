@@ -728,6 +728,20 @@ async function startServer() {
     res.json({ success: true, magistrate: mag });
   });
 
+  // Aprova em lote todas as inscrições pendentes (Aguardando Conferência) da edição. Rejeitadas não são alteradas.
+  app.post('/api/magistrates/approve-all', (req, res) => {
+    const edition = resolveEdition(req);
+    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+    const pending = magistrates.filter((m) => m.editionId === edition.id && m.status === 'Aguardando Conferência');
+    pending.forEach((m) => {
+      m.status = matches.some((x) => x.magistrateId === m.id) ? 'Atribuído' : 'Lista de Espera';
+    });
+    if (pending.length) {
+      log(edition.id, 'Administração', 'Magistrado', `Aprovação em lote: ${pending.length} inscrição(ões) de magistrado(s) aprovada(s).`);
+    }
+    res.json({ success: true, count: pending.length });
+  });
+
   app.post('/api/magistrates/:id/approve', (req, res) => {
     const mag = magistrates.find((m) => m.id === req.params.id);
     if (!mag) return res.status(404).json({ error: 'Magistrado não encontrado.' });
@@ -810,6 +824,18 @@ async function startServer() {
     units.unshift(newUnit);
     log(edition.id, actorOf(source), 'Unidade', `Inscrição da unidade "${newUnit.unitName}" (${newUnit.comarca}) registrada${newUnit.registeredIp ? ` (IP ${newUnit.registeredIp})` : ''}.`);
     res.status(201).json({ success: true, unit: newUnit });
+  });
+
+  // Escolhe em lote todas as unidades em análise da edição. Rejeitadas não são alteradas.
+  app.post('/api/units/choose-all', (req, res) => {
+    const edition = resolveEdition(req);
+    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+    const pending = units.filter((u) => u.editionId === edition.id && u.selection === 'Em análise');
+    pending.forEach((u) => { u.selection = 'Escolhida'; });
+    if (pending.length) {
+      log(edition.id, 'Administração', 'Unidade', `Escolha em lote: ${pending.length} unidade(s) escolhida(s) para o mutirão.`);
+    }
+    res.json({ success: true, count: pending.length });
   });
 
   app.post('/api/units/:id/choose', (req, res) => {

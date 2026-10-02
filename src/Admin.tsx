@@ -486,6 +486,20 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       rejecting.kind === 'units' ? 'Unidade rejeitada.' : 'Inscrição rejeitada.');
     if (r) { setModal(null); refresh(); }
   };
+  const approveAll = async () => {
+    const n = magistrates.filter(m => m.status === 'Aguardando Conferência').length;
+    if (!(await confirm(`Aprovar as ${n} inscrição(ões) de magistrado(s) pendente(s)? Inscrições rejeitadas não serão alteradas.`, 'Aprovar todos'))) return;
+    const r = await run(() => api<{ count: number }>(`/magistrates/approve-all?${q}`, { method: 'POST' }));
+    if (r) toast(`${r.count} inscrição(ões) aprovada(s).`);
+    refresh();
+  };
+  const chooseAll = async () => {
+    const n = units.filter(u => u.selection === 'Em análise').length;
+    if (!(await confirm(`Escolher as ${n} unidade(s) em análise para o mutirão? Unidades rejeitadas não serão alteradas.`, 'Escolher todas'))) return;
+    const r = await run(() => api<{ count: number }>(`/units/choose-all?${q}`, { method: 'POST' }));
+    if (r) toast(`${r.count} unidade(s) escolhida(s).`);
+    refresh();
+  };
   const chooseUnit = async (id: string) => { await run(() => api(`/units/${id}/choose`, { method: 'POST' }), 'Unidade escolhida para o mutirão.'); refresh(); };
 
   /** Cria ou altera uma vinculação (magistrado, área e atuação: audiência e/ou sentença) */
@@ -650,6 +664,11 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       {sub === 'magistrates' && (
         <div>
           <Toolbar title="Magistrados voluntários">
+            {magistrates.some(m => m.status === 'Aguardando Conferência') && (
+              <button className="btn-secondary btn-sm" onClick={approveAll}>
+                <Check className="w-4 h-4" /> Aprovar todos pendentes ({magistrates.filter(m => m.status === 'Aguardando Conferência').length})
+              </button>
+            )}
             <button className="btn-primary btn-sm" onClick={() => setModal('mag')}><Plus className="w-4 h-4" /> Cadastrar</button>
             <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/csv?type=magistrates&${q}`, 'magistrados.csv')}><Download className="w-4 h-4" /> CSV</button>
           </Toolbar>
@@ -683,6 +702,11 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       {sub === 'units' && (
         <div>
           <Toolbar title="Unidades judiciais">
+            {units.some(u => u.selection === 'Em análise') && (
+              <button className="btn-secondary btn-sm" onClick={chooseAll}>
+                <Check className="w-4 h-4" /> Aprovar todas pendentes ({units.filter(u => u.selection === 'Em análise').length})
+              </button>
+            )}
             <button className="btn-primary btn-sm" onClick={() => setModal('unit')}><Plus className="w-4 h-4" /> Cadastrar</button>
             <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/csv?type=units&${q}`, 'unidades.csv')}><Download className="w-4 h-4" /> CSV</button>
           </Toolbar>
