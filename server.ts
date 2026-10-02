@@ -1172,7 +1172,7 @@ async function startServer() {
         'Nome': magistrates.find((m) => m.id === mt.magistrateId)?.name || 'Magistrado Removido',
         'Área': mt.assignedArea,
         'Modalidade': mt.workType,
-        'Exceção (motivo)': mt.exceptionReason ?? '',
+        'Comarca': units.find((u) => u.id === mt.unitId)?.comarca || '',
         'Unidade': units.find((u) => u.id === mt.unitId)?.unitName || 'Unidade Removida',
       }));
 
