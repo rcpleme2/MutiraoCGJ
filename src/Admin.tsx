@@ -20,7 +20,35 @@ const SUBS: { id: Sub; label: string }[] = [
 
 const toLocalInput = (iso: string) => iso.slice(0, 16);
 
-function Table({ head, children }: { head: string[]; children: React.ReactNode }) {
+type SortDir = 'asc' | 'desc';
+
+/** Cabeçalho de coluna clicável que alterna entre mais recentes e mais antigas primeiro. */
+function SortHeader({ label, dir, onToggle }: { label: string; dir: SortDir; onToggle: () => void }) {
+  const Icon = dir === 'desc' ? ArrowDown : ArrowUp;
+  return (
+    <button type="button" onClick={onToggle} className="inline-flex items-center gap-1 uppercase tracking-wider hover:text-ink"
+      title={dir === 'desc' ? 'Mais recentes primeiro (clique para inverter)' : 'Mais antigas primeiro (clique para inverter)'}
+      aria-label={`${label}: ${dir === 'desc' ? 'mais recentes primeiro' : 'mais antigas primeiro'}. Clique para inverter`}>
+      {label} <Icon className="w-3.5 h-3.5 text-bronze" />
+    </button>
+  );
+}
+
+/** Data e hora da inscrição em duas linhas (a hora com segundos ajuda a desempatar). */
+function DateCell({ iso }: { iso: string }) {
+  const d = new Date(iso);
+  return (
+    <div className="whitespace-nowrap">
+      <div className="text-sm">{d.toLocaleDateString('pt-BR')}</div>
+      <div className="text-xs text-muted">{d.toLocaleTimeString('pt-BR')}</div>
+    </div>
+  );
+}
+
+const byDate = <T extends { createdAt: string; id: string }>(dir: SortDir) => (a: T, b: T) =>
+  (dir === 'asc' ? 1 : -1) * (a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+
+function Table({ head, children }: { head: React.ReactNode[]; children: React.ReactNode }) {
   return (
     <div className="card overflow-hidden">
       <div className="overflow-x-auto">
@@ -392,6 +420,15 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const [openUnitId, setOpenUnitId] = useState('');
   const [rejecting, setRejecting] = useState<{ kind: 'magistrates' | 'units'; id: string; name: string; linked: boolean } | null>(null);
   const [rejectReason, setRejectReason] = useState('');
+  const [sortDir, setSortDir] = useState<Record<'magistrates' | 'units' | 'waiting', SortDir>>(() => {
+    try { return { magistrates: 'desc', units: 'desc', waiting: 'desc', ...JSON.parse(localStorage.getItem('mutirao-sort') || '{}') }; }
+    catch { return { magistrates: 'desc', units: 'desc', waiting: 'desc' }; }
+  });
+  const toggleSort = (k: 'magistrates' | 'units' | 'waiting') => setSortDir(prev => {
+    const next = { ...prev, [k]: prev[k] === 'desc' ? 'asc' : 'desc' } as typeof prev;
+    try { localStorage.setItem('mutirao-sort', JSON.stringify(next)); } catch { /* armazenamento indisponível */ }
+    return next;
+  });
   const [faqItems, setFaqItems] = useState<FaqItem[]>([]);
   const [editingFaq, setEditingFaq] = useState<FaqItem | null>(null);
   const [wiping, setWiping] = useState<'magistrates' | 'units' | 'matches' | null>(null);
@@ -588,6 +625,10 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
     refresh();
   };
 
+  const sortedMagistrates = [...magistrates].sort(byDate<Magistrate>(sortDir.magistrates));
+  const sortedUnits = [...units].sort(byDate<Unit>(sortDir.units));
+  const sortedWaiting = [...waiting].sort(byDate<Magistrate>(sortDir.waiting));
+
   const readOnlyEdition = selected?.status === 'Encerrada';
   const logRows = log.filter(l => !logFilter || l.category === logFilter);
 
@@ -742,11 +783,12 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             <button className="btn-primary btn-sm" onClick={() => setModal('mag')}><Plus className="w-4 h-4" /> Cadastrar</button>
             <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/csv?type=magistrates&${q}`, 'magistrados.csv')}><Download className="w-4 h-4" /> CSV</button>
           </Toolbar>
-          <Table head={['Magistrado(a)', 'Lotação', 'Preferências', 'Audiências', 'Status', 'Ações']}>
-            {magistrates.length === 0 && <EmptyRow cols={6}>Nenhuma inscrição nesta edição.</EmptyRow>}
-            {magistrates.map(m => (
+          <Table head={['Magistrado(a)', <SortHeader key="d" label="Inscrição" dir={sortDir.magistrates} onToggle={() => toggleSort('magistrates')} />, 'Lotação', 'Preferências', 'Audiências', 'Status', 'Ações']}>
+            {magistrates.length === 0 && <EmptyRow cols={7}>Nenhuma inscrição nesta edição.</EmptyRow>}
+            {sortedMagistrates.map(m => (
               <tr key={m.id}>
-                <td className="td"><div className="font-medium">{m.name}</div><div className="text-xs text-muted">{m.email}</div><div className="text-[11px] text-muted/80">{m.registeredIp ? `IP ${m.registeredIp} · ` : ''}{formatDateTime(m.createdAt)}</div>{m.declaration && <div className="text-[11px] text-ok mt-0.5">Declaração de regularidade aceita</div>}</td>
+                <td className="td"><div className="font-medium">{m.name}</div><div className="text-xs text-muted">{m.email}</div>{m.registeredIp && <div className="text-[11px] text-muted/80">IP {m.registeredIp}</div>}{m.declaration && <div className="text-[11px] text-ok mt-0.5">Declaração de regularidade aceita</div>}</td>
+                <td className="td"><DateCell iso={m.createdAt} /></td>
                 <td className="td text-muted">{m.currentLocation}</td>
                 <td className="td text-xs"><div className="text-bronze font-medium">1ª: {m.firstPreference}</div><div className="text-muted">2ª: {m.secondPreference || '—'}</div></td>
                 <td className="td"><Badge tone={m.acceptsHearings ? 'ok' : 'neutral'}>{m.acceptsHearings ? 'Aceita' : 'Não aceita'}</Badge></td>
@@ -756,11 +798,13 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
                     <div className="text-[11px] text-danger mt-1.5 max-w-[14rem] leading-snug" title={m.rejectionReason}>Motivo: {m.rejectionReason}</div>
                   )}
                 </td>
-                <td className="td text-right whitespace-nowrap">
-                  {(m.status === 'Aguardando Conferência' || m.status === 'Rejeitado') && <button className="btn-secondary btn-sm mr-1" onClick={() => approve(m.id)}><Check className="w-3.5 h-3.5" /> {m.status === 'Rejeitado' ? 'Reconsiderar' : 'Aprovar'}</button>}
-                  {m.status !== 'Rejeitado' && <button className="btn-secondary btn-sm mr-1 !text-danger" onClick={() => { setRejecting({ kind: 'magistrates', id: m.id, name: m.name, linked: m.status === 'Atribuído' }); setRejectReason(''); setModal('reject'); }}><X className="w-3.5 h-3.5" /> Rejeitar</button>}
+                <td className="td">
+                 <div className="flex flex-wrap justify-end gap-1.5">
+                  {(m.status === 'Aguardando Conferência' || m.status === 'Rejeitado') && <button className="btn-secondary btn-sm" onClick={() => approve(m.id)}><Check className="w-3.5 h-3.5" /> {m.status === 'Rejeitado' ? 'Reconsiderar' : 'Aprovar'}</button>}
+                  {m.status !== 'Rejeitado' && <button className="btn-secondary btn-sm !text-danger" onClick={() => { setRejecting({ kind: 'magistrates', id: m.id, name: m.name, linked: m.status === 'Atribuído' }); setRejectReason(''); setModal('reject'); }}><X className="w-3.5 h-3.5" /> Rejeitar</button>}
                   <button className="btn-ghost btn-sm" title="Editar" onClick={() => { setEditingMag(m); setModal('mag-edit'); }}><Pencil className="w-4 h-4" /></button>
                   <button className="btn-danger" title="Excluir" onClick={() => del('magistrates', m.id, `a inscrição de ${m.name}`)}><Trash2 className="w-4 h-4" /></button>
+                 </div>
                 </td>
               </tr>
             ))}
@@ -783,9 +827,9 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             <button className="btn-primary btn-sm" onClick={() => setModal('unit')}><Plus className="w-4 h-4" /> Cadastrar</button>
             <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/csv?type=units&${q}`, 'unidades.csv')}><Download className="w-4 h-4" /> CSV</button>
           </Toolbar>
-          <Table head={['Unidade / Comarca', 'Áreas e auxílio', 'Triagem', 'Status', 'Ações']}>
-            {units.length === 0 && <EmptyRow cols={5}>Nenhuma unidade inscrita nesta edição.</EmptyRow>}
-            {units.map(u => {
+          <Table head={['Unidade / Comarca', <SortHeader key="d" label="Inscrição" dir={sortDir.units} onToggle={() => toggleSort('units')} />, 'Áreas e auxílio', 'Triagem', 'Status', 'Ações']}>
+            {units.length === 0 && <EmptyRow cols={6}>Nenhuma unidade inscrita nesta edição.</EmptyRow>}
+            {sortedUnits.map(u => {
               const open = openUnitId === u.id;
               return (
                 <React.Fragment key={u.id}>
@@ -793,9 +837,10 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
                     <td className="td">
                       <button className="flex items-start gap-1.5 text-left" onClick={() => setOpenUnitId(open ? '' : u.id)} aria-expanded={open} title="Ver justificativa e vincular magistrado">
                         {open ? <ChevronDown className="w-4 h-4 mt-0.5 shrink-0 text-bronze" /> : <ChevronRight className="w-4 h-4 mt-0.5 shrink-0 text-muted" />}
-                        <span><span className="font-medium block">{u.unitName}</span><span className="text-xs text-muted block">{u.comarca} · Resp.: {u.judgeName}</span><span className="text-xs text-muted block">{u.email}</span><span className="text-[11px] text-muted/80 block">{u.registeredIp ? `IP ${u.registeredIp} · ` : ''}{formatDateTime(u.createdAt)}</span></span>
+                        <span><span className="font-medium block">{u.unitName}</span><span className="text-xs text-muted block">{u.comarca} · Resp.: {u.judgeName}</span><span className="text-xs text-muted block">{u.email}</span>{u.registeredIp && <span className="text-[11px] text-muted/80 block">IP {u.registeredIp}</span>}</span>
                       </button>
                     </td>
+                    <td className="td"><DateCell iso={u.createdAt} /></td>
                     <td className="td"><div className="flex flex-wrap gap-1">{u.areas.map(a => <Badge key={a} tone="info">{a}</Badge>)}<Badge tone="neutral">Precisa de: {u.supportNeeded}</Badge></div></td>
                     <td className="td">
                       <Badge tone={u.selection === 'Escolhida' ? 'ok' : u.selection === 'Rejeitada' ? 'danger' : 'warn'}>{u.selection}</Badge>
@@ -816,7 +861,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
                   </tr>
                   {open && (
                     <tr className="bg-paper">
-                      <td colSpan={5} className="px-4 pb-5 pt-1">
+                      <td colSpan={6} className="px-4 pb-5 pt-1">
                         <UnitDetail unit={u} magistrates={magistrates} matches={matches} busy={linking}
                           onLink={(magId, area, workType) => saveLink(u, magId, area, workType)} onUnlink={unlinkFromUnit} />
                       </td>
@@ -877,16 +922,16 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       {sub === 'waiting' && (
         <div>
           <Toolbar title="Lista de espera" />
-          <Table head={['Magistrado(a)', 'Lotação', '1ª preferência', '2ª preferência', 'Audiências', 'Inscrição']}>
+          <Table head={['Magistrado(a)', 'Lotação', '1ª preferência', '2ª preferência', 'Audiências', <SortHeader key="d" label="Inscrição" dir={sortDir.waiting} onToggle={() => toggleSort('waiting')} />]}>
             {waiting.length === 0 && <EmptyRow cols={6}>Nenhum magistrado em espera.</EmptyRow>}
-            {waiting.map(m => (
+            {sortedWaiting.map(m => (
               <tr key={m.id}>
                 <td className="td"><div className="font-medium">{m.name}</div><div className="text-xs text-muted">{m.email}</div></td>
                 <td className="td text-muted">{m.currentLocation}</td>
                 <td className="td text-bronze font-medium">{m.firstPreference}</td>
                 <td className="td text-muted">{m.secondPreference || '—'}</td>
                 <td className="td text-muted">{m.acceptsHearings ? 'Aceita' : 'Não aceita'}</td>
-                <td className="td text-xs text-muted">{formatDateTime(m.createdAt)}</td>
+                <td className="td"><DateCell iso={m.createdAt} /></td>
               </tr>
             ))}
           </Table>
