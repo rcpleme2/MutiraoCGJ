@@ -450,7 +450,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       setToken(r.token); setPassword(''); setAuthed(true);
     } catch (err: any) { setLoginError(err.message); }
   };
-  const logout = () => { setToken(''); setAuthed(false); };
+  const logout = () => { api('/admin/logout', { method: 'POST' }).catch(() => {}); setToken(''); setAuthed(false); };
 
   const q = `edition=${encodeURIComponent(selectedId)}`;
   const withEdition = (body: object) => ({ ...body, editionId: selectedId, source: 'admin' });

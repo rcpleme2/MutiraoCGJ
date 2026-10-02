@@ -38,6 +38,24 @@ Ao final, o comando mostra a URL pública (`https://mutirao-cgj-xxxx.a.run.app`)
 - Dados de demonstração: na primeira execução a base começa vazia (só a edição padrão).
   Para incluir os dados fictícios, adicione `--set-env-vars SEED_DEMO=true` na primeira vez.
 
+## Segurança: conta de serviço dedicada (recomendado)
+Por padrão o Cloud Run usa a conta de serviço do Compute Engine, que costuma ter o papel **Editor** no projeto
+(acesso a quase tudo). Crie uma conta própria que só acessa o Firestore:
+
+```bash
+PROJECT_ID=$(gcloud config get-value project)
+gcloud iam service-accounts create mutirao-run --display-name="Mutirão CGJ (Cloud Run)"
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:mutirao-run@$PROJECT_ID.iam.gserviceaccount.com" --role="roles/datastore.user"
+
+gcloud run deploy mutirao-cgj --source . --region southamerica-east1 \
+  --service-account="mutirao-run@$PROJECT_ID.iam.gserviceaccount.com"
+```
+
+Depois da primeira publicação, faça uma inscrição de teste e confira que o **IP gravado** (aba Magistrados/Unidades do painel)
+é o seu IP real; se aparecer um IP do Google, ajuste `trust proxy` em `server.ts`.
+Defina também um **alerta de orçamento** (Faturamento → Orçamentos) para se proteger de uso abusivo.
+
 ## Atualizar o site depois de mudanças no código
 Com as mudanças já na branch `main` do GitHub, no Cloud Shell:
 

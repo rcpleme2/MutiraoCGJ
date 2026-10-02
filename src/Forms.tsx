@@ -48,6 +48,7 @@ export function MagistrateForm({
     acceptsHearings: initial.acceptsHearings ? 'sim' : 'nao', status: initial.status as string,
   } : empty);
   const [declared, setDeclared] = useState(false);
+  const [website, setWebsite] = useState('');
   const set = (k: keyof typeof empty) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setF({ ...f, [k]: e.target.value });
 
@@ -56,7 +57,7 @@ export function MagistrateForm({
       className="space-y-5"
       onSubmit={async e => {
         e.preventDefault();
-        const ok = await onSubmit({ ...f, acceptsHearings: f.acceptsHearings === 'sim', ...(withDeclaration ? { declaration: declared } : {}) });
+        const ok = await onSubmit({ ...f, acceptsHearings: f.acceptsHearings === 'sim', ...(withDeclaration ? { declaration: declared, website } : {}) });
         if (ok && !initial) { setF(empty); setDeclared(false); }
       }}
     >
@@ -123,6 +124,11 @@ export function MagistrateForm({
       <p className="text-xs text-muted leading-relaxed border-l-2 border-bronze/50 pl-3">
         A preferência indicada será atendida na medida do possível, considerando a disponibilidade de unidades e o interesse público.
       </p>
+      {withDeclaration && (
+        <div aria-hidden="true" style={{ position: 'absolute', left: '-9999px', width: 1, height: 1, overflow: 'hidden' }}>
+        <label>Não preencha este campo<input tabIndex={-1} autoComplete="off" value={website} onChange={e => setWebsite(e.target.value)} /></label>
+      </div>
+      )}
       <button type="submit" disabled={busy} className="btn-primary w-full">{busy ? 'Processando…' : submitLabel}</button>
     </form>
   );
@@ -133,14 +139,17 @@ export function UnitForm({
   submitLabel,
   initial,
   withStatus,
+  withHoneypot,
   busy,
 }: {
   onSubmit: (payload: Record<string, unknown>) => Promise<boolean>;
   submitLabel: string;
   initial?: Unit;
   withStatus?: boolean;
+  withHoneypot?: boolean;
   busy?: boolean;
 }) {
+  const [website, setWebsite] = useState('');
   const empty = {
     unitName: '', judgeName: '', email: '', comarca: '',
     areas: [PREFERENCE_AREAS[0]] as string[],
@@ -166,7 +175,7 @@ export function UnitForm({
       className="space-y-5"
       onSubmit={async e => {
         e.preventDefault();
-        if ((await onSubmit({ ...f })) && !initial) setF({ ...empty, status: 'Pendente' });
+        if ((await onSubmit({ ...f, ...(withHoneypot ? { website } : {}) })) && !initial) setF({ ...empty, status: 'Pendente' });
       }}
     >
       <Field label="Comarca">
@@ -230,6 +239,11 @@ export function UnitForm({
       <p className="text-xs text-muted leading-relaxed border-l-2 border-bronze/50 pl-3">
         A preferência será atendida na medida do possível, de acordo com a opção dos inscritos.
       </p>
+      {withHoneypot && (
+        <div aria-hidden="true" style={{ position: 'absolute', left: '-9999px', width: 1, height: 1, overflow: 'hidden' }}>
+        <label>Não preencha este campo<input tabIndex={-1} autoComplete="off" value={website} onChange={e => setWebsite(e.target.value)} /></label>
+      </div>
+      )}
       <button type="submit" disabled={busy} className="btn-primary w-full">{busy ? 'Processando…' : submitLabel}</button>
     </form>
   );

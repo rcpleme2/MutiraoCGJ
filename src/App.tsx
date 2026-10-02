@@ -5,6 +5,7 @@ import { Edition, FaqItem, Magistrate, Unit } from './types';
 import { Badge, FeedbackProvider, Notice, formatDate, magistrateTone } from './ui';
 import { MagistrateForm, UnitForm } from './Forms';
 import Admin from './Admin';
+import ErrorBoundary from './ErrorBoundary';
 
 type Tab = 'home' | 'magistrate' | 'unit' | 'status' | 'faq' | 'admin';
 
@@ -135,6 +136,7 @@ function AppInner() {
       </header>
 
       <main className="flex-1 w-full max-w-6xl mx-auto px-5 py-10 sm:py-14">
+        <ErrorBoundary key={tab}>
         {tab === 'home' && (
           <section className="max-w-3xl mx-auto">
             {edition ? (
@@ -191,7 +193,7 @@ function AppInner() {
                 {unitOk && <Notice tone="ok"><strong>Unidade cadastrada.</strong> Ela já está disponível para vinculação.</Notice>}
                 {formError && <Notice tone="danger">{formError}</Notice>}
                 <IpNotice ip={ip} />
-                <UnitForm busy={busy} submitLabel="Concluir inscrição da unidade" onSubmit={submitPublic('/units', setUnitOk)} />
+                <UnitForm withHoneypot busy={busy} submitLabel="Concluir inscrição da unidade" onSubmit={submitPublic('/units', setUnitOk)} />
               </div>
             )}
           </PageCard>
@@ -280,6 +282,7 @@ function AppInner() {
         )}
 
         {tab === 'admin' && <Admin onEditionsChanged={loadEdition} />}
+        </ErrorBoundary>
       </main>
 
     </div>

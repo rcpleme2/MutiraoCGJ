@@ -137,6 +137,13 @@ const rateLimited = (key: string, max: number, windowMs: number) => {
   return list.length > max;
 };
 
+// Limpeza periódica: sessões expiradas e janelas do limitador, para a memória não crescer indefinidamente
+setInterval(() => {
+  const now = Date.now();
+  for (const [t, exp] of sessions) if (exp < now) sessions.delete(t);
+  for (const [k, list] of hits) if (!list.some((t) => now - t < 60 * 60_000)) hits.delete(k);
+}, 10 * 60_000).unref();
+
 // Persistência em arquivo (o container do AI Studio pode reiniciar)
 const DATA_FILE = path.join(process.cwd(), 'data', 'state.json');
 
@@ -300,8 +307,86 @@ function refreshUnitStatus(unitId: string) {
   else if (unit.status === 'Atendida') unit.status = 'Pendente';
 }
 
+// ---------- Validação de entrada ----------
+// Todo dado vindo de formulários é conferido (tipo, tamanho e valores permitidos) antes de ser gravado.
+const PREFERENCE_AREAS = [
+  'Cível e Fazenda Pública',
+  'Crime',
+  'Família e Infância',
+  'Juizado Cível, Crime e Fazenda Pública',
+];
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const MAGISTRATE_STATUSES: MagistrateStatus[] = ['Aguardando Conferência', 'Aprovado', 'Lista de Espera', 'Atribuído', 'Rejeitado'];
+
+/** Texto obrigatório: precisa ser string, não vazia e dentro do limite. */
+function cleanText(v: unknown, max: number): string | null {
+  if (typeof v !== 'string') return null;
+  const t = v.trim();
+  return t.length > 0 && t.length <= max ? t : null;
+}
+/** Texto livre (motivos etc.): sempre devolve string, limitada ao tamanho máximo. */
+const freeText = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+
+type Parsed<T> = { error: string } | { value: T };
+
+function parseMagistrate(b: any, base?: Magistrate): Parsed<Pick<Magistrate, 'name' | 'email' | 'currentLocation' | 'firstPreference' | 'secondPreference' | 'acceptsHearings'>> {
+  const pick = (k: keyof Magistrate) => (b?.[k] === undefined && base ? base[k] : b?.[k]);
+  const name = cleanText(pick('name'), 200);
+  const email = cleanText(pick('email'), 200);
+  const currentLocation = cleanText(pick('currentLocation'), 300);
+  if (!name || !email || !currentLocation) {
+    return { error: 'Preencha nome, e-mail e lotação com texto válido (nome até 200, lotação até 300 caracteres).' };
+  }
+  if (!EMAIL_RE.test(email)) return { error: 'Informe um e-mail válido.' };
+  const first = pick('firstPreference');
+  if (typeof first !== 'string' || !PREFERENCE_AREAS.includes(first)) return { error: 'Escolha uma área válida na 1ª escolha.' };
+  const second = pick('secondPreference') ?? '';
+  if (typeof second !== 'string' || (second !== '' && !PREFERENCE_AREAS.includes(second))) return { error: 'Escolha uma área válida na 2ª escolha.' };
+  if (second && second === first) return { error: 'A 2ª escolha não pode ser igual à 1ª escolha.' };
+  const hearings = pick('acceptsHearings');
+  return { value: { name, email, currentLocation, firstPreference: first, secondPreference: second, acceptsHearings: hearings === true } };
+}
+
+function parseUnit(b: any, base?: Unit): Parsed<Pick<Unit, 'unitName' | 'judgeName' | 'email' | 'comarca' | 'areas' | 'supportNeeded' | 'description'>> {
+  const pick = (k: keyof Unit) => (b?.[k] === undefined && base ? base[k] : b?.[k]);
+  const unitName = cleanText(pick('unitName'), 300);
+  const judgeName = cleanText(pick('judgeName'), 200);
+  const email = cleanText(pick('email'), 200);
+  const comarca = cleanText(pick('comarca'), 150);
+  if (!unitName || !judgeName || !email || !comarca) {
+    return { error: 'Preencha comarca, unidade, responsável e e-mail com texto válido.' };
+  }
+  if (!EMAIL_RE.test(email)) return { error: 'Informe um e-mail válido.' };
+  const areas = pick('areas');
+  if (!Array.isArray(areas) || areas.length < 1 || areas.length > PREFERENCE_AREAS.length
+    || !areas.every((a) => typeof a === 'string' && PREFERENCE_AREAS.includes(a))) {
+    return { error: 'Selecione ao menos uma área válida.' };
+  }
+  const support = pick('supportNeeded') ?? 'Sentença';
+  if (!WORK_TYPES.includes(support as WorkType)) return { error: 'Auxílio necessário inválido.' };
+  const description = pick('description') ?? '';
+  if (typeof description !== 'string' || description.length > 2000) return { error: 'A justificativa pode ter no máximo 2000 caracteres.' };
+  return { value: { unitName, judgeName, email, comarca, areas: [...new Set(areas as string[])], supportNeeded: support as WorkType, description: description.trim() } };
+}
+
+/** Dados antigos ou corrompidos (ex.: gravados antes da validação) são convertidos para tipos seguros. */
+const asText = (v: unknown): string => (typeof v === 'string' ? v : v == null ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v));
+function sanitizeStoredRecords() {
+  magistrates.forEach((m) => {
+    m.name = asText(m.name); m.email = asText(m.email); m.currentLocation = asText(m.currentLocation);
+    m.firstPreference = asText(m.firstPreference); m.secondPreference = asText(m.secondPreference);
+    m.acceptsHearings = m.acceptsHearings === true;
+  });
+  units.forEach((u) => {
+    u.unitName = asText(u.unitName); u.judgeName = asText(u.judgeName); u.email = asText(u.email);
+    u.comarca = asText(u.comarca); u.description = asText(u.description);
+    u.areas = Array.isArray(u.areas) ? u.areas.map(asText) : u.areas ? [asText(u.areas)] : [];
+  });
+}
+
 /** Dados gravados antes de existirem a triagem de unidades e a modalidade recebem valores coerentes */
 function normalizeLegacy() {
+  sanitizeStoredRecords();
   units.forEach((u) => { if (!u.selection) u.selection = 'Escolhida'; });
   matches.forEach((m) => {
     if (!m.workType) {
@@ -445,15 +530,54 @@ async function persist() {
 
 // Gravações são serializadas; a resposta HTTP só sai depois de gravar
 // (no Cloud Run a CPU pode ser reduzida logo após a resposta).
-let saving: Promise<void> = Promise.resolve();
-function saveState(): Promise<void> {
-  saving = saving.then(persist).catch((err) => console.error('Falha ao persistir estado:', err));
+// Se a gravação falhar, a requisição recebe erro (em vez de "sucesso") e novas tentativas
+// automáticas regravam o que ficou pendente (persist grava apenas a diferença).
+let saving: Promise<boolean> = Promise.resolve(true);
+let retryTimer: NodeJS.Timeout | null = null;
+let retries = 0;
+function saveState(): Promise<boolean> {
+  saving = saving.then(async () => {
+    try {
+      await persist();
+      retries = 0;
+      return true;
+    } catch (err) {
+      console.error('Falha ao persistir estado:', err);
+      if (!retryTimer && retries < 12) {
+        retries++;
+        retryTimer = setTimeout(() => { retryTimer = null; void saveState(); }, 5000);
+      }
+      return false;
+    }
+  });
   return saving;
 }
 
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '100kb' }));
+  app.disable('x-powered-by');
+  const production = process.env.NODE_ENV === 'production';
+
+  // Cabeçalhos de segurança. CSP e proteção contra incorporação só em produção (o ambiente de
+  // desenvolvimento/prévia usa recursos inline e pode rodar dentro de um iframe).
+  app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+    if (production) {
+      res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+      res.setHeader('X-Frame-Options', 'DENY');
+      res.setHeader('Content-Security-Policy', [
+        "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+        "font-src 'self' https://fonts.gstatic.com", "img-src 'self' data:", "connect-src 'self'",
+        "frame-ancestors 'none'", "base-uri 'self'", "form-action 'self'", "object-src 'none'",
+      ].join('; '));
+    }
+    next();
+  });
+
+  app.use(express.json({ limit: '50kb' }));
   await loadState();
   normalizeLegacy();
   app.set('trust proxy', 1); // Cloud Run: IP real do cliente para o limitador
@@ -470,6 +594,13 @@ async function startServer() {
       return res.status(429).json({ error: 'Muitas consultas. Aguarde um instante.' });
     }
     if (publicSignup && !admin) {
+      // Anti-spam: campo-isca preenchido só por robôs (finge sucesso e descarta) e limites por IP e globais.
+      if (typeof req.body?.website === 'string' && req.body.website.trim() !== '') {
+        return res.status(201).json({ success: true });
+      }
+      if (rateLimited(`signup:${ip}`, 15, 10 * 60_000) || rateLimited('signup:global', 600, 60 * 60_000)) {
+        return res.status(429).json({ error: 'Muitas inscrições em pouco tempo. Aguarde alguns minutos e tente novamente.' });
+      }
       // Inscrição pública: sempre na edição vigente, sem poder de definir status/origem.
       req.body = { ...req.body, source: 'public', editionId: activeEditionId };
       req.query = {};
@@ -484,7 +615,14 @@ async function startServer() {
   app.use('/api', (req, res, next) => {
     if (req.method !== 'GET') {
       const json = res.json.bind(res);
-      res.json = (body: any) => { saveState().finally(() => json(body)); return res; };
+      res.json = (body: any) => {
+        saveState().then((ok) => {
+          if (ok) return json(body);
+          res.status(500);
+          return json({ error: 'Falha ao gravar os dados. A operação será regravada automaticamente; confira o resultado em instantes.' });
+        });
+        return res;
+      };
     }
     next();
   });
@@ -507,6 +645,12 @@ async function startServer() {
     }
   });
 
+  app.post('/api/admin/logout', (req, res) => {
+    const token = req.header('x-admin-token');
+    if (token) sessions.delete(token);
+    res.json({ success: true });
+  });
+
   app.post('/api/admin/password', (req, res) => {
     const { currentPassword, newPassword } = req.body || {};
     if (currentPassword !== adminPassword) {
@@ -516,7 +660,10 @@ async function startServer() {
       return res.status(400).json({ error: 'A nova senha deve ter ao menos 6 caracteres.' });
     }
     adminPassword = String(newPassword);
-    log(null, 'Administração', 'Acesso', 'Senha administrativa alterada.');
+    // Revoga todas as outras sessões; só a atual (de quem trocou a senha) continua válida
+    const current = req.header('x-admin-token');
+    for (const t of [...sessions.keys()]) if (t !== current) sessions.delete(t);
+    log(null, 'Administração', 'Acesso', 'Senha administrativa alterada; demais sessões encerradas.');
     res.json({ success: true });
   });
 
@@ -708,7 +855,7 @@ async function startServer() {
         const match = matches.find((m) => m.magistrateId === mag.id);
         const assignedUnit = match ? units.find((u) => u.id === match.unitId) || null : null;
         // O motivo da rejeição é de uso interno e não é exposto na consulta pública
-        const { rejectionReason: _reason, rejectedAt: _rejectedAt, ...publicMag } = mag;
+        const { rejectionReason: _reason, rejectedAt: _rejectedAt, registeredIp: _ip, ...publicMag } = mag;
         return {
           ...publicMag,
           editionTitle: titleOf(mag.editionId),
@@ -716,29 +863,26 @@ async function startServer() {
         };
       }),
       units: matchedUnits.map((u) => {
-        const { rejectionReason: _r, rejectedAt: _a, ...publicUnit } = u;
+        const { rejectionReason: _r, rejectedAt: _a, registeredIp: _i, ...publicUnit } = u;
         return { ...publicUnit, editionTitle: titleOf(u.editionId) };
       }),
     });
   });
 
   app.post('/api/magistrates', (req, res) => {
-    const { name, email, currentLocation, firstPreference, secondPreference, acceptsHearings, declaration, status, source } = req.body;
+    const { declaration, status, source } = req.body;
     const edition = resolveEdition(req);
     if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
-    if (!name || !email || !currentLocation || !firstPreference) {
-      return res.status(400).json({ error: 'Preencha todos os campos obrigatórios do magistrado.' });
-    }
+    const parsed = parseMagistrate(req.body);
+    if ('error' in parsed) return res.status(400).json({ error: parsed.error });
+    const { name, email, currentLocation, firstPreference, secondPreference, acceptsHearings } = parsed.value;
     if (source !== 'admin' && (!edition.isRegistrationOpen || edition.status === 'Encerrada')) {
       return res.status(403).json({ error: 'As inscrições desta edição estão encerradas.' });
-    }
-    if (secondPreference && secondPreference === firstPreference) {
-      return res.status(400).json({ error: 'A 2ª escolha não pode ser igual à 1ª escolha.' });
     }
     if (source !== 'admin' && declaration !== true) {
       return res.status(400).json({ error: 'É necessário aceitar a declaração de regularidade para concluir a inscrição.' });
     }
-    if (magistrates.some((m) => m.editionId === edition.id && m.email.toLowerCase() === String(email).trim().toLowerCase())) {
+    if (magistrates.some((m) => m.editionId === edition.id && m.email.toLowerCase() === email.toLowerCase())) {
       return res.status(409).json({ error: 'Já existe uma inscrição de magistrado com este e-mail nesta edição.' });
     }
 
@@ -746,15 +890,15 @@ async function startServer() {
       id: newId('mag'),
       editionId: edition.id,
       name,
-      email: String(email).trim(),
+      email,
       currentLocation,
       firstPreference,
-      secondPreference: secondPreference || '',
-      acceptsHearings: acceptsHearings === true,
+      secondPreference,
+      acceptsHearings,
       registeredIp: source === 'admin' ? undefined : clientIp(req),
       declaration: source === 'admin' ? undefined : true,
       createdAt: new Date().toISOString(),
-      status: source === 'admin' && status && status !== 'Rejeitado' && status !== 'Atribuído' ? status : 'Aguardando Conferência',
+      status: source === 'admin' && (status === 'Aprovado' || status === 'Lista de Espera') ? status : 'Aguardando Conferência',
     };
 
     magistrates.unshift(newMag);
@@ -767,20 +911,9 @@ async function startServer() {
     if (!mag) return res.status(404).json({ error: 'Magistrado não encontrado.' });
 
     const b = req.body || {};
-    const next = {
-      name: String(b.name ?? mag.name).trim(),
-      email: String(b.email ?? mag.email).trim(),
-      currentLocation: String(b.currentLocation ?? mag.currentLocation).trim(),
-      firstPreference: String(b.firstPreference ?? mag.firstPreference),
-      secondPreference: String(b.secondPreference ?? mag.secondPreference),
-      acceptsHearings: typeof b.acceptsHearings === 'boolean' ? b.acceptsHearings : mag.acceptsHearings,
-    };
-    if (!next.name || !next.email || !next.currentLocation || !next.firstPreference) {
-      return res.status(400).json({ error: 'Preencha todos os campos obrigatórios do magistrado.' });
-    }
-    if (next.secondPreference && next.secondPreference === next.firstPreference) {
-      return res.status(400).json({ error: 'A 2ª escolha não pode ser igual à 1ª escolha.' });
-    }
+    const parsed = parseMagistrate(b, mag);
+    if ('error' in parsed) return res.status(400).json({ error: parsed.error });
+    const next = parsed.value;
     if (magistrates.some((m) => m.id !== mag.id && m.editionId === mag.editionId && m.email.toLowerCase() === next.email.toLowerCase())) {
       return res.status(409).json({ error: 'Já existe outra inscrição de magistrado com este e-mail nesta edição.' });
     }
@@ -796,7 +929,7 @@ async function startServer() {
 
     // Status: coerente com a existência de vinculação
     const isMatched = matches.some((m) => m.magistrateId === mag.id);
-    const wanted: MagistrateStatus | undefined = b.status;
+    const wanted: MagistrateStatus | undefined = MAGISTRATE_STATUSES.includes(b.status) ? b.status : undefined;
     const before = mag.status;
     if (isMatched) mag.status = 'Atribuído';
     else if (mag.status === 'Rejeitado' && (!wanted || wanted === 'Rejeitado')) { /* mantém rejeitado */ }
@@ -892,7 +1025,7 @@ async function startServer() {
   app.post('/api/magistrates/:id/reject', (req, res) => {
     const mag = magistrates.find((m) => m.id === req.params.id);
     if (!mag) return res.status(404).json({ error: 'Magistrado não encontrado.' });
-    const reason = String(req.body?.reason ?? '').trim();
+    const reason = freeText(req.body?.reason, 1000);
     if (!reason) return res.status(400).json({ error: 'Informe o motivo da rejeição.' });
 
     // Se havia vinculação, ela é desfeita (a unidade só volta a ficar pendente se não restar outro magistrado)
@@ -929,12 +1062,12 @@ async function startServer() {
   });
 
   app.post('/api/units', (req, res) => {
-    const { unitName, judgeName, email, comarca, areas, supportNeeded, description, source } = req.body;
+    const { source } = req.body;
     const edition = resolveEdition(req);
     if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
-    if (!unitName || !judgeName || !email || !comarca || !areas || !areas.length) {
-      return res.status(400).json({ error: 'Preencha todos os campos obrigatórios da unidade judicial.' });
-    }
+    const parsed = parseUnit(req.body);
+    if ('error' in parsed) return res.status(400).json({ error: parsed.error });
+    const { unitName, judgeName, email, comarca, areas, supportNeeded, description } = parsed.value;
     if (source !== 'admin' && (!edition.isRegistrationOpen || edition.status === 'Encerrada')) {
       return res.status(403).json({ error: 'As inscrições desta edição estão encerradas.' });
     }
@@ -944,11 +1077,11 @@ async function startServer() {
       editionId: edition.id,
       unitName,
       judgeName,
-      email: String(email).trim(),
+      email,
       comarca,
       areas,
-      supportNeeded: ['Audiência', 'Sentença', 'Audiência e Sentença'].includes(supportNeeded) ? supportNeeded : 'Sentença',
-      description: description || '',
+      supportNeeded,
+      description,
       registeredIp: source === 'admin' ? undefined : clientIp(req),
       createdAt: new Date().toISOString(),
       status: 'Pendente',
@@ -987,7 +1120,7 @@ async function startServer() {
   app.post('/api/units/:id/reject', (req, res) => {
     const unit = units.find((u) => u.id === req.params.id);
     if (!unit) return res.status(404).json({ error: 'Unidade não encontrada.' });
-    const reason = String(req.body?.reason ?? '').trim();
+    const reason = freeText(req.body?.reason, 1000);
     if (!reason) return res.status(400).json({ error: 'Informe o motivo da rejeição.' });
 
     // Se havia magistrado vinculado, a vinculação é desfeita e ele volta à lista de espera
@@ -1012,18 +1145,9 @@ async function startServer() {
     if (!unit) return res.status(404).json({ error: 'Unidade não encontrada.' });
 
     const b = req.body || {};
-    const next = {
-      unitName: String(b.unitName ?? unit.unitName).trim(),
-      judgeName: String(b.judgeName ?? unit.judgeName).trim(),
-      email: String(b.email ?? unit.email).trim(),
-      comarca: String(b.comarca ?? unit.comarca).trim(),
-      areas: Array.isArray(b.areas) && b.areas.length ? b.areas.map(String) : unit.areas,
-      supportNeeded: ['Audiência', 'Sentença', 'Audiência e Sentença'].includes(b.supportNeeded) ? b.supportNeeded : unit.supportNeeded,
-      description: String(b.description ?? unit.description),
-    };
-    if (!next.unitName || !next.judgeName || !next.email || !next.comarca) {
-      return res.status(400).json({ error: 'Preencha todos os campos obrigatórios da unidade judicial.' });
-    }
+    const parsed = parseUnit(b, unit);
+    if ('error' in parsed) return res.status(400).json({ error: parsed.error });
+    const next = parsed.value;
 
     const labels: Record<string, string> = {
       unitName: 'unidade', judgeName: 'responsável', email: 'e-mail', comarca: 'comarca',
@@ -1035,7 +1159,7 @@ async function startServer() {
     Object.assign(unit, next);
 
     const isMatched = matches.some((m) => m.unitId === unit.id);
-    const wanted = b.status as Unit['status'] | undefined;
+    const wanted = (b.status === 'Pendente' || b.status === 'Em Andamento' ? b.status : undefined) as Unit['status'] | undefined;
     const before = unit.status;
     if (isMatched) unit.status = 'Atendida';
     else if (wanted && wanted !== 'Atendida') unit.status = wanted;
@@ -1098,7 +1222,7 @@ async function startServer() {
 
     // Regra: um magistrado por unidade. Um segundo (ou mais) só em caráter de exceção, com motivo.
     const hasOthers = matches.some((m) => m.unitId === unitId && m.magistrateId !== magistrateId);
-    const exceptionReason = String(req.body.exceptionReason ?? '').trim();
+    const exceptionReason = freeText(req.body.exceptionReason, 1000);
     if (hasOthers && !exceptionReason) {
       return res.status(409).json({ error: 'Esta unidade já tem magistrado vinculado. Para incluir outro, informe o motivo da exceção.' });
     }
@@ -1158,7 +1282,7 @@ async function startServer() {
     }
     const movingUnit = nextUnit.id !== match.unitId;
     const othersInTarget = matches.some((m) => m.id !== match.id && m.unitId === nextUnit.id);
-    const newReason = String(req.body.exceptionReason ?? '').trim();
+    const newReason = freeText(req.body.exceptionReason, 1000);
     if (movingUnit && othersInTarget && !newReason) {
       return res.status(409).json({ error: 'A unidade de destino já tem magistrado vinculado. Informe o motivo da exceção.' });
     }
