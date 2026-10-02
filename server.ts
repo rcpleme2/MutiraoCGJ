@@ -87,7 +87,17 @@ interface Match {
   createdAt: string;
 }
 
-type LogCategory = 'Edição' | 'Magistrado' | 'Unidade' | 'Vinculação' | 'Exportação' | 'Acesso';
+type LogCategory = 'Edição' | 'Magistrado' | 'Unidade' | 'Vinculação' | 'Exportação' | 'Acesso' | 'Conteúdo';
+
+/** Pergunta frequente, mantida pela administração (conteúdo geral, não vinculado a uma edição) */
+interface FaqItem {
+  id: string;
+  question: string;
+  answer: string;
+  order: number;
+  published: boolean;
+  updatedAt: string;
+}
 
 interface LogEntry {
   id: string;
@@ -241,6 +251,8 @@ let matches: Match[] = [
   },
 ];
 
+let faq: FaqItem[] = [];
+
 let activityLog: LogEntry[] = [
   {
     id: 'log-seed-1',
@@ -346,7 +358,7 @@ const lastSaved = new Map<string, Map<string, string>>();
 let lastMeta = '';
 
 const collectionsNow = (): Record<string, { id: string }[]> => ({
-  editions, magistrates, units, matches, log: activityLog,
+  editions, magistrates, units, matches, log: activityLog, faq,
 });
 
 async function loadState() {
@@ -359,6 +371,7 @@ async function loadState() {
       units = raw.units ?? units;
       matches = raw.matches ?? matches;
       activityLog = raw.activityLog ?? activityLog;
+      faq = raw.faq ?? faq;
     } catch { /* primeira execução: usa os dados iniciais */ }
     return;
   }
@@ -384,6 +397,7 @@ async function loadState() {
   units = loaded.units as Unit[];
   matches = loaded.matches as Match[];
   activityLog = (loaded.log as LogEntry[]).sort((x, y) => y.timestamp.localeCompare(x.timestamp));
+  faq = loaded.faq as FaqItem[];
   activeEditionId = meta?.activeEditionId ?? editions[0].id;
   lastMeta = JSON.stringify({ activeEditionId });
 }
@@ -393,7 +407,7 @@ async function persist() {
     fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
     fs.writeFileSync(
       DATA_FILE,
-      JSON.stringify({ editions, activeEditionId, magistrates, units, matches, activityLog }),
+      JSON.stringify({ editions, activeEditionId, magistrates, units, matches, activityLog, faq }),
     );
     return;
   }
@@ -448,7 +462,7 @@ async function startServer() {
   app.use('/api', (req, res, next) => {
     const ip = req.ip || 'unknown';
     const admin = hasValidToken(req);
-    const publicRead = req.method === 'GET' && ['/settings', '/status', '/whoami'].includes(req.path);
+    const publicRead = req.method === 'GET' && ['/settings', '/status', '/whoami', '/faq'].includes(req.path);
     const publicSignup = req.method === 'POST' && (req.path === '/magistrates' || req.path === '/units');
     const login = req.method === 'POST' && req.path === '/admin/login';
 
@@ -590,6 +604,72 @@ async function startServer() {
     edition.status = 'Em andamento';
     log(edition.id, 'Administração', 'Edição', 'Edição reaberta (em andamento).');
     res.json({ success: true, edition: publicEdition(edition) });
+  });
+
+  // ---------- Perguntas frequentes ----------
+  const faqSorted = () => [...faq].sort((a, b) => a.order - b.order);
+  const faqInput = (b: any) => ({
+    question: String(b?.question ?? '').trim(),
+    answer: String(b?.answer ?? '').trim(),
+  });
+  const faqInvalid = (q: { question: string; answer: string }) =>
+    !q.question || !q.answer ? 'Preencha a pergunta e a resposta.'
+      : q.question.length > 300 ? 'A pergunta pode ter no máximo 300 caracteres.'
+      : q.answer.length > 4000 ? 'A resposta pode ter no máximo 4000 caracteres.' : '';
+
+  // Público: apenas as publicadas
+  app.get('/api/faq', (_req, res) => {
+    res.json(faqSorted().filter((f) => f.published).map(({ id, question, answer }) => ({ id, question, answer })));
+  });
+  // Administração: todas, inclusive não publicadas
+  app.get('/api/faq/all', (_req, res) => res.json(faqSorted()));
+
+  app.post('/api/faq', (req, res) => {
+    const input = faqInput(req.body);
+    const err = faqInvalid(input);
+    if (err) return res.status(400).json({ error: err });
+    const item: FaqItem = {
+      id: newId('faq'), ...input,
+      order: faq.reduce((mx, f) => Math.max(mx, f.order), 0) + 1,
+      published: req.body?.published !== false,
+      updatedAt: new Date().toISOString(),
+    };
+    faq.push(item);
+    log(null, 'Administração', 'Conteúdo', `Pergunta frequente criada: "${item.question}".`);
+    res.status(201).json({ success: true, item });
+  });
+
+  app.put('/api/faq/:id', (req, res) => {
+    const item = faq.find((f) => f.id === req.params.id);
+    if (!item) return res.status(404).json({ error: 'Pergunta não encontrada.' });
+    const input = faqInput({ question: req.body?.question ?? item.question, answer: req.body?.answer ?? item.answer });
+    const err = faqInvalid(input);
+    if (err) return res.status(400).json({ error: err });
+    item.question = input.question;
+    item.answer = input.answer;
+    if (typeof req.body?.published === 'boolean') item.published = req.body.published;
+    item.updatedAt = new Date().toISOString();
+    log(null, 'Administração', 'Conteúdo', `Pergunta frequente editada: "${item.question}"${item.published ? '' : ' (não publicada)'}.`);
+    res.json({ success: true, item });
+  });
+
+  app.post('/api/faq/:id/move', (req, res) => {
+    const ordered = faqSorted();
+    const i = ordered.findIndex((f) => f.id === req.params.id);
+    if (i < 0) return res.status(404).json({ error: 'Pergunta não encontrada.' });
+    const j = req.body?.direction === 'up' ? i - 1 : i + 1;
+    if (j >= 0 && j < ordered.length) {
+      [ordered[i], ordered[j]] = [ordered[j], ordered[i]];
+      ordered.forEach((f, n) => { f.order = n + 1; });
+    }
+    res.json({ success: true });
+  });
+
+  app.delete('/api/faq/:id', (req, res) => {
+    const item = faq.find((f) => f.id === req.params.id);
+    if (item) log(null, 'Administração', 'Conteúdo', `Pergunta frequente excluída: "${item.question}".`);
+    faq = faq.filter((f) => f.id !== req.params.id);
+    res.json({ success: true });
   });
 
   // ---------- Activity log ----------

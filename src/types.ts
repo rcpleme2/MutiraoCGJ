@@ -93,3 +93,12 @@ export const PREFERENCE_AREAS = [
   'Família e Infância',
   'Juizado Cível, Crime e Fazenda Pública',
 ];
+
+export interface FaqItem {
+  id: string;
+  question: string;
+  answer: string;
+  order?: number;
+  published?: boolean;
+  updatedAt?: string;
+}

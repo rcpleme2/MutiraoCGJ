@@ -1,12 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { Scale, UserCheck, Building2, ShieldCheck, Search, ArrowRight, Menu, X } from 'lucide-react';
+import { Scale, UserCheck, Building2, ShieldCheck, Search, ArrowRight, Menu, X, ChevronDown, HelpCircle } from 'lucide-react';
 import { api } from './api';
-import { Edition, Magistrate, Unit } from './types';
+import { Edition, FaqItem, Magistrate, Unit } from './types';
 import { Badge, FeedbackProvider, Notice, formatDate, magistrateTone } from './ui';
 import { MagistrateForm, UnitForm } from './Forms';
 import Admin from './Admin';
 
-type Tab = 'home' | 'magistrate' | 'unit' | 'status' | 'admin';
+type Tab = 'home' | 'magistrate' | 'unit' | 'status' | 'faq' | 'admin';
 
 const NAV: { id: Tab; label: string }[] = [
   { id: 'home', label: 'Início' },
@@ -43,8 +43,12 @@ function AppInner() {
   const [edition, setEdition] = useState<Edition | null>(null);
   const [loadError, setLoadError] = useState(false);
 
-  const loadEdition = () =>
-    api<Edition | null>('/settings').then(setEdition).catch(() => setLoadError(true));
+  const [faq, setFaq] = useState<FaqItem[]>([]);
+  const [openFaq, setOpenFaq] = useState('');
+  const loadEdition = () => {
+    api<FaqItem[]>('/faq').then(setFaq).catch(() => {});
+    return api<Edition | null>('/settings').then(setEdition).catch(() => setLoadError(true));
+  };
   const [ip, setIp] = useState('');
   useEffect(() => { loadEdition(); api<{ ip: string }>('/whoami').then(r => setIp(r.ip)).catch(() => {}); }, []);
 
@@ -91,6 +95,8 @@ function AppInner() {
   if (loadError) return <div className="min-h-screen flex items-center justify-center text-muted">Não foi possível carregar o sistema.</div>;
 
   const open = edition?.isRegistrationOpen && edition.status === 'Em andamento';
+  // A página só aparece no menu quando há perguntas publicadas
+  const nav = faq.length ? [...NAV, { id: 'faq' as Tab, label: 'Perguntas Frequentes' }] : NAV;
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -98,30 +104,30 @@ function AppInner() {
         <div className="max-w-6xl mx-auto px-5 h-16 flex items-center justify-between">
           <button onClick={() => go('home')} className="flex items-center gap-3 text-left">
             <Scale className="w-5 h-5 text-bronze-soft" />
-            <span className="font-serif text-[17px] font-semibold tracking-tight leading-tight">
+            <span className="font-serif text-[17px] font-semibold tracking-tight leading-tight whitespace-nowrap">
               Mutirão de Julgamento
-              <span className="block text-[11px] font-sans font-normal text-white/60 tracking-wider uppercase">Corregedoria-Geral da Justiça</span>
+              <span className="hidden 2xl:block text-[11px] font-sans font-normal text-white/60 tracking-wider uppercase whitespace-nowrap">Corregedoria-Geral da Justiça</span>
             </span>
           </button>
-          <nav className="hidden md:flex items-center gap-1">
-            {NAV.map(n => (
+          <nav className="hidden xl:flex items-center gap-1">
+            {nav.map(n => (
               <button key={n.id} onClick={() => go(n.id)}
-                className={`px-3.5 py-2 rounded-md text-sm transition-colors ${tab === n.id ? 'bg-white/10 text-white' : 'text-white/70 hover:text-white hover:bg-white/5'}`}>
+                className={`px-3 py-2 rounded-md text-sm whitespace-nowrap transition-colors ${tab === n.id ? 'bg-white/10 text-white' : 'text-white/70 hover:text-white hover:bg-white/5'}`}>
                 {n.label}
               </button>
             ))}
             <button onClick={() => go('admin')}
-              className={`ml-2 px-3.5 py-2 rounded-md text-sm flex items-center gap-1.5 border transition-colors ${tab === 'admin' ? 'bg-white text-navy border-white' : 'border-white/25 text-white/80 hover:bg-white/10'}`}>
+              className={`ml-1 px-3 py-2 rounded-md text-sm whitespace-nowrap flex items-center gap-1.5 border transition-colors ${tab === 'admin' ? 'bg-white text-navy border-white' : 'border-white/25 text-white/80 hover:bg-white/10'}`}>
               <ShieldCheck className="w-4 h-4" /> Administração
             </button>
           </nav>
-          <button className="md:hidden p-2" onClick={() => setMenuOpen(!menuOpen)} aria-label="Menu">
+          <button className="xl:hidden p-2" onClick={() => setMenuOpen(!menuOpen)} aria-label="Menu">
             {menuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
           </button>
         </div>
         {menuOpen && (
-          <div className="md:hidden border-t border-white/10 px-5 py-2 flex flex-col">
-            {[...NAV, { id: 'admin' as Tab, label: 'Administração' }].map(n => (
+          <div className="xl:hidden border-t border-white/10 px-5 py-2 flex flex-col">
+            {[...nav, { id: 'admin' as Tab, label: 'Administração' }].map(n => (
               <button key={n.id} onClick={() => go(n.id)} className="text-left py-3 text-sm text-white/85 border-b border-white/5 last:border-0">{n.label}</button>
             ))}
           </div>
@@ -186,6 +192,30 @@ function AppInner() {
                 {formError && <Notice tone="danger">{formError}</Notice>}
                 <IpNotice ip={ip} />
                 <UnitForm busy={busy} submitLabel="Concluir inscrição da unidade" onSubmit={submitPublic('/units', setUnitOk)} />
+              </div>
+            )}
+          </PageCard>
+        )}
+
+        {tab === 'faq' && (
+          <PageCard icon={HelpCircle} title="Perguntas frequentes" subtitle="Dúvidas comuns sobre as inscrições e o andamento do mutirão.">
+            {faq.length === 0 ? (
+              <p className="text-sm text-muted">Nenhuma pergunta publicada no momento.</p>
+            ) : (
+              <div className="divide-y divide-line border-y border-line">
+                {faq.map(f => {
+                  const isOpen = openFaq === f.id;
+                  return (
+                    <div key={f.id}>
+                      <button className="w-full flex items-start justify-between gap-4 py-4 text-left" aria-expanded={isOpen}
+                        onClick={() => setOpenFaq(isOpen ? '' : f.id)}>
+                        <span className="font-serif font-semibold text-navy leading-snug">{f.question}</span>
+                        <ChevronDown className={`w-4 h-4 mt-1 shrink-0 text-muted transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+                      </button>
+                      {isOpen && <p className="pb-5 pr-8 text-sm text-muted leading-relaxed whitespace-pre-wrap">{f.answer}</p>}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </PageCard>

@@ -1,11 +1,11 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Lock, Unlock, Plus, Trash2, Check, Pencil, Download, Sparkles, LogOut, Radio, Archive, RotateCcw, ChevronDown, ChevronRight, X } from 'lucide-react';
+import { Lock, Unlock, Plus, Trash2, Check, Pencil, Download, Sparkles, LogOut, Radio, Archive, RotateCcw, ChevronDown, ChevronRight, X, ArrowUp, ArrowDown } from 'lucide-react';
 import { api, download, getToken, setToken } from './api';
-import { Edition, LogEntry, Magistrate, Match, Unit, WorkType, WORK_TYPES } from './types';
+import { Edition, FaqItem, LogEntry, Magistrate, Match, Unit, WorkType, WORK_TYPES } from './types';
 import { Badge, EmptyRow, Field, Modal, Notice, formatDate, formatDateTime, magistrateTone, useFeedback } from './ui';
 import { MagistrateForm, UnitForm } from './Forms';
 
-type Sub = 'overview' | 'editions' | 'magistrates' | 'units' | 'matches' | 'waiting' | 'log';
+type Sub = 'overview' | 'editions' | 'magistrates' | 'units' | 'matches' | 'waiting' | 'faq' | 'log';
 
 const SUBS: { id: Sub; label: string }[] = [
   { id: 'overview', label: 'Painel' },
@@ -14,6 +14,7 @@ const SUBS: { id: Sub; label: string }[] = [
   { id: 'units', label: 'Unidades' },
   { id: 'matches', label: 'Vinculações' },
   { id: 'waiting', label: 'Lista de espera' },
+  { id: 'faq', label: 'Perguntas frequentes' },
   { id: 'log', label: 'Registro' },
 ];
 
@@ -346,6 +347,27 @@ function UnitLinkRow({ unit, magistrates, matches, busy, onSave, onUnlink }: {
   );
 }
 
+/* ---------- Formulário de pergunta frequente ---------- */
+function FaqForm({ initial, onSubmit }: { initial?: FaqItem; onSubmit: (v: { question: string; answer: string; published: boolean }) => Promise<void> }) {
+  const [f, setF] = useState({ question: initial?.question ?? '', answer: initial?.answer ?? '', published: initial?.published ?? true });
+  return (
+    <form className="space-y-4" onSubmit={e => { e.preventDefault(); onSubmit(f); }}>
+      <Field label="Pergunta">
+        <input required maxLength={300} className="input" value={f.question} onChange={e => setF({ ...f, question: e.target.value })} />
+      </Field>
+      <Field label="Resposta">
+        <textarea required rows={7} maxLength={4000} className="input" value={f.answer} onChange={e => setF({ ...f, answer: e.target.value })} />
+        <p className="text-[11px] text-muted mt-1">Texto simples; as quebras de linha são preservadas. {f.answer.length}/4000</p>
+      </Field>
+      <label className="flex items-center gap-2 text-sm">
+        <input type="checkbox" checked={f.published} onChange={e => setF({ ...f, published: e.target.checked })} />
+        Publicada (visível na página pública)
+      </label>
+      <button className="btn-primary w-full">{initial ? 'Salvar alterações' : 'Adicionar pergunta'}</button>
+    </form>
+  );
+}
+
 export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => void }) {
   const { toast, confirm } = useFeedback();
   const [authed, setAuthed] = useState(!!getToken());
@@ -362,7 +384,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const [log, setLog] = useState<LogEntry[]>([]);
   const [logFilter, setLogFilter] = useState('');
 
-  const [modal, setModal] = useState<null | 'mag' | 'mag-edit' | 'reject' | 'wipe' | 'unit' | 'unit-edit' | 'edition-new' | 'edition-edit' | 'password'>(null);
+  const [modal, setModal] = useState<null | 'mag' | 'mag-edit' | 'reject' | 'wipe' | 'faq-new' | 'faq-edit' | 'unit' | 'unit-edit' | 'edition-new' | 'edition-edit' | 'password'>(null);
   const [matchFilter, setMatchFilter] = useState<'all' | 'open' | 'linked'>('all');
   const [editingEdition, setEditingEdition] = useState<Edition | null>(null);
   const [editingMag, setEditingMag] = useState<Magistrate | null>(null);
@@ -370,6 +392,8 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const [openUnitId, setOpenUnitId] = useState('');
   const [rejecting, setRejecting] = useState<{ kind: 'magistrates' | 'units'; id: string; name: string; linked: boolean } | null>(null);
   const [rejectReason, setRejectReason] = useState('');
+  const [faqItems, setFaqItems] = useState<FaqItem[]>([]);
+  const [editingFaq, setEditingFaq] = useState<FaqItem | null>(null);
   const [wiping, setWiping] = useState<'magistrates' | 'units' | 'matches' | null>(null);
   const [wipeText, setWipeText] = useState('');
   const [linking, setLinking] = useState(false);
@@ -397,6 +421,11 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
     setSelectedId(prev => (r.editions.some(e => e.id === prev) ? prev : r.activeEditionId));
   }, [run]);
 
+  const loadFaq = useCallback(async () => {
+    const r = await run(() => api<FaqItem[]>('/faq/all'));
+    if (r) setFaqItems(r);
+  }, [run]);
+
   const loadScoped = useCallback(async () => {
     if (!selectedId) return;
     const q = `?edition=${encodeURIComponent(selectedId)}`;
@@ -410,7 +439,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
 
   const refresh = useCallback(async () => { await loadEditions(); await loadScoped(); onEditionsChanged(); }, [loadEditions, loadScoped, onEditionsChanged]);
 
-  useEffect(() => { if (authed) loadEditions(); }, [authed]);
+  useEffect(() => { if (authed) { loadEditions(); loadFaq(); } }, [authed]);
   useEffect(() => { if (authed) { loadScoped(); setAi({ loading: false, items: [] }); } }, [authed, selectedId]);
 
   const login = async (e: React.FormEvent) => {
@@ -460,6 +489,26 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
     setAi({ loading: false, items: r?.recommendations || [] });
   };
   const exportFile = (path: string, name: string) => run(() => download(path, name)).then(loadScoped);
+
+  const saveFaq = async (v: { question: string; answer: string; published: boolean }) => {
+    const r = await run(() => editingFaq
+      ? api(`/faq/${editingFaq.id}`, { method: 'PUT', json: v })
+      : api('/faq', { method: 'POST', json: v }), editingFaq ? 'Pergunta atualizada.' : 'Pergunta adicionada.');
+    if (r) { setModal(null); await loadFaq(); onEditionsChanged(); }
+  };
+  const moveFaq = async (id: string, direction: 'up' | 'down') => {
+    await run(() => api(`/faq/${id}/move`, { method: 'POST', json: { direction } }));
+    await loadFaq(); onEditionsChanged();
+  };
+  const toggleFaq = async (f: FaqItem) => {
+    await run(() => api(`/faq/${f.id}`, { method: 'PUT', json: { published: !f.published } }), f.published ? 'Pergunta despublicada.' : 'Pergunta publicada.');
+    await loadFaq(); onEditionsChanged();
+  };
+  const deleteFaq = async (f: FaqItem) => {
+    if (!(await confirm(`Excluir a pergunta "${f.question}"?`, 'Excluir'))) return;
+    await run(() => api(`/faq/${f.id}`, { method: 'DELETE' }), 'Pergunta excluída.');
+    await loadFaq(); onEditionsChanged();
+  };
 
   const createEdition = async (v: any) => {
     const r = await run(() => api('/editions', { method: 'POST', json: v }), 'Edição criada.');
@@ -844,13 +893,49 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
         </div>
       )}
 
+      {/* ---------- Perguntas frequentes ---------- */}
+      {sub === 'faq' && (
+        <div>
+          <Toolbar title="Perguntas frequentes">
+            <button className="btn-primary btn-sm" onClick={() => { setEditingFaq(null); setModal('faq-new'); }}><Plus className="w-4 h-4" /> Nova pergunta</button>
+          </Toolbar>
+          <p className="text-sm text-muted mb-4">
+            Conteúdo geral do portal, comum a todas as edições. Apenas as perguntas <strong className="text-ink">publicadas</strong> aparecem na página pública
+            (o item “Perguntas Frequentes” só surge no menu quando há alguma publicada). Use as setas para definir a ordem.
+          </p>
+          {faqItems.length === 0 && <div className="card p-10 text-center text-sm text-muted">Nenhuma pergunta cadastrada.</div>}
+          <div className="space-y-3">
+            {faqItems.map((f, i) => (
+              <div key={f.id} className="card p-4 sm:p-5 flex items-start gap-4">
+                <div className="flex flex-col gap-1 shrink-0">
+                  <button className="btn-ghost btn-sm !px-2" title="Subir" disabled={i === 0} onClick={() => moveFaq(f.id, 'up')}><ArrowUp className="w-4 h-4" /></button>
+                  <button className="btn-ghost btn-sm !px-2" title="Descer" disabled={i === faqItems.length - 1} onClick={() => moveFaq(f.id, 'down')}><ArrowDown className="w-4 h-4" /></button>
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-serif font-semibold text-navy">{f.question}</span>
+                    <Badge tone={f.published ? 'ok' : 'neutral'}>{f.published ? 'Publicada' : 'Rascunho'}</Badge>
+                  </div>
+                  <p className="text-sm text-muted mt-1.5 whitespace-pre-wrap line-clamp-3">{f.answer}</p>
+                </div>
+                <div className="flex flex-wrap justify-end gap-1.5 shrink-0">
+                  <button className="btn-secondary btn-sm" onClick={() => toggleFaq(f)}>{f.published ? 'Despublicar' : 'Publicar'}</button>
+                  <button className="btn-ghost btn-sm" title="Editar" onClick={() => { setEditingFaq(f); setModal('faq-edit'); }}><Pencil className="w-4 h-4" /></button>
+                  <button className="btn-danger" title="Excluir" onClick={() => deleteFaq(f)}><Trash2 className="w-4 h-4" /></button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* ---------- Registro ---------- */}
       {sub === 'log' && (
         <div>
           <Toolbar title="Registro de atividades">
             <select className="input !w-auto !py-1.5 text-xs" value={logFilter} onChange={e => setLogFilter(e.target.value)}>
               <option value="">Todas as categorias</option>
-              {['Edição', 'Magistrado', 'Unidade', 'Vinculação', 'Exportação', 'Acesso'].map(c => <option key={c}>{c}</option>)}
+              {['Edição', 'Magistrado', 'Unidade', 'Vinculação', 'Exportação', 'Acesso', 'Conteúdo'].map(c => <option key={c}>{c}</option>)}
             </select>
             <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/csv?type=log&${q}`, 'registro.csv')}><Download className="w-4 h-4" /> CSV</button>
           </Toolbar>
@@ -888,6 +973,8 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
           }} />
         </Modal>
       )}
+      {modal === 'faq-new' && <Modal title="Nova pergunta" onClose={() => setModal(null)}><FaqForm onSubmit={saveFaq} /></Modal>}
+      {modal === 'faq-edit' && editingFaq && <Modal title="Editar pergunta" onClose={() => setModal(null)}><FaqForm initial={editingFaq} onSubmit={saveFaq} /></Modal>}
       {modal === 'wipe' && wiping && (
         <Modal title="Excluir tudo" onClose={() => setModal(null)}>
           <form onSubmit={confirmWipe} className="space-y-4">
