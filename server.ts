@@ -1028,6 +1028,12 @@ async function startServer() {
   const cleanCell = (t: string) => t.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
 
   /** Linhas exibidas no painel público: vinculações do sistema (se habilitado) + linhas coladas, da edição vigente, sem repetição. */
+  /** Linha de cabeçalho colada da planilha (ex.: Magistrado / Área / Designado para). */
+  function isHeaderRow(name: string, area: string, unit: string) {
+    const [a, b, c] = [norm(name), norm(area), norm(unit)];
+    return /^(nome|magistrad|juiz|juiza)/.test(a) && b.startsWith('area') && /^(design|unidade|vara|lotac)/.test(c);
+  }
+
   function panelRows(editionId: string) {
     const seen = new Map<string, { name: string; area: string; unit: string }>();
     const add = (r: { name: string; area: string; unit: string }) => { const k = panelKey(r); if (!seen.has(k)) seen.set(k, { name: r.name, area: r.area, unit: r.unit }); };
@@ -1038,7 +1044,7 @@ async function startServer() {
         if (mag && un) add({ name: mag.name, area: mt.assignedArea, unit: un.unitName });
       }
     }
-    panelEntries.filter((e) => e.editionId === editionId).forEach(add);
+    panelEntries.filter((e) => e.editionId === editionId && !isHeaderRow(e.name, e.area, e.unit)).forEach(add);
     return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR') || a.unit.localeCompare(b.unit, 'pt-BR'));
   }
 
@@ -1112,7 +1118,7 @@ async function startServer() {
     const errors: { line: number; message: string }[] = [];
     const valid: { name: string; area: string; unit: string }[] = [];
     let start = 0;
-    if (raw[0] && norm(raw[0][0] ?? '').startsWith('nome') && norm(raw[0][1] ?? '').startsWith('area') && norm(raw[0][2] ?? '').startsWith('design')) start = 1;
+    if (raw[0] && isHeaderRow(raw[0][0] ?? '', raw[0][1] ?? '', raw[0][2] ?? '')) start = 1;
     if (raw.length - start > MAX_ROWS) return res.status(400).json({ error: `Máximo de ${MAX_ROWS} linhas por importação.` });
 
     const inBatch = new Set<string>();
@@ -1123,6 +1129,7 @@ async function startServer() {
       const line = i + 1;
       if (!name || !area || !unit) { errors.push({ line, message: 'a linha precisa ter Nome, Área e Designado Para preenchidos (colunas separadas por tabulação).' }); continue; }
       if (name.length > 200 || area.length > 150 || unit.length > 300) { errors.push({ line, message: 'texto longo demais em uma das colunas.' }); continue; }
+      if (isHeaderRow(name, area, unit)) continue; // cabeçalho colado fora da 1ª linha
       const key = panelKey({ name, area, unit });
       if (inBatch.has(key) || existing.has(key)) { duplicates++; continue; }
       inBatch.add(key); valid.push({ name, area, unit });
