@@ -1354,10 +1354,21 @@ async function startServer() {
       cols.forEach((c) => { doc.text(t(c.label).toUpperCase(), x + 7, y + 8, { width: c.w - 14, align: c.align ?? 'left', lineBreak: false, characterSpacing: 0.5 }); x += c.w; });
       doc.y = y + 22;
     };
-    const table = (cols: Col[], data: string[][], opts: { boldFirst?: number } = {}) => {
+    type Row = string[] | { sep: string; count: string };
+    const table = (cols: Col[], data: Row[], opts: { boldFirst?: number } = {}) => {
       need(70);
       drawHead(cols);
       data.forEach((r) => {
+        if (!Array.isArray(r)) { // separador de área: discreto, com a quantidade de magistrados
+          if (doc.y + 20 + 40 > limit()) { doc.addPage(); drawHead(cols); }
+          const y = doc.y;
+          doc.rect(L, y, W, 20).fill('#faf8f3');
+          doc.fillColor(BRONZE).font('Helvetica-Bold').fontSize(7.4).text(t(r.sep).toUpperCase(), L + 7, y + 7, { width: W - 120, lineBreak: false, characterSpacing: 0.7 });
+          doc.fillColor(MUTED).font('Helvetica').fontSize(7.4).text(t(r.count), L + W - 113, y + 7, { width: 106, align: 'right', lineBreak: false });
+          doc.moveTo(L, y + 20).lineTo(L + W, y + 20).lineWidth(0.4).strokeColor(HAIR).stroke();
+          doc.y = y + 20;
+          return;
+        }
         const h = Math.max(...r.map((c, k) => { doc.font(k === (opts.boldFirst ?? -1) ? 'Helvetica-Bold' : 'Helvetica').fontSize(8.6); return doc.heightOfString(t(c), { width: cols[k].w - 14, lineGap: 1.5 }); })) + 12;
         if (doc.y + h > limit()) { doc.addPage(); drawHead(cols); }
         const y = doc.y;
@@ -1375,63 +1386,59 @@ async function startServer() {
     };
     const section = (num: string, title: string, note?: string) => {
       need(96);
-      doc.moveDown(0.8);
-      doc.fillColor(NAVY).font('Times-Bold').fontSize(14.5).text(`${num}.  ${t(title)}`, L, doc.y, { width: W });
-      const y = doc.y + 4;
-      doc.moveTo(L, y).lineTo(L + 34, y).lineWidth(1.6).strokeColor(BRONZE).stroke();
-      doc.y = y + 7;
-      if (note) doc.fillColor(MUTED).font('Helvetica').fontSize(8.6).text(t(note), L, doc.y, { width: W, lineGap: 1.5 });
-      doc.moveDown(0.8);
+      doc.moveDown(1);
+      doc.fillColor(NAVY).font('Times-Bold').fontSize(15).text(`${num}.  ${t(title)}`, L, doc.y, { width: W, align: 'center' });
+      const y = doc.y + 5;
+      doc.moveTo(L + W / 2 - 17, y).lineTo(L + W / 2 + 17, y).lineWidth(1.4).strokeColor(BRONZE).stroke();
+      doc.y = y + 8;
+      if (note) doc.fillColor(MUTED).font('Helvetica').fontSize(8.4).text(t(note), L + 30, doc.y, { width: W - 60, align: 'center', lineGap: 1.5 });
+      doc.moveDown(0.9);
     };
     const empty = (msg: string) => { doc.fillColor(MUTED).font('Helvetica-Oblique').fontSize(9).text(msg, L, doc.y, { width: W }); doc.moveDown(1); };
 
     // ---------- Cabeçalho ----------
-    doc.fillColor(BRONZE).font('Helvetica-Bold').fontSize(7.6).text('TRIBUNAL DE JUSTIÇA DO ESTADO DO PARANÁ', L, doc.y, { width: W, characterSpacing: 1.2 });
-    doc.fillColor(MUTED).font('Helvetica').fontSize(7.6).text('Corregedoria-Geral da Justiça', L, doc.y + 2, { width: W, characterSpacing: 0.4 });
-    doc.moveDown(1.4);
-    doc.fillColor(NAVY).font('Times-Bold').fontSize(26).text('Relatório de Designações', L, doc.y, { width: W });
-    doc.fillColor(INK).font('Times-Roman').fontSize(13).text('Mutirão de Julgamento', L, doc.y + 2, { width: W });
+    doc.fillColor(BRONZE).font('Helvetica-Bold').fontSize(7.6).text('TRIBUNAL DE JUSTIÇA DO ESTADO DO PARANÁ', L, doc.y, { width: W, align: 'center', characterSpacing: 1.2 });
+    doc.fillColor(MUTED).font('Helvetica').fontSize(7.6).text('Corregedoria-Geral da Justiça', L, doc.y + 3, { width: W, align: 'center', characterSpacing: 0.4 });
+    doc.moveDown(1.6);
+    doc.fillColor(NAVY).font('Times-Bold').fontSize(25).text('Relatório de Designações', L, doc.y, { width: W, align: 'center' });
+    doc.fillColor(INK).font('Times-Roman').fontSize(12.5).text('Mutirão de Julgamento', L, doc.y + 3, { width: W, align: 'center' });
     doc.moveDown(0.9);
     doc.moveTo(L, doc.y).lineTo(L + W, doc.y).lineWidth(1.2).strokeColor(NAVY).stroke();
     doc.moveTo(L, doc.y + 3).lineTo(L + W, doc.y + 3).lineWidth(0.4).strokeColor(BRONZE).stroke();
     doc.y += 11;
-    doc.fillColor(MUTED).font('Helvetica').fontSize(8.4).text(`Emitido em ${stamp} (horário de Brasília)`, L, doc.y, { width: W });
-    doc.moveDown(1.2);
+    doc.fillColor(MUTED).font('Helvetica').fontSize(8.2).text(`Emitido em ${stamp} (horário de Brasília)`, L, doc.y, { width: W, align: 'center' });
+    doc.moveDown(1.3);
 
-    // Resumo em quatro quadros
+    // Resumo em quatro quadros (conteúdo centralizado)
     const stats = [['Designações vigentes', rows.length], ['Áreas de atuação', areas.length], ['Alterações de vinculação', moves.length], ['Desistentes', drops.length]] as const;
     const bw = (W - 3 * 10) / 4, by = doc.y;
     stats.forEach(([label, n], i) => {
       const x = L + i * (bw + 10);
-      doc.rect(x, by, bw, 54).lineWidth(0.6).strokeColor(HAIR).stroke();
-      doc.rect(x, by, 3, 54).fill(i === 0 ? NAVY : BRONZE);
-      doc.fillColor(NAVY).font('Times-Bold').fontSize(22).text(String(n), x + 14, by + 8, { width: bw - 20, lineBreak: false });
-      doc.fillColor(MUTED).font('Helvetica').fontSize(7.6).text(t(label), x + 14, by + 37, { width: bw - 20, lineBreak: false });
+      doc.rect(x, by, bw, 56).lineWidth(0.6).strokeColor(HAIR).stroke();
+      doc.rect(x, by, bw, 2.5).fill(i === 0 ? NAVY : BRONZE);
+      doc.fillColor(NAVY).font('Times-Bold').fontSize(23).text(String(n), x, by + 11, { width: bw, align: 'center', lineBreak: false });
+      doc.fillColor(MUTED).font('Helvetica').fontSize(7.4).text(t(label), x, by + 41, { width: bw, align: 'center', lineBreak: false });
     });
-    doc.y = by + 54;
-    doc.moveDown(0.6);
+    doc.y = by + 56;
+    doc.moveDown(0.4);
 
-    // ---------- 1. Relação total ----------
-    section('1', 'Designações vigentes — relação total', 'Todas as designações vigentes, em ordem alfabética. Permanecem válidas até o registro da desistência.');
+    // ---------- 1. Designações vigentes (tabela única, por área e em ordem alfabética) ----------
+    section('1', 'Designações vigentes', 'Classificadas por área de atuação e, dentro de cada área, em ordem alfabética. Permanecem válidas até o registro da desistência.');
     if (rows.length === 0) empty('Nenhuma designação vigente.');
-    else table([{ label: 'Nº', w: 28 }, { label: 'Magistrado(a)', w: 150 }, { label: 'Área de atuação', w: 100 }, { label: 'Unidade designada', w: W - 340 }, { label: 'Atuação', w: 62 }],
-      rows.map((r, i) => [String(i + 1), r.name, r.area, unitCell(r), acting(r.workType)]), { boldFirst: 1 });
-
-    // ---------- 2. Por área ----------
-    section('2', 'Designações vigentes — por área de atuação');
-    if (rows.length === 0) empty('Nenhuma designação vigente.');
-    areas.forEach((area) => {
-      const list = rows.filter((r) => r.area.trim() === area);
-      need(100);
-      doc.fillColor(BRONZE).font('Helvetica-Bold').fontSize(9).text(t(area).toUpperCase(), L, doc.y, { continued: true, characterSpacing: 0.6 })
-        .fillColor(MUTED).font('Helvetica').text(`   ${list.length} designações`, { characterSpacing: 0 });
-      doc.moveDown(0.5);
-      table([{ label: 'Nº', w: 28 }, { label: 'Magistrado(a)', w: 170 }, { label: 'Unidade designada', w: W - 260 }, { label: 'Atuação', w: 62 }],
-        list.map((r, i) => [String(i + 1), r.name, unitCell(r), acting(r.workType)]), { boldFirst: 1 });
-    });
+    else {
+      const data: Row[] = [];
+      let n = 0;
+      areas.forEach((area) => {
+        const list = rows.filter((r) => r.area.trim() === area).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR') || a.unit.localeCompare(b.unit, 'pt-BR'));
+        const magistrados = new Set(list.map((r) => r.name.toLowerCase())).size;
+        data.push({ sep: area, count: `${magistrados} magistrados` });
+        list.forEach((r) => data.push([String(++n), r.name, unitCell(r), acting(r.workType)]));
+      });
+      table([{ label: 'Nº', w: 38, align: 'center' }, { label: 'Magistrado(a)', w: 180 }, { label: 'Unidade designada', w: W - 280 }, { label: 'Atuação', w: 62 }], data, { boldFirst: 1 });
+    }
 
     // ---------- 3. Alterações ----------
-    section('3', 'Alterações de vinculação', 'A vinculação anterior vale até o dia anterior à data informada; a nova vinculação vale a partir dela.');
+    section('2', 'Alterações de vinculação', 'A vinculação anterior vale até o dia anterior à data informada; a nova vinculação vale a partir dela.');
     if (moves.length === 0) empty('Nenhuma alteração de vinculação registrada.');
     else table([{ label: 'Magistrado(a)', w: 120 }, { label: 'Vinculação anterior', w: (W - 120) / 2 }, { label: 'Nova vinculação', w: (W - 120) / 2 }],
       moves.map((m) => [m.name,
@@ -1439,7 +1446,7 @@ async function startServer() {
         `${m.toUnit}\n${acting(m.toWorkType)} · a partir de ${dmy(m.effectiveDate)}`]), { boldFirst: 0 });
 
     // ---------- 4. Desistentes ----------
-    section('4', 'Desistentes', 'Magistrados que desistiram da participação, com o processo SEI e a data do pedido. Havendo nova inscrição deferida, a desistência vale apenas para o período anterior.');
+    section('3', 'Desistentes', 'Magistrados que desistiram da participação, com o processo SEI e a data do pedido. Havendo nova inscrição deferida, a desistência vale apenas para o período anterior.');
     if (drops.length === 0) empty('Nenhuma desistência registrada.');
     else table([{ label: 'Magistrado(a)', w: 108 }, { label: 'Área e unidade', w: 108 }, { label: 'Processo SEI', w: 130 }, { label: 'Pedido', w: 62 }, { label: 'Situação', w: W - 408 }],
       drops.map((w) => [w.name, `${w.area}\n${w.unit}`, w.sei || 'A informar', w.requestDate ? dmy(w.requestDate) : 'A informar',
