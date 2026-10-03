@@ -132,11 +132,14 @@ Exemplo: `gcloud run services update mutirao-cgj --region southamerica-east1 --u
 
 ## 8. Regras de funcionamento
 
-- **Painel de vinculações (restrito à administração):** *Administração → Painel de vinculações*. Tabela única com as vinculações do
-  sistema e as importadas de planilha (colunas **Nome / Área / Designado Para**); desfazer uma vinculação a remove do painel.
-  Cada linha tem o botão *Desistência* (pede o número do SEI e move o magistrado para a relação de desistentes). O botão
-  *Exportar relatório em PDF* gera designações vigentes (total e por área) e desistentes com o SEI. Publicamente, só a
-  *Consulta pelo nome completo* (em Consultar Status) informa se há vinculação ativa ou revogada por desistência.
+- **Painel de vinculações (restrito à administração):** *Administração → Painel de vinculações*. Tabela única com as designações vigentes de
+  **todas as edições** (valem até o registro da desistência). Planilhas coladas viram vinculações reais na edição **Vinculações iniciais**
+  (criada automaticamente; nunca é a edição vigente), onde as varas podem ser alteradas na aba Vinculações e o painel reflete na hora.
+  *Desistência* pede o SEI e a data do pedido; se o magistrado fizer nova inscrição (comparação de nomes sem acento e sem diferença de
+  caixa) e ela for deferida, a desistência fica registrada como válida apenas para o período. *Exportar relatório em PDF* traz as
+  designações (total e por área) e os desistentes. Publicamente, só a *Consulta pelo nome completo* (em Consultar Status).
+- **Backup:** *Administração → Backup* exporta todos os dados em um arquivo .json (contém dados pessoais: guarde com segurança, não
+  inclui senha nem segredo do 2FA) e restaura a partir dele, substituindo os dados atuais (o registro de atividades é preservado).
 - **Inscrições:** os campos de escolha do magistrado (1ª e 2ª escolha e aceite de audiências) e as áreas da unidade começam
   sem seleção; todos são obrigatórios (o servidor também valida).
 

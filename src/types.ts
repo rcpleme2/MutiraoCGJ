@@ -25,6 +25,7 @@ export interface Edition {
   status: 'Em andamento' | 'Encerrada';
   createdAt: string;
   isActive: boolean;
+  isInitial?: boolean;
   /** Situação real das inscrições (servidor): chave manual + janela de datas em horário de Brasília */
   registration?: { state: 'open' | 'not_yet' | 'ended' | 'paused' | 'closed'; message: string };
   stats?: EditionStats;
@@ -45,6 +46,8 @@ export interface Magistrate {
   rejectedAt?: string;
   createdAt: string;
   status: MagistrateStatus;
+  /** Já desistiu antes (mesmo nome): indicação para análise do pedido de nova inscrição */
+  priorWithdrawal?: { sei: string; requestDate?: string };
   editionTitle?: string;
   match?: (Match & { unit?: Unit | null }) | null;
 }
@@ -107,5 +110,5 @@ export interface FaqItem {
   updatedAt?: string;
 }
 
-export interface PanelRow { id: string; kind: 'match' | 'entry'; name: string; area: string; unit: string; comarca?: string; workType?: string }
-export interface Withdrawal { id: string; editionId: string; name: string; area: string; unit: string; sei: string; createdAt: string }
+export interface PanelRow { id: string; editionId: string; editionTitle: string; magistrateId: string; name: string; area: string; unit: string; comarca?: string; workType?: string }
+export interface Withdrawal { id: string; editionId: string; name: string; area: string; unit: string; sei: string; requestDate?: string; endedAt?: string; createdAt: string }

@@ -28,6 +28,7 @@ export function MagistrateForm({
   withStatus,
   withDeclaration,
   initial,
+  relaxed,
   disabled,
   busy,
 }: {
@@ -36,6 +37,8 @@ export function MagistrateForm({
   withStatus?: boolean;
   withDeclaration?: boolean;
   initial?: Magistrate;
+  /** edição "Vinculações iniciais": e-mail, lotação, áreas e audiências podem ficar em branco */
+  relaxed?: boolean;
   /** formulário visível, mas impreenchível (fora do prazo de inscrições) */
   disabled?: boolean;
   busy?: boolean;
@@ -62,7 +65,7 @@ export function MagistrateForm({
       onSubmit={async e => {
         e.preventDefault();
         // Todos os campos de escolha precisam ser preenchidos (não há valor pré-selecionado)
-        if (!f.firstPreference || !f.acceptsHearings) {
+        if (!relaxed && (!f.firstPreference || !f.acceptsHearings)) {
           setLocalError('Preencha a 1ª escolha e informe se aceita realizar audiências.');
           return;
         }
@@ -76,16 +79,17 @@ export function MagistrateForm({
         <input required className="input" value={f.name} onChange={set('name')} />
       </Field>
       <Field label="E-mail institucional">
-        <input required type="email" placeholder="nome@tjpr.jus.br" className="input" value={f.email} onChange={set('email')} />
+        <input required={!relaxed} type="email" placeholder="nome@tjpr.jus.br" className="input" value={f.email} onChange={set('email')} />
       </Field>
       <Field label="Lotação atual (vara / comarca)">
-        <input required className="input" value={f.currentLocation} onChange={set('currentLocation')} />
+        <input required={!relaxed} className="input" value={f.currentLocation} onChange={set('currentLocation')} />
       </Field>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <Field label="1ª escolha (área)">
-          <select required className="input" value={f.firstPreference}
+          <select required={!relaxed} className="input" value={f.firstPreference}
             onChange={e => setF({ ...f, firstPreference: e.target.value, secondPreference: f.secondPreference === e.target.value ? '' : f.secondPreference })}>
             <option value="" disabled>Selecione…</option>
+            {relaxed && f.firstPreference && !PREFERENCE_AREAS.includes(f.firstPreference) && <option>{f.firstPreference}</option>}
             {PREFERENCE_AREAS.map(a => <option key={a}>{a}</option>)}
           </select>
         </Field>
@@ -153,6 +157,7 @@ export function UnitForm({
   onSubmit,
   submitLabel,
   initial,
+  relaxed,
   withSlots,
   withHoneypot,
   disabled,
@@ -161,6 +166,8 @@ export function UnitForm({
   onSubmit: (payload: Record<string, unknown>) => Promise<boolean>;
   submitLabel: string;
   initial?: Unit;
+  /** edição "Vinculações iniciais": comarca, responsável e e-mail podem ficar em branco */
+  relaxed?: boolean;
   /** campo "magistrados a alocar" (apenas na administração) */
   withSlots?: boolean;
   withHoneypot?: boolean;
@@ -203,20 +210,20 @@ export function UnitForm({
     >
       <fieldset disabled={disabled} className="space-y-5 min-w-0">
       <Field label="Comarca">
-        <input required className="input" value={f.comarca} onChange={text('comarca')} />
+        <input required={!relaxed} className="input" value={f.comarca} onChange={text('comarca')} />
       </Field>
       <Field label="Unidade judicial">
         <input required className="input" value={f.unitName} onChange={text('unitName')} />
       </Field>
       <Field label="Juiz(a) titular / responsável">
-        <input required className="input" value={f.judgeName} onChange={text('judgeName')} />
+        <input required={!relaxed} className="input" value={f.judgeName} onChange={text('judgeName')} />
       </Field>
       <Field label="E-mail do responsável pela inscrição">
-        <input required type="email" placeholder="nome@tjpr.jus.br" className="input" value={f.email} onChange={text('email')} />
+        <input required={!relaxed} type="email" placeholder="nome@tjpr.jus.br" className="input" value={f.email} onChange={text('email')} />
       </Field>
       <Field label="Áreas a serem atendidas (uma ou mais)">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          {PREFERENCE_AREAS.map(area => {
+          {[...PREFERENCE_AREAS, ...(relaxed ? f.areas.filter(a => !PREFERENCE_AREAS.includes(a)) : [])].map(area => {
             const on = f.areas.includes(area);
             return (
               <button

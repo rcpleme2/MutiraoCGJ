@@ -5,7 +5,7 @@ import { Edition, FaqItem, LogEntry, Magistrate, Match, PanelRow, Unit, Withdraw
 import { Badge, EmptyRow, Field, Modal, Notice, formatDate, formatDateTime, magistrateTone, useFeedback } from './ui';
 import { MagistrateForm, UnitForm } from './Forms';
 
-type Sub = 'overview' | 'editions' | 'magistrates' | 'units' | 'matches' | 'waiting' | 'panel' | 'faq' | 'log';
+type Sub = 'overview' | 'editions' | 'magistrates' | 'units' | 'matches' | 'waiting' | 'panel' | 'faq' | 'log' | 'backup';
 
 const SUBS: { id: Sub; label: string }[] = [
   { id: 'overview', label: 'Painel' },
@@ -17,6 +17,7 @@ const SUBS: { id: Sub; label: string }[] = [
   { id: 'panel', label: 'Painel de vinculações' },
   { id: 'faq', label: 'Perguntas frequentes' },
   { id: 'log', label: 'Registro' },
+  { id: 'backup', label: 'Backup' },
 ];
 
 const toLocalInput = (iso: string) => iso.slice(0, 16);
@@ -58,6 +59,19 @@ function Table({ head, children }: { head: React.ReactNode[]; children: React.Re
           <tbody className="divide-y divide-line">{children}</tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+/** Filtro de edição das listas: mostra apenas os registros da edição escolhida (a mesma "edição em gestão" do topo). */
+function EditionFilter({ editions, value, onChange, what }: { editions: Edition[]; value: string; onChange: (id: string) => void; what: string }) {
+  return (
+    <div className="flex flex-wrap items-center gap-3 mb-4">
+      <label className="text-xs font-medium text-muted tracking-wide" htmlFor={`ed-filter-${what}`}>Edição</label>
+      <select id={`ed-filter-${what}`} className="input max-w-sm" value={value} onChange={e => onChange(e.target.value)}>
+        {editions.map(e => <option key={e.id} value={e.id}>{e.title}{e.isActive ? ' (vigente)' : ''} — {what === 'magistrados' ? e.stats?.magistrates ?? 0 : e.stats?.units ?? 0} {what}</option>)}
+      </select>
+      <span className="text-xs text-muted">Exibindo apenas os {what} desta edição.</span>
     </div>
   );
 }
@@ -388,11 +402,11 @@ function FaqForm({ initial, onSubmit }: { initial?: FaqItem; onSubmit: (v: { que
 
 /* ---------- Painel de vinculações (restrito): tabela única, desistências e relatório em PDF ---------- */
 type RunFn = <T,>(fn: () => Promise<T>, okMessage?: string) => Promise<T | undefined>;
-interface PanelAdminData { edition: { id: string; title: string }; rows: PanelRow[]; withdrawals: Withdrawal[] }
+interface PanelAdminData { rows: PanelRow[]; withdrawals: Withdrawal[]; initialEdition: { id: string; title: string } }
 interface PanelPreview { total: number; duplicates: number; errorCount: number; errors: { line: number; message: string }[]; preview: { name: string; area: string; unit: string }[] }
 
-function PanelAdmin({ editionId, run, confirm, onChanged }: {
-  editionId: string; run: RunFn; confirm: (m: string, label?: string) => Promise<boolean>; onChanged: () => void;
+function PanelAdmin({ run, confirm, onChanged }: {
+  run: RunFn; confirm: (m: string, label?: string) => Promise<boolean>; onChanged: () => void;
 }) {
   const [data, setData] = useState<PanelAdminData | null>(null);
   const [text, setText] = useState('');
@@ -402,38 +416,36 @@ function PanelAdmin({ editionId, run, confirm, onChanged }: {
   const [areaFilter, setAreaFilter] = useState<string[]>([]);
   const [dropping, setDropping] = useState<PanelRow | null>(null);
   const [sei, setSei] = useState('');
+  const today = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Sao_Paulo' });
+  const [requestDate, setRequestDate] = useState(today());
 
   const load = useCallback(async () => {
-    const r = await run(() => api<PanelAdminData>(`/panel/admin?edition=${encodeURIComponent(editionId)}`));
+    const r = await run(() => api<PanelAdminData>('/panel/admin'));
     if (r) setData(r);
-  }, [editionId, run]);
-  useEffect(() => { setPreview(null); load(); }, [editionId]);
+  }, [run]);
+  useEffect(() => { load(); }, []);
 
-  const q = `?edition=${encodeURIComponent(editionId)}`;
   const check = async () => {
     setBusy(true);
-    const r = await run(() => api<PanelPreview & { success: boolean }>(`/panel/import${q}`, { method: 'POST', json: { text, dryRun: true } }));
+    const r = await run(() => api<PanelPreview & { success: boolean }>('/panel/import', { method: 'POST', json: { text, dryRun: true } }));
     setBusy(false);
     if (r) setPreview(r);
   };
   const doImport = async (ignoreErrors: boolean) => {
     setBusy(true);
-    const r = await run(() => api(`/panel/import${q}`, { method: 'POST', json: { text, ignoreErrors } }), 'Designações importadas.');
+    const r = await run(() => api('/panel/import', { method: 'POST', json: { text, ignoreErrors } }), 'Designações importadas.');
     setBusy(false);
     if (r) { setText(''); setPreview(null); await load(); onChanged(); }
   };
   const removeRow = async (r: PanelRow) => {
-    const msg = r.kind === 'match'
-      ? `Desfazer a vinculação de ${r.name} à unidade ${r.unit}? O magistrado volta à lista de espera.`
-      : `Remover ${r.name} — ${r.unit} do painel?`;
-    if (!(await confirm(msg, r.kind === 'match' ? 'Desfazer vinculação' : 'Remover'))) return;
-    await run(() => api(`/panel/rows/${r.kind}/${r.id}`, { method: 'DELETE' }), r.kind === 'match' ? 'Vinculação desfeita.' : 'Designação removida.');
+    if (!(await confirm(`Desfazer a vinculação de ${r.name} à unidade ${r.unit}? O magistrado volta à lista de espera.`, 'Desfazer vinculação'))) return;
+    await run(() => api(`/panel/rows/${r.id}`, { method: 'DELETE' }), 'Vinculação desfeita.');
     await load(); onChanged();
   };
   const submitWithdrawal = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!dropping) return;
-    const r = await run(() => api(`/panel/withdrawals${q}`, { method: 'POST', json: { name: dropping.name, sei } }), 'Desistência registrada.');
+    const r = await run(() => api('/panel/withdrawals', { method: 'POST', json: { name: dropping.name, sei, requestDate } }), 'Desistência registrada.');
     if (r) { setDropping(null); setSei(''); await load(); onChanged(); }
   };
   const undoWithdrawal = async (w: Withdrawal) => {
@@ -441,7 +453,7 @@ function PanelAdmin({ editionId, run, confirm, onChanged }: {
     await run(() => api(`/panel/withdrawals/${w.id}`, { method: 'DELETE' }), 'Registro de desistência desfeito.');
     await load(); onChanged();
   };
-  const exportPdf = () => run(() => download(`/panel/report.pdf${q}`, 'designacoes.pdf'));
+  const exportPdf = () => run(() => download('/panel/report.pdf', 'designacoes.pdf'));
 
   if (!data) return <div className="card p-8 text-sm text-muted">Carregando…</div>;
   const fold = (t: string) => t.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
@@ -451,7 +463,6 @@ function PanelAdmin({ editionId, run, confirm, onChanged }: {
   const areas = [...areaMap.entries()].sort((a, b) => a[1].label.localeCompare(b[1].label, 'pt-BR'));
   const selected = areaFilter.filter(k => areaMap.has(k));
   const rows = data.rows.filter(r => (selected.length === 0 || selected.includes(fold(r.area.trim()))) && (!term || fold(`${r.name} ${r.area} ${r.unit} ${r.comarca ?? ''}`).includes(term)));
-  const pasted = data.rows.filter(r => r.kind === 'entry').length;
 
   return (
     <div className="space-y-6">
@@ -459,8 +470,8 @@ function PanelAdmin({ editionId, run, confirm, onChanged }: {
         <button className="btn-secondary btn-sm" onClick={exportPdf}><Download className="w-4 h-4" /> Exportar relatório em PDF</button>
       </Toolbar>
       <p className="text-sm text-muted -mt-2">
-        Relação total das vinculações vigentes de <strong className="text-ink">{data.edition.title}</strong>, de uso restrito da administração. Reúne as vinculações feitas no sistema e as importadas de planilha.
-        Ao desfazer uma vinculação, a linha sai daqui automaticamente.
+        Relação total das vinculações vigentes de <strong className="text-ink">todas as edições</strong>, de uso restrito da administração. As designações de edições anteriores continuam valendo até que seja registrada a desistência.
+        Ao desfazer uma vinculação, a linha sai daqui automaticamente. Para trocar a vara de alguém, edite a vinculação na aba Vinculações.
       </p>
 
       <div className="card overflow-hidden">
@@ -489,17 +500,18 @@ function PanelAdmin({ editionId, run, confirm, onChanged }: {
         )}
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead><tr><th className="th">Magistrado(a)</th><th className="th">Área de atuação</th><th className="th">Unidade</th><th className="th w-44"></th></tr></thead>
+            <thead><tr><th className="th">Magistrado(a)</th><th className="th">Área de atuação</th><th className="th">Unidade</th><th className="th">Edição</th><th className="th w-44"></th></tr></thead>
             <tbody className="divide-y divide-line">
-              {rows.length === 0 && <tr><td colSpan={4} className="px-4 py-10 text-center text-muted">{data.rows.length === 0 ? 'Nenhuma vinculação vigente.' : 'Nenhum resultado para o filtro escolhido.'}</td></tr>}
+              {rows.length === 0 && <tr><td colSpan={5} className="px-4 py-10 text-center text-muted">{data.rows.length === 0 ? 'Nenhuma vinculação vigente.' : 'Nenhum resultado para o filtro escolhido.'}</td></tr>}
               {rows.map(r => (
-                <tr key={`${r.kind}-${r.id}`}>
+                <tr key={r.id}>
                   <td className="td font-medium">{r.name}</td>
                   <td className="td text-muted">{r.area}</td>
                   <td className="td">{r.unit}{r.comarca && <div className="text-xs text-muted">{r.comarca}</div>}</td>
+                  <td className="td text-xs text-muted">{r.editionTitle}</td>
                   <td className="td text-right whitespace-nowrap">
-                    <button className="btn-secondary btn-sm" onClick={() => { setDropping(r); setSei(''); }}>Desistência</button>
-                    <button className="btn-danger" title={r.kind === 'match' ? 'Desfazer vinculação' : 'Remover linha'} aria-label="Excluir" onClick={() => removeRow(r)}><Trash2 className="w-4 h-4" /></button>
+                    <button className="btn-secondary btn-sm" onClick={() => { setDropping(r); setSei(''); setRequestDate(today()); }}>Desistência</button>
+                    <button className="btn-danger" title="Desfazer vinculação" aria-label="Excluir" onClick={() => removeRow(r)}><Trash2 className="w-4 h-4" /></button>
                   </td>
                 </tr>
               ))}
@@ -514,12 +526,13 @@ function PanelAdmin({ editionId, run, confirm, onChanged }: {
         {data.withdrawals.length === 0 ? <p className="p-8 text-center text-sm text-muted">Nenhuma desistência registrada.</p> : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
-              <thead><tr><th className="th">Magistrado(a)</th><th className="th">Área</th><th className="th">Unidade</th><th className="th">SEI</th><th className="th">Registro</th><th className="th w-36"></th></tr></thead>
+              <thead><tr><th className="th">Magistrado(a)</th><th className="th">Área</th><th className="th">Unidade</th><th className="th">SEI</th><th className="th">Pedido em</th><th className="th">Situação</th><th className="th w-36"></th></tr></thead>
               <tbody className="divide-y divide-line">
                 {data.withdrawals.map(w => (
                   <tr key={w.id}>
                     <td className="td font-medium">{w.name}</td><td className="td text-muted">{w.area}</td><td className="td">{w.unit}</td>
-                    <td className="td font-mono text-xs">{w.sei}</td><td className="td text-muted whitespace-nowrap">{formatDateTime(w.createdAt)}</td>
+                    <td className="td font-mono text-xs">{w.sei}</td><td className="td text-muted whitespace-nowrap">{w.requestDate ? w.requestDate.split('-').reverse().join('/') : '—'}</td>
+                    <td className="td text-xs">{w.endedAt ? <span className="text-warn">Apenas no período, até {formatDate(w.endedAt)}<br />(nova inscrição deferida)</span> : <span className="text-muted">Em vigor</span>}</td>
                     <td className="td text-right"><button className="btn-secondary btn-sm" onClick={() => undoWithdrawal(w)}><RotateCcw className="w-3.5 h-3.5" /> Desfazer</button></td>
                   </tr>
                 ))}
@@ -534,13 +547,12 @@ function PanelAdmin({ editionId, run, confirm, onChanged }: {
         <div className="space-y-4 mt-4">
           <p className="text-sm text-muted">
             No Excel, selecione as colunas <strong className="text-ink">Nome</strong>, <strong className="text-ink">Área</strong> e <strong className="text-ink">Designado Para</strong> (com ou sem a linha de cabeçalho),
-            copie (Ctrl+C) e cole abaixo (Ctrl+V). As linhas passam a integrar a mesma tabela acima.
+            copie (Ctrl+C) e cole abaixo (Ctrl+V). Cada linha vira uma vinculação da edição <strong className="text-ink">{data.initialEdition.title}</strong> (e-mail, lotação e comarca ficam em branco) e pode ser ajustada na aba Vinculações.
           </p>
           <textarea rows={8} className="input font-mono text-xs" placeholder={'Nome\tÁrea\tDesignado Para\nDra. Fulana de Tal\tCrime\t1ª Vara Criminal de Curitiba'}
             value={text} onChange={e => { setText(e.target.value); setPreview(null); }} aria-label="Linhas copiadas da planilha" />
           <div className="flex flex-wrap items-center gap-3">
             <button className="btn-secondary btn-sm" disabled={!text.trim() || busy} onClick={check}>Conferir</button>
-            {pasted > 0 && <span className="text-xs text-muted">{pasted} linha(s) importada(s) nesta edição podem ser removidas uma a uma na tabela.</span>}
           </div>
           {preview && (
             <div className="rounded-md border border-line bg-paper p-4 space-y-3">
@@ -579,13 +591,67 @@ function PanelAdmin({ editionId, run, confirm, onChanged }: {
             <Field label="Número do processo SEI em que consta a desistência">
               <input className="input" required autoFocus maxLength={100} value={sei} onChange={e => setSei(e.target.value)} placeholder="0000000-00.2026.8.16.6000" />
             </Field>
+            <Field label="Data do pedido de desistência">
+              <input className="input" type="date" required value={requestDate} max={today()} onChange={e => setRequestDate(e.target.value)} />
+            </Field>
             <div className="flex justify-end gap-2">
               <button type="button" className="btn-ghost" onClick={() => setDropping(null)}>Cancelar</button>
-              <button className="btn-primary" disabled={sei.trim().length < 3}>Registrar desistência</button>
+              <button className="btn-primary" disabled={sei.trim().length < 3 || !requestDate}>Registrar desistência</button>
             </div>
           </form>
         </Modal>
       )}
+    </div>
+  );
+}
+
+/* ---------- Backup e restauração ---------- */
+function BackupAdmin({ run, confirm, onRestored }: { run: RunFn; confirm: (m: string, label?: string) => Promise<boolean>; onRestored: () => void }) {
+  const [summary, setSummary] = useState<null | { name: string; data: any; counts: string }>(null);
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const { toast } = useFeedback();
+
+  const pick = async (file?: File | null) => {
+    setSummary(null);
+    if (!file) return;
+    try {
+      const data = JSON.parse(await file.text());
+      if (data?.app !== 'mutirao-cgj' || !Array.isArray(data.editions)) throw new Error();
+      const n = (k: string) => (Array.isArray(data[k]) ? data[k].length : 0);
+      setSummary({ name: file.name, data, counts: `${n('editions')} edição(ões), ${n('magistrates')} magistrado(s), ${n('units')} unidade(s), ${n('matches')} vinculação(ões), ${n('withdrawals')} desistência(s)` });
+    } catch { toast('O arquivo escolhido não é um backup válido deste sistema.', 'danger'); }
+  };
+  const restore = async () => {
+    if (!summary) return;
+    if (!(await confirm(`Restaurar o backup "${summary.name}" (${summary.counts})? Os dados atuais de edições, magistrados, unidades, vinculações, desistências e perguntas frequentes serão SUBSTITUÍDOS. Faça um backup dos dados atuais antes, se necessário.`, 'Restaurar backup'))) return;
+    setBusy(true);
+    const r = await run(() => api('/backup/restore', { method: 'POST', json: { confirm: 'RESTAURAR', data: summary.data } }), 'Backup restaurado.');
+    setBusy(false);
+    if (r) { setSummary(null); setText(String(Date.now())); onRestored(); }
+  };
+
+  return (
+    <div className="space-y-6">
+      <Toolbar title="Backup e restauração" />
+      <div className="card p-5 space-y-3">
+        <h4 className="font-semibold text-navy">Exportar backup</h4>
+        <p className="text-sm text-muted">Salva em um único arquivo (.json) todas as edições, magistrados, unidades, vinculações, desistências, perguntas frequentes e o registro de atividades.
+          O arquivo contém dados pessoais (nomes, e-mails e IPs): guarde-o em local seguro. Não inclui a senha nem o segredo do aplicativo autenticador.</p>
+        <button className="btn-primary btn-sm" onClick={() => run(() => download('/backup', 'backup-mutirao.json'))}><Download className="w-4 h-4" /> Exportar backup</button>
+      </div>
+      <div className="card p-5 space-y-3">
+        <h4 className="font-semibold text-navy">Restaurar a partir de um backup</h4>
+        <Notice tone="danger">A restauração <strong>substitui</strong> os dados atuais pelos do arquivo. O registro de atividades é preservado e recebe uma entrada sobre a restauração.</Notice>
+        <input key={text} type="file" accept=".json,application/json" className="text-sm" aria-label="Arquivo de backup" onChange={e => pick(e.target.files?.[0])} />
+        {summary && (
+          <div className="rounded-md border border-line bg-paper p-4 space-y-3 text-sm">
+            <div><strong className="text-ink">{summary.name}</strong>{summary.data.exportedAt && <span className="text-muted"> · gerado em {formatDateTime(summary.data.exportedAt)}</span>}</div>
+            <div className="text-muted">Contém: {summary.counts}.</div>
+            <button className="btn-danger !bg-danger-soft" disabled={busy} onClick={restore}><RotateCcw className="w-4 h-4" /> Restaurar este backup</button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -1013,11 +1079,12 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             <button className="btn-primary btn-sm" onClick={() => setModal('mag')}><Plus className="w-4 h-4" /> Cadastrar</button>
             <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/csv?type=magistrates&${q}`, 'magistrados.csv')}><Download className="w-4 h-4" /> CSV</button>
           </Toolbar>
+          <EditionFilter editions={editions} value={selectedId} onChange={setSelectedId} what="magistrados" />
           <Table head={['Magistrado(a)', <SortHeader key="d" label="Inscrição" dir={sortDir.magistrates} onToggle={() => toggleSort('magistrates')} />, 'Lotação', 'Preferências', 'Audiências', 'Status', 'Ações']}>
             {magistrates.length === 0 && <EmptyRow cols={7}>Nenhuma inscrição nesta edição.</EmptyRow>}
             {sortedMagistrates.map(m => (
               <tr key={m.id}>
-                <td className="td"><div className="font-medium">{m.name}</div><div className="text-xs text-muted">{m.email}</div>{m.registeredIp && <div className="text-[11px] text-muted/80">IP {m.registeredIp}</div>}{m.declaration && <div className="text-[11px] text-ok mt-0.5">Declaração de regularidade aceita</div>}</td>
+                <td className="td"><div className="font-medium">{m.name}</div><div className="text-xs text-muted">{m.email}</div>{m.registeredIp && <div className="text-[11px] text-muted/80">IP {m.registeredIp}</div>}{m.declaration && <div className="text-[11px] text-ok mt-0.5">Declaração de regularidade aceita</div>}{m.priorWithdrawal && <div className="text-[11px] text-warn mt-0.5">Já desistiu antes (SEI {m.priorWithdrawal.sei}{m.priorWithdrawal.requestDate ? `, pedido em ${m.priorWithdrawal.requestDate.split('-').reverse().join('/')}` : ''}). Se deferida esta inscrição, a desistência passa a valer só para o período anterior.</div>}</td>
                 <td className="td"><DateCell iso={m.createdAt} /></td>
                 <td className="td text-muted">{m.currentLocation}</td>
                 <td className="td text-xs"><div className="text-bronze font-medium">1ª: {m.firstPreference}</div><div className="text-muted">2ª: {m.secondPreference || '—'}</div></td>
@@ -1058,6 +1125,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/xlsx/unlinked-units?${q}`, 'unidades-sem-magistrado.xlsx')}><Download className="w-4 h-4" /> Sem magistrado (XLSX)</button>
             <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/csv?type=units&${q}`, 'unidades.csv')}><Download className="w-4 h-4" /> CSV</button>
           </Toolbar>
+          <EditionFilter editions={editions} value={selectedId} onChange={setSelectedId} what="unidades" />
           <Table head={['Unidade / Comarca', <SortHeader key="d" label="Inscrição" dir={sortDir.units} onToggle={() => toggleSort('units')} />, 'Áreas e auxílio', 'Magistrados', 'Triagem', 'Status', 'Ações']}>
             {units.length === 0 && <EmptyRow cols={7}>Nenhuma unidade inscrita nesta edição.</EmptyRow>}
             {sortedUnits.map(u => {
@@ -1173,7 +1241,8 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       )}
 
       {/* ---------- Painel público ---------- */}
-      {sub === 'panel' && <PanelAdmin editionId={selectedId} run={run} confirm={confirm} onChanged={onEditionsChanged} />}
+      {sub === 'backup' && <BackupAdmin run={run} confirm={confirm} onRestored={refresh} />}
+      {sub === 'panel' && <PanelAdmin run={run} confirm={confirm} onChanged={refresh} />}
 
       {/* ---------- Perguntas frequentes ---------- */}
       {sub === 'faq' && (
@@ -1240,7 +1309,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       {/* ---------- Modais ---------- */}
       {modal === 'mag' && (
         <Modal title="Cadastrar magistrado" onClose={() => setModal(null)}>
-          <MagistrateForm withStatus submitLabel="Salvar magistrado" onSubmit={async p => {
+          <MagistrateForm withStatus relaxed={selected?.isInitial} submitLabel="Salvar magistrado" onSubmit={async p => {
             const r = await run(() => api('/magistrates', { method: 'POST', json: withEdition(p) }), 'Magistrado incluído.');
             if (r) { setModal(null); refresh(); }
             return !!r;
@@ -1249,7 +1318,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       )}
       {modal === 'unit' && (
         <Modal title="Cadastrar unidade judicial" onClose={() => setModal(null)}>
-          <UnitForm withSlots submitLabel="Salvar unidade" onSubmit={async p => {
+          <UnitForm withSlots relaxed={selected?.isInitial} submitLabel="Salvar unidade" onSubmit={async p => {
             const r = await run(() => api('/units', { method: 'POST', json: withEdition(p) }), 'Unidade incluída.');
             if (r) { setModal(null); refresh(); }
             return !!r;
@@ -1295,7 +1364,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       )}
       {modal === 'mag-edit' && editingMag && (
         <Modal title="Editar magistrado" onClose={() => setModal(null)}>
-          <MagistrateForm withStatus initial={editingMag} submitLabel="Salvar alterações" onSubmit={async p => {
+          <MagistrateForm withStatus relaxed={selected?.isInitial} initial={editingMag} submitLabel="Salvar alterações" onSubmit={async p => {
             const r = await run(() => api(`/magistrates/${editingMag.id}`, { method: 'PUT', json: p }), 'Inscrição atualizada.');
             if (r) { setModal(null); refresh(); }
             return !!r;
@@ -1304,7 +1373,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       )}
       {modal === 'unit-edit' && editingUnit && (
         <Modal title="Editar unidade judicial" onClose={() => setModal(null)}>
-          <UnitForm withSlots initial={editingUnit} submitLabel="Salvar alterações" onSubmit={async p => {
+          <UnitForm withSlots relaxed={selected?.isInitial} initial={editingUnit} submitLabel="Salvar alterações" onSubmit={async p => {
             const r = await run(() => api(`/units/${editingUnit.id}`, { method: 'PUT', json: p }), 'Unidade atualizada.');
             if (r) { setModal(null); refresh(); }
             return !!r;

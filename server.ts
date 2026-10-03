@@ -31,6 +31,8 @@ interface Edition {
   isRegistrationOpen: boolean;
   status: 'Em andamento' | 'Encerrada';
   createdAt: string;
+  /** Edição "Vinculações iniciais": guarda as designações já existentes; aceita registros com dados em branco */
+  isInitial?: boolean;
 }
 
 interface Magistrate {
@@ -317,7 +319,7 @@ let faq: FaqItem[] = [];
 interface PanelEntry { id: string; editionId: string; name: string; area: string; unit: string; createdAt: string }
 let panelEntries: PanelEntry[] = [];
 /** Desistências de participação, com o número do processo SEI em que constam. */
-interface Withdrawal { id: string; editionId: string; name: string; area: string; unit: string; sei: string; createdAt: string }
+interface Withdrawal { id: string; editionId: string; name: string; area: string; unit: string; sei: string; /** data do pedido de desistência (AAAA-MM-DD) */ requestDate?: string; magistrateIds?: string[]; /** nova inscrição deferida: a desistência vale só até esta data */ endedAt?: string; returnedMagistrateId?: string; createdAt: string }
 let withdrawals: Withdrawal[] = [];
 
 /** Autenticação em dois fatores (TOTP) do administrador; o segredo é gravado junto do estado. */
@@ -415,40 +417,46 @@ const freeText = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().
 type Parsed<T> = { error: string } | { value: T };
 
 /** `strict` (inscrição pública): o aceite de audiências é obrigatório e precisa vir preenchido. A 2ª escolha é opcional. */
-function parseMagistrate(b: any, base?: Magistrate, strict = false): Parsed<Pick<Magistrate, 'name' | 'email' | 'currentLocation' | 'firstPreference' | 'secondPreference' | 'acceptsHearings'>> {
+function parseMagistrate(b: any, base?: Magistrate, strict = false, lenient = false): Parsed<Pick<Magistrate, 'name' | 'email' | 'currentLocation' | 'firstPreference' | 'secondPreference' | 'acceptsHearings'>> {
   const pick = (k: keyof Magistrate) => (b?.[k] == null && base ? base[k] : b?.[k]);
   const name = cleanText(pick('name'), 200);
-  const email = cleanText(pick('email'), 200);
-  const currentLocation = cleanText(pick('currentLocation'), 300);
-  if (!name || !email || !currentLocation) {
+  const email = cleanText(pick('email'), 200) ?? '';
+  const currentLocation = cleanText(pick('currentLocation'), 300) ?? '';
+  // Edição "Vinculações iniciais": só o nome é obrigatório; e-mail, lotação e áreas podem ficar em branco ou em texto livre
+  if (!name || (!lenient && (!email || !currentLocation))) {
     return { error: 'Preencha nome, e-mail e lotação com texto válido (nome até 200, lotação até 300 caracteres).' };
   }
-  if (!EMAIL_RE.test(email)) return { error: 'Informe um e-mail válido.' };
-  if ((!base || email.toLowerCase() !== base.email.toLowerCase()) && !emailDomainOk(email)) return { error: EMAIL_DOMAIN_MESSAGE };
-  const first = pick('firstPreference');
-  if (typeof first !== 'string' || !PREFERENCE_AREAS.includes(first)) return { error: 'Escolha uma área válida na 1ª escolha.' };
+  if (!(lenient && !email)) {
+    if (!EMAIL_RE.test(email)) return { error: 'Informe um e-mail válido.' };
+    if (!lenient && (!base || email.toLowerCase() !== base.email.toLowerCase()) && !emailDomainOk(email)) return { error: EMAIL_DOMAIN_MESSAGE };
+  }
+  const first = lenient ? cleanText(pick('firstPreference') ?? '', 150) : pick('firstPreference');
+  if (typeof first !== 'string' || (!lenient && !PREFERENCE_AREAS.includes(first))) return { error: 'Escolha uma área válida na 1ª escolha.' };
   const second = pick('secondPreference') ?? '';
-  if (typeof second !== 'string' || (second !== '' && !PREFERENCE_AREAS.includes(second))) return { error: 'Escolha uma área válida na 2ª escolha.' };
+  if (typeof second !== 'string' || (!lenient && second !== '' && !PREFERENCE_AREAS.includes(second))) return { error: 'Escolha uma área válida na 2ª escolha.' };
   if (second && second === first) return { error: 'A 2ª escolha não pode ser igual à 1ª escolha.' };
   const hearings = pick('acceptsHearings');
   if (strict && typeof hearings !== 'boolean') return { error: 'Informe se aceita realizar audiências.' };
   return { value: { name, email, currentLocation, firstPreference: first, secondPreference: second, acceptsHearings: hearings === true } };
 }
 
-function parseUnit(b: any, base?: Unit): Parsed<Pick<Unit, 'unitName' | 'judgeName' | 'email' | 'comarca' | 'areas' | 'supportNeeded' | 'description' | 'slots'>> {
+function parseUnit(b: any, base?: Unit, lenient = false): Parsed<Pick<Unit, 'unitName' | 'judgeName' | 'email' | 'comarca' | 'areas' | 'supportNeeded' | 'description' | 'slots'>> {
   const pick = (k: keyof Unit) => (b?.[k] == null && base ? base[k] : b?.[k]);
   const unitName = cleanText(pick('unitName'), 300);
-  const judgeName = cleanText(pick('judgeName'), 200);
-  const email = cleanText(pick('email'), 200);
-  const comarca = cleanText(pick('comarca'), 150);
-  if (!unitName || !judgeName || !email || !comarca) {
+  const judgeName = cleanText(pick('judgeName'), 200) ?? '';
+  const email = cleanText(pick('email'), 200) ?? '';
+  const comarca = cleanText(pick('comarca'), 150) ?? '';
+  if (!unitName || (!lenient && (!judgeName || !email || !comarca))) {
     return { error: 'Preencha comarca, unidade, responsável e e-mail com texto válido.' };
   }
-  if (!EMAIL_RE.test(email)) return { error: 'Informe um e-mail válido.' };
-  if ((!base || email.toLowerCase() !== base.email.toLowerCase()) && !emailDomainOk(email)) return { error: EMAIL_DOMAIN_MESSAGE };
+  if (!(lenient && !email)) {
+    if (!EMAIL_RE.test(email)) return { error: 'Informe um e-mail válido.' };
+    if (!lenient && (!base || email.toLowerCase() !== base.email.toLowerCase()) && !emailDomainOk(email)) return { error: EMAIL_DOMAIN_MESSAGE };
+  }
   const areas = pick('areas');
-  if (!Array.isArray(areas) || areas.length < 1 || areas.length > PREFERENCE_AREAS.length
-    || !areas.every((a) => typeof a === 'string' && PREFERENCE_AREAS.includes(a))) {
+  if (!Array.isArray(areas) || areas.length < 1 || areas.length > PREFERENCE_AREAS.length + 10
+    || !areas.every((a) => typeof a === 'string' && (lenient ? a.trim() !== '' && a.length <= 150 : PREFERENCE_AREAS.includes(a)))
+    || (!lenient && areas.length > PREFERENCE_AREAS.length)) {
     return { error: 'Selecione ao menos uma área válida.' };
   }
   const support = pick('supportNeeded') ?? 'Sentença';
@@ -699,6 +707,84 @@ function saveState(): Promise<boolean> {
   return saving;
 }
 
+
+// ---------- Edição "Vinculações iniciais" ----------
+// Guarda as designações já existentes (importadas de planilha). Nunca é a edição vigente do portal e não recebe inscrições públicas.
+const INITIAL_EDITION_TITLE = 'Vinculações iniciais';
+const normName = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+
+function ensureInitialEdition(): Edition {
+  let ed = editions.find((e) => e.isInitial) ?? editions.find((e) => normName(e.title) === normName(INITIAL_EDITION_TITLE));
+  if (!ed) {
+    ed = {
+      id: newId('ed'), title: INITIAL_EDITION_TITLE,
+      description: 'Designações já existentes (magistrado, área e unidade). Altere aqui as varas para atualizar o painel de vinculações.',
+      openingDate: '2026-01-01T00:00', closingDate: '2026-01-01T00:00',
+      isRegistrationOpen: false, status: 'Em andamento', createdAt: new Date().toISOString(), isInitial: true,
+    };
+    editions.push(ed);
+    log(ed.id, 'Sistema', 'Edição', `Edição "${ed.title}" criada.`);
+  }
+  ed.isInitial = true;
+  ed.isRegistrationOpen = false;
+  return ed;
+}
+
+/** Chave de comparação de nomes de pessoas: sem acentos, sem diferença de caixa/pontuação e sem tratamentos (Dr., Dra., Juiz...). */
+const PERSON_TITLES = new Set(['dr', 'dra', 'juiz', 'juiza', 'des', 'desa', 'desembargador', 'desembargadora', 'exmo', 'exma', 'sr', 'sra']);
+const personKey = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z\s]/g, ' ')
+  .split(/\s+/).filter((w) => w && !PERSON_TITLES.has(w)).join(' ');
+
+/**
+ * Quem desistiu pode pedir nova inscrição. Quando uma inscrição do mesmo nome (comparação sem acento e sem diferença de caixa)
+ * é deferida (Aprovado / Lista de Espera / Atribuído), a desistência passa a valer apenas para o período anterior: fica registrada como encerrada.
+ */
+function reconcileWithdrawals() {
+  const approved = ['Aprovado', 'Lista de Espera', 'Atribuído'];
+  for (const w of withdrawals) {
+    if (w.endedAt) continue;
+    const key = personKey(w.name);
+    const ids = new Set(w.magistrateIds ?? []);
+    const back = magistrates.find((m) => approved.includes(m.status) && personKey(m.name) === key && (ids.has(m.id) || (m.createdAt > w.createdAt && !ids.has(m.id))));
+    if (!back) continue;
+    w.endedAt = new Date().toISOString();
+    w.returnedMagistrateId = back.id;
+    log(back.editionId, 'Sistema', 'Magistrado', `Nova inscrição de ${back.name} deferida: a desistência (SEI ${w.sei}) passa a valer apenas para o período de ${w.requestDate ? w.requestDate.split('-').reverse().join('/') : 'registro'} até hoje.`);
+  }
+}
+
+/** Cria magistrado, unidade (reaproveitada pelo nome) e vinculação reais na edição inicial; campos desconhecidos ficam em branco. */
+function createInitialLink(r: { name: string; area: string; unit: string }) {
+  const ed = ensureInitialEdition();
+  const now = new Date().toISOString();
+  let unit = units.find((u) => u.editionId === ed.id && normName(u.unitName) === normName(r.unit));
+  if (!unit) {
+    unit = {
+      id: newId('unit'), editionId: ed.id, unitName: r.unit, judgeName: '', email: '', comarca: '', areas: [r.area],
+      supportNeeded: 'Audiência e Sentença', description: '', createdAt: now, status: 'Pendente', selection: 'Escolhida', slots: 1,
+    };
+    units.push(unit);
+  } else if (!unit.areas.some((a) => normName(a) === normName(r.area))) unit.areas.push(r.area);
+  const mag: Magistrate = {
+    id: newId('mag'), editionId: ed.id, name: r.name, email: '', currentLocation: '', firstPreference: r.area, secondPreference: '',
+    acceptsHearings: false, createdAt: now, status: 'Atribuído',
+  };
+  magistrates.push(mag);
+  unit.slots = Math.max(unit.slots || 1, linkedCount(unit.id) + 1);
+  matches.push({ id: newId('match'), editionId: ed.id, magistrateId: mag.id, unitId: unit.id, assignedArea: r.area, workType: 'Audiência e Sentença', status: 'Vinculado', createdAt: now });
+  refreshUnitStatus(unit.id);
+}
+
+/** Linhas coladas de versões anteriores viram vinculações reais na edição inicial (uma única vez). */
+function migratePanelEntries() {
+  ensureInitialEdition();
+  if (panelEntries.length === 0) return;
+  const count = panelEntries.length;
+  for (const e of panelEntries) createInitialLink(e);
+  panelEntries = [];
+  log(null, 'Sistema', 'Vinculação', `${count} designação(ões) importada(s) de planilha convertida(s) em vinculações da edição "${INITIAL_EDITION_TITLE}".`);
+}
+
 async function startServer() {
   const app = express();
   app.disable('x-powered-by');
@@ -725,9 +811,12 @@ async function startServer() {
 
   const smallJson = express.json({ limit: '50kb' });
   const bigJson = express.json({ limit: '1mb' }); // colagem de planilhas inteiras no painel de vinculações
-  app.use((req, res, next) => (req.path === '/api/panel/import' ? bigJson : smallJson)(req, res, next));
+  const hugeJson = express.json({ limit: '40mb' }); // restauração de backup (só com sessão administrativa válida)
+  app.use((req, res, next) => (req.path === '/api/panel/import' ? bigJson : req.path === '/api/backup/restore' && hasValidToken(req) ? hugeJson : smallJson)(req, res, next));
   await loadState();
   normalizeLegacy();
+  migratePanelEntries();
+  await saveState();
   // Perdeu o celular do autenticador? Defina RESET_ADMIN_2FA=true, publique, entre (será pedido novo cadastro) e remova a variável.
   if (process.env.RESET_ADMIN_2FA === 'true' && adminTotpSecret) {
     adminTotpSecret = null;
@@ -793,6 +882,7 @@ async function startServer() {
       res.json = (body: any) => {
         // Respostas de erro (4xx/5xx) não alteraram o estado: não há o que gravar (salvo registros de segurança)
         if ((res.statusCode >= 400 || readOnlyPost) && !res.locals.persist) return json(body);
+        reconcileWithdrawals();
         saveState().then((ok) => {
           if (ok) return json(body);
           res.status(500);
@@ -1033,31 +1123,20 @@ async function startServer() {
     return /^(nome|magistrad|juiz|juiza)/.test(a) && b.startsWith('area') && /^(design|unidade|vara|lotac)/.test(c);
   }
 
-  /** Uma designação do painel: vinda do sistema (kind 'match', com vínculo real) ou colada de planilha (kind 'entry'). */
-  interface PanelRow { id: string; kind: 'match' | 'entry'; name: string; area: string; unit: string; comarca?: string; workType?: string }
+  /** Uma designação vigente: vinculação real de qualquer edição. Vale até que seja registrada a desistência. */
+  interface PanelRow { id: string; editionId: string; editionTitle: string; magistrateId: string; name: string; area: string; unit: string; comarca?: string; workType?: string }
 
-  /** Tabela única de designações vigentes da edição, sem separar a origem. Desistentes não constam. */
-  function panelRows(editionId: string): PanelRow[] {
+  /** Tabela única com as designações vigentes de TODAS as edições (as de edições anteriores continuam valendo até a desistência). */
+  function panelRows(): PanelRow[] {
     const seen = new Map<string, PanelRow>();
-    const add = (r: PanelRow) => { const k = panelKey(r); if (!seen.has(k)) seen.set(k, r); };
-    for (const mt of matches.filter((m) => m.editionId === editionId)) {
+    for (const mt of matches) {
       const mag = magistrates.find((m) => m.id === mt.magistrateId);
       const un = units.find((u) => u.id === mt.unitId);
-      if (mag && un) add({ id: mt.id, kind: 'match', name: mag.name, area: mt.assignedArea, unit: un.unitName, comarca: un.comarca, workType: mt.workType });
+      if (!mag || !un || mag.status === 'Desistente') continue;
+      const k = `${panelKey({ name: mag.name, area: mt.assignedArea, unit: un.unitName })}|${mt.editionId}`;
+      if (!seen.has(k)) seen.set(k, { id: mt.id, editionId: mt.editionId, editionTitle: editionById(mt.editionId)?.title ?? '', magistrateId: mag.id, name: mag.name, area: mt.assignedArea, unit: un.unitName, comarca: un.comarca, workType: mt.workType });
     }
-    panelEntries.filter((e) => e.editionId === editionId && !isHeaderRow(e.name, e.area, e.unit))
-      .forEach((e) => add({ id: e.id, kind: 'entry', name: e.name, area: e.area, unit: e.unit }));
     return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR') || a.unit.localeCompare(b.unit, 'pt-BR'));
-  }
-
-  /** Linhas coladas que passaram a existir também como vinculação do sistema deixam de ser separadas: ficam só como vínculo real. */
-  function absorbEntries(editionId: string) {
-    const keys = new Set(matches.filter((m) => m.editionId === editionId).flatMap((mt) => {
-      const mag = magistrates.find((m) => m.id === mt.magistrateId);
-      const un = units.find((u) => u.id === mt.unitId);
-      return mag && un ? [panelKey({ name: mag.name, area: mt.assignedArea, unit: un.unitName })] : [];
-    }));
-    panelEntries = panelEntries.filter((e) => e.editionId !== editionId || !keys.has(panelKey(e)));
   }
 
   /** Desfaz uma vinculação (o painel é calculado a partir delas, então a linha some automaticamente). */
@@ -1091,21 +1170,18 @@ async function startServer() {
     return rows;
   }
 
-  app.get('/api/panel/admin', (req, res) => {
-    const edition = resolveEdition(req);
-    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+  app.get('/api/panel/admin', (_req, res) => {
     res.json({
-      edition: { id: edition.id, title: edition.title },
-      rows: panelRows(edition.id),
-      withdrawals: withdrawals.filter((w) => w.editionId === edition.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+      rows: panelRows(),
+      withdrawals: [...withdrawals].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+      initialEdition: { id: ensureInitialEdition().id, title: INITIAL_EDITION_TITLE },
     });
   });
 
   // Importa linhas coladas de planilha: Nome / Área / Designado Para (com ou sem linha de cabeçalho).
+  // Cada linha vira uma vinculação real na edição "Vinculações iniciais" (campos desconhecidos em branco), que pode ser ajustada depois.
   // dryRun = apenas confere e mostra o que seria importado.
   app.post('/api/panel/import', (req, res) => {
-    const edition = resolveEdition(req);
-    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
     const text = req.body?.text;
     if (typeof text !== 'string' || !text.trim()) return res.status(400).json({ error: 'Cole as linhas da planilha (colunas Nome, Área e Designado Para).' });
     if (text.length > 900_000) return res.status(400).json({ error: 'Texto grande demais. Divida a planilha em partes.' });
@@ -1120,7 +1196,7 @@ async function startServer() {
 
     const inBatch = new Set<string>();
     let duplicates = 0;
-    const existing = new Set(panelRows(edition.id).map(panelKey)); // já consta no painel (do sistema ou colada)
+    const existing = new Set(panelRows().map(panelKey)); // já consta no painel
     for (let i = start; i < raw.length; i++) {
       const [name, area, unit] = [cleanCell(raw[i][0] ?? ''), cleanCell(raw[i][1] ?? ''), cleanCell(raw[i][2] ?? '')];
       const line = i + 1;
@@ -1141,48 +1217,40 @@ async function startServer() {
     if (valid.length === 0 && duplicates > 0) return res.json({ success: true, imported: 0, duplicates, ignored: errors.length }); // tudo já constava no painel
     if (valid.length === 0) return res.status(400).json({ error: 'Nenhuma linha válida para importar.' });
 
-    const now = new Date().toISOString();
-    valid.forEach((v) => panelEntries.push({ id: newId('pn'), editionId: edition.id, ...v, createdAt: now }));
-    log(edition.id, 'Administração', 'Vinculação', `Painel de vinculações: ${valid.length} designação(ões) importada(s) de planilha${errors.length ? `; ${errors.length} linha(s) ignorada(s)` : ''}.`);
+    valid.forEach(createInitialLink);
+    log(ensureInitialEdition().id, 'Administração', 'Vinculação', `Painel de vinculações: ${valid.length} designação(ões) importada(s) de planilha para a edição "${INITIAL_EDITION_TITLE}"${errors.length ? `; ${errors.length} linha(s) ignorada(s)` : ''}.`);
     res.json({ success: true, imported: valid.length, duplicates, ignored: errors.length });
   });
 
-  // Exclui uma designação do painel: se for vinculação do sistema, a vinculação é desfeita; se for linha colada, é removida.
-  app.delete('/api/panel/rows/:kind/:id', (req, res) => {
-    const { kind, id } = req.params;
-    if (kind === 'match') {
-      if (!matches.some((m) => m.id === id)) return res.status(404).json({ error: 'Vinculação não encontrada.' });
-      undoMatch(id, 'Vinculação desfeita pelo painel');
-    } else if (kind === 'entry') {
-      const entry = panelEntries.find((e) => e.id === id);
-      if (!entry) return res.status(404).json({ error: 'Designação não encontrada.' });
-      log(entry.editionId, 'Administração', 'Vinculação', `Painel de vinculações: designação removida (${entry.name} — ${entry.unit}).`);
-      panelEntries = panelEntries.filter((e) => e.id !== id);
-    } else return res.status(400).json({ error: 'Tipo inválido.' });
+  // Exclui uma designação do painel = desfaz a vinculação.
+  app.delete('/api/panel/rows/:id', (req, res) => {
+    if (!matches.some((m) => m.id === req.params.id)) return res.status(404).json({ error: 'Vinculação não encontrada.' });
+    undoMatch(req.params.id, 'Vinculação desfeita pelo painel');
     res.json({ success: true });
   });
 
-  // Registra a desistência de um magistrado: sai de todas as designações vigentes e passa à relação de desistentes.
+  // Registra a desistência de um magistrado: sai de todas as designações vigentes (de qualquer edição) e passa à relação de desistentes.
   app.post('/api/panel/withdrawals', (req, res) => {
-    const edition = resolveEdition(req);
-    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
     const name = typeof req.body?.name === 'string' ? cleanCell(req.body.name) : '';
     const sei = typeof req.body?.sei === 'string' ? cleanCell(req.body.sei) : '';
+    const requestDate = typeof req.body?.requestDate === 'string' ? req.body.requestDate.trim() : '';
     if (!name) return res.status(400).json({ error: 'Magistrado não informado.' });
     if (sei.length < 3 || sei.length > 100) return res.status(400).json({ error: 'Informe o número do processo SEI em que consta a desistência.' });
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(requestDate) || Number.isNaN(Date.parse(`${requestDate}T00:00:00${BRT}`)) || requestDate < '2000-01-01') {
+      return res.status(400).json({ error: 'Informe a data do pedido de desistência.' });
+    }
 
-    const rows = panelRows(edition.id).filter((r) => norm(r.name) === norm(name));
+    const rows = panelRows().filter((r) => norm(r.name) === norm(name));
     if (rows.length === 0) return res.status(404).json({ error: 'Este magistrado não consta no painel de vinculações.' });
     const uniq = (xs: string[]) => [...new Set(xs)].join(' / ');
     const record: Withdrawal = {
-      id: newId('wd'), editionId: edition.id, name: rows[0].name, sei, createdAt: new Date().toISOString(),
-      area: uniq(rows.map((r) => r.area)), unit: uniq(rows.map((r) => unitLabel(r))),
+      id: newId('wd'), editionId: rows[0].editionId, name: rows[0].name, sei, requestDate, createdAt: new Date().toISOString(),
+      area: uniq(rows.map((r) => r.area)), unit: uniq(rows.map((r) => unitLabel(r))), magistrateIds: [...new Set(rows.map((r) => r.magistrateId))],
     };
-    rows.filter((r) => r.kind === 'match').forEach((r) => undoMatch(r.id, 'Vinculação desfeita por desistência'));
-    panelEntries = panelEntries.filter((e) => e.editionId !== edition.id || norm(e.name) !== norm(name));
-    magistrates.filter((m) => m.editionId === edition.id && norm(m.name) === norm(name)).forEach((m) => { m.status = 'Desistente'; });
+    rows.forEach((r) => undoMatch(r.id, 'Vinculação desfeita por desistência'));
+    record.magistrateIds!.forEach((id) => { const m = magistrates.find((x) => x.id === id); if (m) m.status = 'Desistente'; });
     withdrawals.push(record);
-    log(edition.id, 'Administração', 'Magistrado', `Desistência registrada: ${record.name} (SEI ${sei}). Designações retiradas: ${record.unit}.`);
+    log(rows[0].editionId, 'Administração', 'Magistrado', `Desistência registrada: ${record.name} (SEI ${sei}, pedido em ${requestDate.split('-').reverse().join('/')}). Designações retiradas: ${record.unit}.`);
     res.status(201).json({ success: true, withdrawal: record });
   });
 
@@ -1191,36 +1259,22 @@ async function startServer() {
     const w = withdrawals.find((x) => x.id === req.params.id);
     if (!w) return res.status(404).json({ error: 'Registro não encontrado.' });
     withdrawals = withdrawals.filter((x) => x.id !== w.id);
-    if (!withdrawals.some((x) => x.editionId === w.editionId && norm(x.name) === norm(w.name))) {
-      magistrates.filter((m) => m.editionId === w.editionId && norm(m.name) === norm(w.name) && m.status === 'Desistente')
-        .forEach((m) => { m.status = 'Lista de Espera'; });
-    }
+    const ids = new Set(w.magistrateIds ?? magistrates.filter((m) => norm(m.name) === norm(w.name) && m.editionId === w.editionId).map((m) => m.id));
+    magistrates.filter((m) => ids.has(m.id) && m.status === 'Desistente').forEach((m) => { m.status = 'Lista de Espera'; });
     log(w.editionId, 'Administração', 'Magistrado', `Registro de desistência desfeito: ${w.name} (SEI ${w.sei}).`);
     res.json({ success: true });
   });
 
-  app.post('/api/panel/clear', (req, res) => {
-    const edition = resolveEdition(req);
-    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
-    if (!confirmedWipe(req)) return res.status(400).json({ error: 'Confirmação ausente.' });
-    const count = panelEntries.filter((e) => e.editionId === edition.id).length;
-    panelEntries = panelEntries.filter((e) => e.editionId !== edition.id);
-    log(edition.id, 'Administração', 'Vinculação', `Painel de vinculações: ${count} linha(s) coladas removidas.`);
-    res.json({ success: true, count });
-  });
-
   // Relatório em PDF: designações vigentes (total e por área) e desistentes (com o SEI).
-  app.get('/api/panel/report.pdf', (req, res) => {
-    const edition = resolveEdition(req);
-    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
-    const rows = panelRows(edition.id);
-    const drops = withdrawals.filter((w) => w.editionId === edition.id).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+  app.get('/api/panel/report.pdf', (_req, res) => {
+    const rows = panelRows();
+    const drops = [...withdrawals].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
     const brt = (d: Date) => d.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', dateStyle: 'short', timeStyle: 'short' });
     const day = (iso: string) => new Date(iso).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
     // A fonte padrão do PDF cobre o alfabeto latino; troca o que estiver fora dele para não gerar lixo.
     const t = (x: string) => x.replace(/[^ -~ -ÿ–—‘’“”…•]/g, '?');
 
-    const doc = new PDFDocument({ size: 'A4', margin: 48, bufferPages: true, info: { Title: `Designações – ${edition.title}`, Author: 'Mutirão de Julgamento' } });
+    const doc = new PDFDocument({ size: 'A4', margin: 48, bufferPages: true, info: { Title: 'Designações vigentes e desistentes', Author: 'Mutirão de Julgamento' } });
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename=designacoes-${new Date().toISOString().slice(0, 10)}.pdf`);
     doc.pipe(res);
@@ -1266,7 +1320,7 @@ async function startServer() {
     // Cabeçalho
     doc.fillColor(BRONZE).font('Helvetica-Bold').fontSize(8).text('TRIBUNAL DE JUSTIÇA DO ESTADO DO PARANÁ  ·  CORREGEDORIA-GERAL DA JUSTIÇA', left, doc.y, { width });
     doc.moveDown(0.5).fillColor(NAVY).font('Helvetica-Bold').fontSize(18).text('Mutirão de Julgamento', left, doc.y, { width });
-    doc.fillColor('#1c2530').font('Helvetica').fontSize(11).text(t(edition.title), left, doc.y + 2, { width });
+    doc.fillColor('#1c2530').font('Helvetica').fontSize(11).text('Todas as edições', left, doc.y + 2, { width });
     doc.fillColor(MUTED).fontSize(9).text(`Relatório de designações — emitido em ${brt(new Date())} (horário de Brasília)`, left, doc.y + 4, { width });
     doc.moveDown(0.8);
     doc.moveTo(left, doc.y).lineTo(left + width, doc.y).lineWidth(1).strokeColor(BRONZE).stroke();
@@ -1276,10 +1330,10 @@ async function startServer() {
     doc.fillColor('#1c2530').font('Helvetica-Bold').fontSize(10)
       .text(`Designações vigentes: ${rows.length}   ·   Áreas de atuação: ${areas.length}   ·   Desistentes: ${drops.length}`, left, doc.y, { width });
 
-    heading('1. Designações vigentes — relação total', `${rows.length} designação(ões), em ordem alfabética.`);
+    heading('1. Designações vigentes — relação total', `${rows.length} designação(ões) de todas as edições, em ordem alfabética. Valem até o registro da desistência.`);
     if (rows.length === 0) doc.fillColor(MUTED).font('Helvetica').fontSize(9).text('Nenhuma designação vigente.', left, doc.y);
-    else table([{ label: 'Nº', w: 32 }, { label: 'Magistrado(a)', w: 170 }, { label: 'Área de atuação', w: 120 }, { label: 'Unidade designada', w: width - 322 }],
-      rows.map((r, i) => [String(i + 1), r.name, r.area, unitLabel(r)]));
+    else table([{ label: 'Nº', w: 28 }, { label: 'Magistrado(a)', w: 135 }, { label: 'Área de atuação', w: 100 }, { label: 'Unidade designada', w: width - 363 }, { label: 'Edição', w: 100 }],
+      rows.map((r, i) => [String(i + 1), r.name, r.area, unitLabel(r), r.editionTitle]));
 
     heading('2. Designações vigentes — por área de atuação');
     if (rows.length === 0) doc.fillColor(MUTED).font('Helvetica').fontSize(9).text('Nenhuma designação vigente.', left, doc.y);
@@ -1288,14 +1342,14 @@ async function startServer() {
       if (doc.y + 80 > bottom()) doc.addPage();
       doc.fillColor(BRONZE).font('Helvetica-Bold').fontSize(10.5).text(`${t(area)} — ${list.length} designação(ões)`, left, doc.y, { width });
       doc.moveDown(0.3);
-      table([{ label: 'Nº', w: 32 }, { label: 'Magistrado(a)', w: 200 }, { label: 'Unidade designada', w: width - 232 }],
-        list.map((r, i) => [String(i + 1), r.name, unitLabel(r)]));
+      table([{ label: 'Nº', w: 28 }, { label: 'Magistrado(a)', w: 160 }, { label: 'Unidade designada', w: width - 288 }, { label: 'Edição', w: 100 }],
+        list.map((r, i) => [String(i + 1), r.name, unitLabel(r), r.editionTitle]));
     });
 
-    heading('3. Desistentes', `${drops.length} magistrado(s) que desistiram da participação, com o processo SEI em que consta a desistência.`);
+    heading('3. Desistentes', `${drops.length} magistrado(s) que desistiram da participação, com o processo SEI e a data do pedido. Se houver nova inscrição deferida, a desistência vale apenas para o período anterior.`);
     if (drops.length === 0) doc.fillColor(MUTED).font('Helvetica').fontSize(9).text('Nenhuma desistência registrada.', left, doc.y);
-    else table([{ label: 'Magistrado(a)', w: 120 }, { label: 'Área', w: 70 }, { label: 'Unidade', w: 95 }, { label: 'Processo SEI', w: 135 }, { label: 'Data', w: width - 420 }],
-      drops.map((w) => [w.name, w.area, w.unit, w.sei, day(w.createdAt)]));
+    else table([{ label: 'Magistrado(a)', w: 100 }, { label: 'Área', w: 55 }, { label: 'Unidade', w: 70 }, { label: 'Processo SEI', w: 120 }, { label: 'Data do pedido', w: 62 }, { label: 'Situação', w: width - 407 }],
+      drops.map((w) => [w.name, w.area, w.unit, w.sei, w.requestDate ? w.requestDate.split('-').reverse().join('/') : '—', w.endedAt ? `Apenas no período, até ${day(w.endedAt)} (nova inscrição deferida)` : 'Em vigor']));
 
     // Numeração de páginas
     const range = doc.bufferedPageRange();
@@ -1306,6 +1360,55 @@ async function startServer() {
         .text(`Documento de uso restrito da administração  ·  Página ${i + 1} de ${range.count}`, left, doc.page.height - 34, { width, align: 'center', lineBreak: false });
     }
     doc.end();
+  });
+
+  // ---------- Backup e restauração ----------
+  // O arquivo contém dados pessoais (nomes, e-mails, IPs): guarde-o em local seguro. Não inclui senha nem o segredo do 2FA.
+  const BACKUP_APP = 'mutirao-cgj';
+  app.get('/api/backup', (_req, res) => {
+    const stamp = new Date().toLocaleString('sv-SE', { timeZone: 'America/Sao_Paulo' }).replace(' ', '_').replace(/:/g, '-').slice(0, 16);
+    log(null, 'Administração', 'Exportação', 'Backup completo dos dados exportado.');
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename=backup-mutirao-${stamp}.json`);
+    res.send(JSON.stringify({
+      app: BACKUP_APP, version: 1, exportedAt: new Date().toISOString(), activeEditionId,
+      editions, magistrates, units, matches, faq, withdrawals, log: activityLog,
+    }));
+  });
+
+  // Restaura um backup: SUBSTITUI edições, magistrados, unidades, vinculações, desistências e perguntas frequentes pelos do arquivo.
+  // O registro de atividades é preservado (nunca se apaga) e recebe as entradas do arquivo que ainda não existirem.
+  app.post('/api/backup/restore', (req, res) => {
+    if (req.body?.confirm !== 'RESTAURAR') return res.status(400).json({ error: 'Confirmação ausente.' });
+    const d = req.body?.data;
+    if (!d || typeof d !== 'object' || d.app !== BACKUP_APP || d.version !== 1) return res.status(400).json({ error: 'Arquivo de backup inválido ou de outra versão.' });
+    const arr = (k: string, required = false): any[] | null => {
+      const v = d[k];
+      if (v === undefined && !required) return [];
+      return Array.isArray(v) && v.every((x) => x && typeof x === 'object' && typeof x.id === 'string' && x.id) ? v : null;
+    };
+    const [eds, mags, uns, mts, fq, wds, lg] = [arr('editions', true), arr('magistrates', true), arr('units', true), arr('matches', true), arr('faq'), arr('withdrawals'), arr('log')];
+    if (!eds || !mags || !uns || !mts || !fq || !wds || !lg) return res.status(400).json({ error: 'O arquivo está incompleto ou com registros inválidos.' });
+    if (eds.length === 0 || !eds.every((e) => typeof e.title === 'string')) return res.status(400).json({ error: 'O backup precisa conter ao menos uma edição.' });
+    const unique = (xs: any[]) => new Set(xs.map((x) => x.id)).size === xs.length;
+    if (![eds, mags, uns, mts, fq, wds].every(unique)) return res.status(400).json({ error: 'O arquivo contém registros duplicados.' });
+    const edIds = new Set(eds.map((e) => e.id)), magIds = new Set(mags.map((m) => m.id)), unitIds = new Set(uns.map((u) => u.id));
+    if (!mags.every((m) => edIds.has(m.editionId)) || !uns.every((u) => edIds.has(u.editionId))
+      || !mts.every((m) => edIds.has(m.editionId) && magIds.has(m.magistrateId) && unitIds.has(m.unitId))) {
+      return res.status(400).json({ error: 'O arquivo tem vínculos entre registros que não existem (edição, magistrado ou unidade).' });
+    }
+
+    const before = { editions: editions.length, magistrates: magistrates.length, units: units.length, matches: matches.length };
+    editions = eds; magistrates = mags; units = uns; matches = mts; faq = fq; withdrawals = wds; panelEntries = [];
+    activeEditionId = edIds.has(d.activeEditionId) ? d.activeEditionId : eds[0].id;
+    const have = new Set(activityLog.map((l) => l.id));
+    activityLog = [...activityLog, ...lg.filter((l) => !have.has(l.id) && typeof l.timestamp === 'string')].sort((x, y) => y.timestamp.localeCompare(x.timestamp));
+    normalizeLegacy();
+    ensureInitialEdition();
+    units.forEach((u) => refreshUnitStatus(u.id));
+    log(null, 'Administração', 'Exportação',
+      `BACKUP RESTAURADO (arquivo de ${typeof d.exportedAt === 'string' ? d.exportedAt : 'data desconhecida'}): ${eds.length} edição(ões), ${mags.length} magistrado(s), ${uns.length} unidade(s), ${mts.length} vinculação(ões). Antes: ${before.editions}/${before.magistrates}/${before.units}/${before.matches}.`);
+    res.json({ success: true, editions: eds.length, magistrates: mags.length, units: uns.length, matches: mts.length });
   });
 
   // ---------- Activity log ----------
@@ -1320,7 +1423,12 @@ async function startServer() {
   // ---------- Magistrates ----------
   app.get('/api/magistrates', (req, res) => {
     const edition = resolveEdition(req);
-    res.json(edition ? magistrates.filter((m) => m.editionId === edition.id) : []);
+    // Inscrições de quem já desistiu antes (mesmo nome, sem acento/caixa) recebem a indicação, para análise do pedido de nova inscrição
+    const list = edition ? magistrates.filter((m) => m.editionId === edition.id) : [];
+    res.json(list.map((m) => {
+      const w = withdrawals.find((x) => !x.endedAt && personKey(x.name) === personKey(m.name) && !(x.magistrateIds ?? []).includes(m.id) && m.createdAt > x.createdAt);
+      return w ? { ...m, priorWithdrawal: { sei: w.sei, requestDate: w.requestDate } } : m;
+    }));
   });
 
   // Consulta pública (todas as edições). O e-mail vai no corpo da requisição (POST), não na URL, para não
@@ -1329,13 +1437,11 @@ async function startServer() {
     // Consulta pelo nome completo: só informa a situação no painel de vinculações (nada além disso).
     if (typeof req.body?.name === 'string') {
       const q = req.body.name.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 200);
-      // Ignora acentos, pontuação e tratamentos (Dr., Dra., Juiz...) para que o nome digitado coincida com o do painel.
-      const fold = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z\s]/g, ' ')
-        .split(/\s+/).filter((w) => w && !['dr', 'dra', 'juiz', 'juiza', 'des', 'desa', 'desembargador', 'desembargadora', 'exmo', 'exma', 'sr', 'sra'].includes(w)).join(' ');
+      const fold = personKey; // ignora acentos, caixa, pontuação e tratamentos (Dr., Dra., Juiz...)
       const wanted = fold(q);
       if (wanted.split(' ').length < 2 || wanted.length < 6) return res.status(400).json({ error: 'Informe o nome completo do magistrado.' });
-      const active = editions.some((ed) => panelRows(ed.id).some((r) => fold(r.name) === wanted));
-      const revoked = withdrawals.some((w) => fold(w.name) === wanted);
+      const active = panelRows().some((r) => fold(r.name) === wanted);
+      const revoked = withdrawals.some((w) => !w.endedAt && fold(w.name) === wanted);
       const situation = active ? 'ativa' : revoked ? 'revogada' : 'nao_consta';
       return res.json({ situation });
     }
@@ -1392,7 +1498,7 @@ async function startServer() {
     const { declaration, status, source } = req.body;
     const edition = resolveEdition(req);
     if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
-    const parsed = parseMagistrate(req.body, undefined, req.body?.source !== 'admin');
+    const parsed = parseMagistrate(req.body, undefined, req.body?.source !== 'admin', source === 'admin' && edition.isInitial === true);
     if ('error' in parsed) return res.status(400).json({ error: parsed.error });
     const { name, email, currentLocation, firstPreference, secondPreference, acceptsHearings } = parsed.value;
     if (source !== 'admin') {
@@ -1402,7 +1508,7 @@ async function startServer() {
     if (source !== 'admin' && declaration !== true) {
       return res.status(400).json({ error: 'É necessário aceitar a declaração de regularidade para concluir a inscrição.' });
     }
-    if (magistrates.some((m) => m.editionId === edition.id && m.email.toLowerCase() === email.toLowerCase())) {
+    if (email && magistrates.some((m) => m.editionId === edition.id && m.email.toLowerCase() === email.toLowerCase())) {
       return res.status(409).json({ error: 'Já existe uma inscrição de magistrado com este e-mail nesta edição.' });
     }
 
@@ -1431,10 +1537,10 @@ async function startServer() {
     if (!mag) return res.status(404).json({ error: 'Magistrado não encontrado.' });
 
     const b = req.body || {};
-    const parsed = parseMagistrate(b, mag);
+    const parsed = parseMagistrate(b, mag, false, editionById(mag.editionId)?.isInitial === true);
     if ('error' in parsed) return res.status(400).json({ error: parsed.error });
     const next = parsed.value;
-    if (magistrates.some((m) => m.id !== mag.id && m.editionId === mag.editionId && m.email.toLowerCase() === next.email.toLowerCase())) {
+    if (next.email && magistrates.some((m) => m.id !== mag.id && m.editionId === mag.editionId && m.email.toLowerCase() === next.email.toLowerCase())) {
       return res.status(409).json({ error: 'Já existe outra inscrição de magistrado com este e-mail nesta edição.' });
     }
 
@@ -1585,7 +1691,7 @@ async function startServer() {
     const { source } = req.body;
     const edition = resolveEdition(req);
     if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
-    const parsed = parseUnit(req.body);
+    const parsed = parseUnit(req.body, undefined, source === 'admin' && edition.isInitial === true);
     if ('error' in parsed) return res.status(400).json({ error: parsed.error });
     const { unitName, judgeName, email, comarca, areas, supportNeeded, description, slots } = parsed.value;
     if (source !== 'admin') {
@@ -1667,7 +1773,7 @@ async function startServer() {
     if (!unit) return res.status(404).json({ error: 'Unidade não encontrada.' });
 
     const b = req.body || {};
-    const parsed = parseUnit(b, unit);
+    const parsed = parseUnit(b, unit, editionById(unit.editionId)?.isInitial === true);
     if ('error' in parsed) return res.status(400).json({ error: parsed.error });
     const next = parsed.value;
 
@@ -1770,7 +1876,6 @@ async function startServer() {
     };
     matches.unshift(newMatch);
     refreshUnitStatus(unit.id);
-    absorbEntries(mag.editionId);
 
     log(mag.editionId, source === 'ai' ? 'Sistema' : 'Administração', 'Vinculação',
       `Vinculação ${source === 'ai' ? 'sugerida por IA e efetivada' : 'manual'}: ${describeMatch(newMatch)}.`);
@@ -1822,7 +1927,6 @@ async function startServer() {
     nextMag.status = 'Atribuído';
     refreshUnitStatus(oldUnitId);
     refreshUnitStatus(nextUnit.id);
-    absorbEntries(match.editionId);
 
     log(match.editionId, 'Administração', 'Vinculação', `Vinculação alterada: de ${before} para ${describeMatch(match)}.`);
     res.json({ success: true, match });
@@ -1868,7 +1972,6 @@ async function startServer() {
     };
     pass((m) => m.firstPreference);
     pass((m) => m.secondPreference);
-    absorbEntries(edition.id);
 
     log(edition.id, 'Administração', 'Vinculação',
       `Vinculação automática executada: ${newMatchesCount} nova(s) vinculação(ões).`);
