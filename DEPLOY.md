@@ -134,7 +134,7 @@ Exemplo: `gcloud run services update mutirao-cgj --region southamerica-east1 --u
 
 - **Painel de vinculações (restrito à administração):** *Administração → Painel de vinculações*. Tabela única com as designações vigentes de
   **todas as edições** (valem até o registro da desistência). Planilhas coladas viram vinculações reais na edição **Vinculações iniciais**
-  (criada automaticamente; nunca é a edição vigente), onde as varas podem ser alteradas na aba Vinculações e o painel reflete na hora.
+  (criada automaticamente; nunca é a edição vigente), onde as varas podem ser alteradas ("Alterar vara", com a data de início) e o painel reflete na hora. A atuação é sempre para audiências ou para sentença (nas vinculações iniciais, sentença).
   *Desistência* pede o SEI e a data do pedido; se o magistrado fizer nova inscrição (comparação de nomes sem acento e sem diferença de
   caixa) e ela for deferida, a desistência fica registrada como válida apenas para o período. *Exportar relatório em PDF* traz as
   designações (total e por área) e os desistentes. Publicamente, só a *Consulta pelo nome completo* (em Consultar Status).

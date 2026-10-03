@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Lock, Unlock, Plus, Trash2, Check, Pencil, Download, Sparkles, LogOut, Radio, Archive, RotateCcw, ChevronDown, ChevronRight, X, ArrowUp, ArrowDown } from 'lucide-react';
 import { api, download, getToken, setToken } from './api';
-import { Edition, FaqItem, LogEntry, Magistrate, Match, PanelRow, Unit, Withdrawal, WorkType, WORK_TYPES } from './types';
+import { Edition, FaqItem, LogEntry, Magistrate, Match, PanelRow, Transfer, Unit, Withdrawal, WorkType, WORK_TYPES } from './types';
 import { Badge, EmptyRow, Field, Modal, Notice, formatDate, formatDateTime, magistrateTone, useFeedback } from './ui';
 import { MagistrateForm, UnitForm } from './Forms';
 
@@ -69,9 +69,10 @@ function EditionFilter({ editions, value, onChange, what }: { editions: Edition[
     <div className="flex flex-wrap items-center gap-3 mb-4">
       <label className="text-xs font-medium text-muted tracking-wide" htmlFor={`ed-filter-${what}`}>Edição</label>
       <select id={`ed-filter-${what}`} className="input max-w-sm" value={value} onChange={e => onChange(e.target.value)}>
+        <option value="all">Todas as edições — {editions.reduce((n, e) => n + (what === 'magistrados' ? e.stats?.magistrates ?? 0 : e.stats?.units ?? 0), 0)} {what}</option>
         {editions.map(e => <option key={e.id} value={e.id}>{e.title}{e.isActive ? ' (vigente)' : ''} — {what === 'magistrados' ? e.stats?.magistrates ?? 0 : e.stats?.units ?? 0} {what}</option>)}
       </select>
-      <span className="text-xs text-muted">Exibindo apenas os {what} desta edição.</span>
+      <span className="text-xs text-muted">{value === 'all' ? `Exibindo os ${what} de todas as edições (somente consulta e edição de registros).` : `Exibindo apenas os ${what} desta edição.`}</span>
     </div>
   );
 }
@@ -129,7 +130,7 @@ interface Eligible { m: Magistrate; area: string; rank: 0 | 1 | 2 }
 function eligibleFor(unit: Unit, magistrates: Magistrate[], matches: Match[], current?: Match) {
   const taken = new Set(matches.filter(x => x.id !== current?.id).map(x => x.magistrateId));
   const list: Eligible[] = magistrates
-    .filter(m => m.status !== 'Rejeitado' && !taken.has(m.id)
+    .filter(m => m.editionId === unit.editionId && m.status !== 'Rejeitado' && m.status !== 'Desistente' && !taken.has(m.id)
       && (m.status !== 'Aguardando Conferência' || m.id === current?.magistrateId))
     .map(m => {
       const first = unit.areas.includes(m.firstPreference);
@@ -144,7 +145,7 @@ function eligibleFor(unit: Unit, magistrates: Magistrate[], matches: Match[], cu
 const defaultWorkType = (unit: Unit, mag: Magistrate): WorkType =>
   unit.supportNeeded === 'Audiência' || unit.supportNeeded === 'Sentença'
     ? unit.supportNeeded
-    : mag.acceptsHearings ? 'Audiência e Sentença' : 'Sentença';
+    : mag.acceptsHearings ? 'Audiência' : 'Sentença'; // unidade pediu os dois: audiências só se o magistrado aceita
 
 const workTypeTone = (w: WorkType) => (w === 'Sentença' ? 'neutral' : w === 'Audiência' ? 'info' : 'ok') as 'neutral' | 'info' | 'ok';
 const unitMatchesOf = (unit: Unit, matches: Match[]) =>
@@ -153,7 +154,8 @@ const unitMatchesOf = (unit: Unit, matches: Match[]) =>
 function WorkTypeSelect({ value, onChange }: { value: WorkType; onChange: (v: WorkType) => void }) {
   return (
     <select className="input !py-2 text-sm" value={value} onChange={e => onChange(e.target.value as WorkType)} aria-label="Atuação do magistrado">
-      {WORK_TYPES.map(w => <option key={w} value={w}>{w === 'Audiência e Sentença' ? 'Audiência e sentença' : w === 'Audiência' ? 'Para audiências' : 'Para sentenças'}</option>)}
+      {value === 'Audiência e Sentença' && <option value={value}>Audiência e sentença (antigo)</option>}
+      {WORK_TYPES.map(w => <option key={w} value={w}>{w === 'Audiência' ? 'Para audiências' : 'Para sentença'}</option>)}
     </select>
   );
 }
@@ -402,7 +404,7 @@ function FaqForm({ initial, onSubmit }: { initial?: FaqItem; onSubmit: (v: { que
 
 /* ---------- Painel de vinculações (restrito): tabela única, desistências e relatório em PDF ---------- */
 type RunFn = <T,>(fn: () => Promise<T>, okMessage?: string) => Promise<T | undefined>;
-interface PanelAdminData { rows: PanelRow[]; withdrawals: Withdrawal[]; initialEdition: { id: string; title: string } }
+interface PanelAdminData { rows: PanelRow[]; withdrawals: Withdrawal[]; transfers: Transfer[]; initialEdition: { id: string; title: string } }
 interface PanelPreview { total: number; duplicates: number; errorCount: number; errors: { line: number; message: string }[]; preview: { name: string; area: string; unit: string }[] }
 
 function PanelAdmin({ run, confirm, onChanged }: {
@@ -415,6 +417,10 @@ function PanelAdmin({ run, confirm, onChanged }: {
   const [query, setQuery] = useState('');
   const [areaFilter, setAreaFilter] = useState<string[]>([]);
   const [dropping, setDropping] = useState<PanelRow | null>(null);
+  const [moving, setMoving] = useState<{ row: PanelRow; units: Unit[] } | null>(null);
+  const [moveUnit, setMoveUnit] = useState('');
+  const [moveNewName, setMoveNewName] = useState('');
+  const [moveDate, setMoveDate] = useState('');
   const [sei, setSei] = useState('');
   const today = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Sao_Paulo' });
   const [requestDate, setRequestDate] = useState(today());
@@ -448,6 +454,18 @@ function PanelAdmin({ run, confirm, onChanged }: {
     const r = await run(() => api('/panel/withdrawals', { method: 'POST', json: { name: dropping.name, sei, requestDate } }), 'Desistência registrada.');
     if (r) { setDropping(null); setSei(''); await load(); onChanged(); }
   };
+  const openMove = async (r: PanelRow) => {
+    const list = await run(() => api<Unit[]>(`/units?edition=${encodeURIComponent(r.editionId)}`));
+    if (!list) return;
+    setMoving({ row: r, units: list.filter(u => u.selection === 'Escolhida' && u.id !== r.unitId).sort((a, b) => a.unitName.localeCompare(b.unitName, 'pt-BR')) });
+    setMoveUnit(''); setMoveNewName(''); setMoveDate(today());
+  };
+  const submitMove = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!moving) return;
+    const r = await run(() => api(`/matches/${moving.row.id}`, { method: 'PUT', json: moveNewName.trim() ? { newUnitName: moveNewName.trim(), effectiveDate: moveDate } : { unitId: moveUnit, effectiveDate: moveDate } }), 'Vinculação alterada.');
+    if (r) { setMoving(null); await load(); onChanged(); }
+  };
   const undoWithdrawal = async (w: Withdrawal) => {
     if (!(await confirm(`Desfazer a desistência de ${w.name}? O magistrado volta à lista de espera; as designações anteriores não são restauradas.`, 'Desfazer desistência'))) return;
     await run(() => api(`/panel/withdrawals/${w.id}`, { method: 'DELETE' }), 'Registro de desistência desfeito.');
@@ -471,7 +489,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
       </Toolbar>
       <p className="text-sm text-muted -mt-2">
         Relação total das vinculações vigentes de <strong className="text-ink">todas as edições</strong>, de uso restrito da administração. As designações de edições anteriores continuam valendo até que seja registrada a desistência.
-        Ao desfazer uma vinculação, a linha sai daqui automaticamente. Para trocar a vara de alguém, edite a vinculação na aba Vinculações.
+        Ao desfazer uma vinculação, a linha sai daqui automaticamente. Para trocar a vara de alguém, use "Alterar vara" (informa a partir de quando atua na nova unidade; a anterior fica registrada até o dia anterior).
       </p>
 
       <div className="card overflow-hidden">
@@ -500,16 +518,18 @@ function PanelAdmin({ run, confirm, onChanged }: {
         )}
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead><tr><th className="th">Magistrado(a)</th><th className="th">Área de atuação</th><th className="th">Unidade</th><th className="th">Edição</th><th className="th w-44"></th></tr></thead>
+            <thead><tr><th className="th">Magistrado(a)</th><th className="th">Área de atuação</th><th className="th">Unidade</th><th className="th">Atuação</th><th className="th">Edição</th><th className="th w-64"></th></tr></thead>
             <tbody className="divide-y divide-line">
-              {rows.length === 0 && <tr><td colSpan={5} className="px-4 py-10 text-center text-muted">{data.rows.length === 0 ? 'Nenhuma vinculação vigente.' : 'Nenhum resultado para o filtro escolhido.'}</td></tr>}
+              {rows.length === 0 && <tr><td colSpan={6} className="px-4 py-10 text-center text-muted">{data.rows.length === 0 ? 'Nenhuma vinculação vigente.' : 'Nenhum resultado para o filtro escolhido.'}</td></tr>}
               {rows.map(r => (
                 <tr key={r.id}>
                   <td className="td font-medium">{r.name}</td>
                   <td className="td text-muted">{r.area}</td>
-                  <td className="td">{r.unit}{r.comarca && <div className="text-xs text-muted">{r.comarca}</div>}</td>
+                  <td className="td">{r.unit}{r.comarca && <div className="text-xs text-muted">{r.comarca}</div>}{r.startDate && <div className="text-xs text-bronze">a partir de {r.startDate.split('-').reverse().join('/')}</div>}</td>
+                  <td className="td text-xs">{r.workType === 'Audiência' ? 'Audiências' : r.workType === 'Sentença' ? 'Sentença' : r.workType}</td>
                   <td className="td text-xs text-muted">{r.editionTitle}</td>
                   <td className="td text-right whitespace-nowrap">
+                    <button className="btn-secondary btn-sm mr-1" onClick={() => openMove(r)}>Alterar vara</button>
                     <button className="btn-secondary btn-sm" onClick={() => { setDropping(r); setSei(''); setRequestDate(today()); }}>Desistência</button>
                     <button className="btn-danger" title="Desfazer vinculação" aria-label="Excluir" onClick={() => removeRow(r)}><Trash2 className="w-4 h-4" /></button>
                   </td>
@@ -520,6 +540,30 @@ function PanelAdmin({ run, confirm, onChanged }: {
         </div>
         {rows.length > 0 && <p className="px-4 py-2.5 text-xs text-muted border-t border-line">{rows.length} de {data.rows.length} designações</p>}
       </div>
+
+      {data.transfers.length > 0 && (
+        <div className="card overflow-hidden">
+          <div className="p-4 border-b border-line"><h4 className="font-semibold text-navy">Alterações de vinculação <span className="text-muted font-normal">({data.transfers.length})</span></h4></div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr><th className="th">Magistrado(a)</th><th className="th">Vinculação anterior</th><th className="th">Nova vinculação</th></tr></thead>
+              <tbody className="divide-y divide-line">
+                {data.transfers.map(t => {
+                  const d = new Date(`${t.effectiveDate}T00:00:00Z`); d.setUTCDate(d.getUTCDate() - 1);
+                  const dmy = (ymd: string) => ymd.split('-').reverse().join('/');
+                  return (
+                    <tr key={t.id}>
+                      <td className="td font-medium">{t.name}</td>
+                      <td className="td">{t.fromUnit}<div className="text-xs text-muted">até {dmy(d.toISOString().slice(0, 10))}</div></td>
+                      <td className="td">{t.toUnit}<div className="text-xs text-bronze">a partir de {dmy(t.effectiveDate)}</div></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       <div className="card overflow-hidden">
         <div className="p-4 border-b border-line"><h4 className="font-semibold text-navy">Desistentes <span className="text-muted font-normal">({data.withdrawals.length})</span></h4></div>
@@ -583,6 +627,32 @@ function PanelAdmin({ run, confirm, onChanged }: {
           )}
         </div>
       </details>
+
+      {moving && (
+        <Modal title="Alterar vara" onClose={() => setMoving(null)}>
+          <form onSubmit={submitMove} className="space-y-4">
+            <p className="text-sm text-muted"><strong className="text-ink">{moving.row.name}</strong> atua hoje em <strong className="text-ink">{moving.row.unit}</strong>. A vinculação anterior ficará registrada como válida até o dia anterior à data informada.</p>
+            <Field label="Nova unidade">
+              <select className="input" required={!moveNewName.trim()} value={moveUnit} onChange={e => setMoveUnit(e.target.value)} disabled={!!moveNewName.trim()}>
+                <option value="" disabled>Selecione…</option>
+                {moving.units.map(u => <option key={u.id} value={u.id}>{u.unitName}{u.comarca ? ` — ${u.comarca}` : ''}</option>)}
+              </select>
+            </Field>
+            {moving.row.editionId === data.initialEdition.id && (
+              <Field label="Ou digite o nome da nova vara (se ainda não estiver na lista)">
+                <input className="input" maxLength={300} value={moveNewName} onChange={e => setMoveNewName(e.target.value)} placeholder="Ex.: 2ª Vara Cível de Londrina" />
+              </Field>
+            )}
+            <Field label="Atuará na nova unidade a partir de">
+              <input className="input" type="date" required value={moveDate} onChange={e => setMoveDate(e.target.value)} />
+            </Field>
+            <div className="flex justify-end gap-2">
+              <button type="button" className="btn-ghost" onClick={() => setMoving(null)}>Cancelar</button>
+              <button className="btn-primary" disabled={(!moveUnit && !moveNewName.trim()) || !moveDate}>Registrar alteração</button>
+            </div>
+          </form>
+        </Modal>
+      )}
 
       {dropping && (
         <Modal title="Registrar desistência" onClose={() => setDropping(null)}>
@@ -668,6 +738,8 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const [sub, setSub] = useState<Sub>('overview');
   const [editions, setEditions] = useState<Edition[]>([]);
   const [selectedId, setSelectedId] = useState('');
+  const [viewAll, setViewAll] = useState(false); // abas Magistrados/Unidades: todas as edições
+  const pickEdition = (id: string) => { if (id === 'all') setViewAll(true); else { setViewAll(false); setSelectedId(id); } };
   const [magistrates, setMagistrates] = useState<Magistrate[]>([]);
   const [units, setUnits] = useState<Unit[]>([]);
   const [matches, setMatches] = useState<Match[]>([]);
@@ -728,18 +800,20 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const loadScoped = useCallback(async () => {
     if (!selectedId) return;
     const q = `?edition=${encodeURIComponent(selectedId)}`;
+    const lq = viewAll ? '?edition=all' : q;
     const r = await run(() => Promise.all([
-      api<Magistrate[]>(`/magistrates${q}`), api<Unit[]>(`/units${q}`), api<Match[]>(`/matches${q}`),
+      api<Magistrate[]>(`/magistrates${lq}`), api<Unit[]>(`/units${lq}`), api<Match[]>(`/matches${lq}`),
       api<Magistrate[]>(`/waiting-list${q}`), api<LogEntry[]>(`/log${q}`),
     ]));
     if (!r) return;
     [setMagistrates, setUnits, setMatches, setWaiting, setLog].forEach((set, i) => (set as any)(r[i]));
-  }, [selectedId, run]);
+  }, [selectedId, viewAll, run]);
 
   const refresh = useCallback(async () => { await loadEditions(); await loadScoped(); onEditionsChanged(); }, [loadEditions, loadScoped, onEditionsChanged]);
 
   useEffect(() => { if (authed) { loadEditions(); loadFaq(); } }, [authed]);
-  useEffect(() => { if (authed) { loadScoped(); setAi({ loading: false, items: [] }); } }, [authed, selectedId]);
+  useEffect(() => { if (authed) { loadScoped(); setAi({ loading: false, items: [] }); } }, [authed, selectedId, viewAll]);
+  useEffect(() => { if (sub !== 'magistrates' && sub !== 'units') setViewAll(false); }, [sub]);
 
   const login = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1068,6 +1142,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       {sub === 'magistrates' && (
         <div>
           <Toolbar title="Magistrados voluntários">
+            {!viewAll && <>
             {magistrates.some(m => m.status === 'Aguardando Conferência') && (
               <button className="btn-secondary btn-sm" onClick={approveAll}>
                 <Check className="w-4 h-4" /> Aprovar todos pendentes ({magistrates.filter(m => m.status === 'Aguardando Conferência').length})
@@ -1078,13 +1153,14 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             )}
             <button className="btn-primary btn-sm" onClick={() => setModal('mag')}><Plus className="w-4 h-4" /> Cadastrar</button>
             <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/csv?type=magistrates&${q}`, 'magistrados.csv')}><Download className="w-4 h-4" /> CSV</button>
+          </>}
           </Toolbar>
-          <EditionFilter editions={editions} value={selectedId} onChange={setSelectedId} what="magistrados" />
+          <EditionFilter editions={editions} value={viewAll ? 'all' : selectedId} onChange={pickEdition} what="magistrados" />
           <Table head={['Magistrado(a)', <SortHeader key="d" label="Inscrição" dir={sortDir.magistrates} onToggle={() => toggleSort('magistrates')} />, 'Lotação', 'Preferências', 'Audiências', 'Status', 'Ações']}>
             {magistrates.length === 0 && <EmptyRow cols={7}>Nenhuma inscrição nesta edição.</EmptyRow>}
             {sortedMagistrates.map(m => (
               <tr key={m.id}>
-                <td className="td"><div className="font-medium">{m.name}</div><div className="text-xs text-muted">{m.email}</div>{m.registeredIp && <div className="text-[11px] text-muted/80">IP {m.registeredIp}</div>}{m.declaration && <div className="text-[11px] text-ok mt-0.5">Declaração de regularidade aceita</div>}{m.priorWithdrawal && <div className="text-[11px] text-warn mt-0.5">Já desistiu antes (SEI {m.priorWithdrawal.sei}{m.priorWithdrawal.requestDate ? `, pedido em ${m.priorWithdrawal.requestDate.split('-').reverse().join('/')}` : ''}). Se deferida esta inscrição, a desistência passa a valer só para o período anterior.</div>}</td>
+                <td className="td"><div className="font-medium">{m.name}</div>{viewAll && <div className="text-[11px] text-bronze">{m.editionTitle}</div>}<div className="text-xs text-muted">{m.email}</div>{m.registeredIp && <div className="text-[11px] text-muted/80">IP {m.registeredIp}</div>}{m.declaration && <div className="text-[11px] text-ok mt-0.5">Declaração de regularidade aceita</div>}{m.priorWithdrawal && <div className="text-[11px] text-warn mt-0.5">Já desistiu antes (SEI {m.priorWithdrawal.sei}{m.priorWithdrawal.requestDate ? `, pedido em ${m.priorWithdrawal.requestDate.split('-').reverse().join('/')}` : ''}). Se deferida esta inscrição, a desistência passa a valer só para o período anterior.</div>}</td>
                 <td className="td"><DateCell iso={m.createdAt} /></td>
                 <td className="td text-muted">{m.currentLocation}</td>
                 <td className="td text-xs"><div className="text-bronze font-medium">1ª: {m.firstPreference}</div><div className="text-muted">2ª: {m.secondPreference || '—'}</div></td>
@@ -1113,6 +1189,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       {sub === 'units' && (
         <div>
           <Toolbar title="Unidades judiciais">
+            {!viewAll && <>
             {units.some(u => u.selection === 'Em análise') && (
               <button className="btn-secondary btn-sm" onClick={chooseAll}>
                 <Check className="w-4 h-4" /> Aprovar todas pendentes ({units.filter(u => u.selection === 'Em análise').length})
@@ -1124,8 +1201,9 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             <button className="btn-primary btn-sm" onClick={() => setModal('unit')}><Plus className="w-4 h-4" /> Cadastrar</button>
             <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/xlsx/unlinked-units?${q}`, 'unidades-sem-magistrado.xlsx')}><Download className="w-4 h-4" /> Sem magistrado (XLSX)</button>
             <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/csv?type=units&${q}`, 'unidades.csv')}><Download className="w-4 h-4" /> CSV</button>
+          </>}
           </Toolbar>
-          <EditionFilter editions={editions} value={selectedId} onChange={setSelectedId} what="unidades" />
+          <EditionFilter editions={editions} value={viewAll ? 'all' : selectedId} onChange={pickEdition} what="unidades" />
           <Table head={['Unidade / Comarca', <SortHeader key="d" label="Inscrição" dir={sortDir.units} onToggle={() => toggleSort('units')} />, 'Áreas e auxílio', 'Magistrados', 'Triagem', 'Status', 'Ações']}>
             {units.length === 0 && <EmptyRow cols={7}>Nenhuma unidade inscrita nesta edição.</EmptyRow>}
             {sortedUnits.map(u => {
@@ -1136,7 +1214,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
                     <td className="td">
                       <button className="flex items-start gap-1.5 text-left" onClick={() => setOpenUnitId(open ? '' : u.id)} aria-expanded={open} title="Ver justificativa e vincular magistrado">
                         {open ? <ChevronDown className="w-4 h-4 mt-0.5 shrink-0 text-bronze" /> : <ChevronRight className="w-4 h-4 mt-0.5 shrink-0 text-muted" />}
-                        <span><span className="font-medium block">{u.unitName}</span><span className="text-xs text-muted block">{u.comarca} · Resp.: {u.judgeName}</span><span className="text-xs text-muted block">{u.email}</span>{u.registeredIp && <span className="text-[11px] text-muted/80 block">IP {u.registeredIp}</span>}</span>
+                        <span><span className="font-medium block">{u.unitName}</span>{viewAll && <span className="text-[11px] text-bronze block">{u.editionTitle}</span>}<span className="text-xs text-muted block">{u.comarca} · Resp.: {u.judgeName}</span><span className="text-xs text-muted block">{u.email}</span>{u.registeredIp && <span className="text-[11px] text-muted/80 block">IP {u.registeredIp}</span>}</span>
                       </button>
                     </td>
                     <td className="td"><DateCell iso={u.createdAt} /></td>

@@ -5,7 +5,8 @@ export const SUPPORT_OPTIONS: SupportNeeded[] = ['Audiência', 'Sentença', 'Aud
 
 export type UnitSelection = 'Em análise' | 'Escolhida' | 'Rejeitada';
 export type WorkType = 'Audiência' | 'Sentença' | 'Audiência e Sentença';
-export const WORK_TYPES: WorkType[] = ['Audiência', 'Sentença', 'Audiência e Sentença'];
+/** Atuação do magistrado na unidade: só para audiências ou só para sentença ('Audiência e Sentença' existe apenas em dados antigos) */
+export const WORK_TYPES: WorkType[] = ['Audiência', 'Sentença'];
 
 export interface EditionStats {
   magistrates: number;
@@ -110,5 +111,6 @@ export interface FaqItem {
   updatedAt?: string;
 }
 
-export interface PanelRow { id: string; editionId: string; editionTitle: string; magistrateId: string; name: string; area: string; unit: string; comarca?: string; workType?: string }
+export interface PanelRow { id: string; editionId: string; editionTitle: string; magistrateId: string; unitId: string; startDate?: string; name: string; area: string; unit: string; comarca?: string; workType?: string }
 export interface Withdrawal { id: string; editionId: string; name: string; area: string; unit: string; sei: string; requestDate?: string; endedAt?: string; createdAt: string }
+export interface Transfer { id: string; editionId: string; magistrateId: string; name: string; area: string; fromUnit: string; toUnit: string; fromWorkType: string; toWorkType: string; effectiveDate: string; createdAt: string }
