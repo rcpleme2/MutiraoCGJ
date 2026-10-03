@@ -762,7 +762,7 @@ function reconcileWithdrawals() {
     if (!back) continue;
     w.endedAt = new Date().toISOString();
     w.returnedMagistrateId = back.id;
-    log(back.editionId, 'Sistema', 'Magistrado', `Nova inscrição de ${back.name} deferida: a desistência (SEI ${w.sei}) passa a valer apenas para o período de ${w.requestDate ? w.requestDate.split('-').reverse().join('/') : 'registro'} até hoje.`);
+    log(back.editionId, 'Sistema', 'Magistrado', `Nova inscrição de ${back.name} deferida: a desistência (SEI ${w.sei || 'não informado'}) passa a valer apenas para o período de ${w.requestDate ? w.requestDate.split('-').reverse().join('/') : 'registro'} até hoje.`);
   }
 }
 
@@ -1264,15 +1264,17 @@ async function startServer() {
   });
 
   // Registra a desistência de um magistrado: sai de todas as designações vigentes (de qualquer edição) e passa à relação de desistentes.
+  const validYmd = (d: string) => /^\d{4}-\d{2}-\d{2}$/.test(d) && !Number.isNaN(Date.parse(`${d}T00:00:00${BRT}`)) && d >= '2000-01-01';
+  const dmyOf = (d?: string) => (d ? d.split('-').reverse().join('/') : 'não informada');
+
   app.post('/api/panel/withdrawals', (req, res) => {
     const name = typeof req.body?.name === 'string' ? cleanCell(req.body.name) : '';
     const sei = typeof req.body?.sei === 'string' ? cleanCell(req.body.sei) : '';
     const requestDate = typeof req.body?.requestDate === 'string' ? req.body.requestDate.trim() : '';
     if (!name) return res.status(400).json({ error: 'Magistrado não informado.' });
-    if (sei.length < 3 || sei.length > 100) return res.status(400).json({ error: 'Informe o número do processo SEI em que consta a desistência.' });
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(requestDate) || Number.isNaN(Date.parse(`${requestDate}T00:00:00${BRT}`)) || requestDate < '2000-01-01') {
-      return res.status(400).json({ error: 'Informe a data do pedido de desistência.' });
-    }
+    // SEI e data do pedido podem ser informados depois (editar a desistência); se vierem, precisam ser válidos
+    if (sei && (sei.length < 3 || sei.length > 100)) return res.status(400).json({ error: 'Número do processo SEI inválido.' });
+    if (requestDate && !validYmd(requestDate)) return res.status(400).json({ error: 'Data do pedido de desistência inválida.' });
 
     const rows = panelRows().filter((r) => norm(r.name) === norm(name));
     if (rows.length === 0) return res.status(404).json({ error: 'Este magistrado não consta no painel de vinculações.' });
@@ -1284,8 +1286,23 @@ async function startServer() {
     rows.forEach((r) => undoMatch(r.id, 'Vinculação desfeita por desistência'));
     record.magistrateIds!.forEach((id) => { const m = magistrates.find((x) => x.id === id); if (m) m.status = 'Desistente'; });
     withdrawals.push(record);
-    log(rows[0].editionId, 'Administração', 'Magistrado', `Desistência registrada: ${record.name} (SEI ${sei}, pedido em ${requestDate.split('-').reverse().join('/')}). Designações retiradas: ${record.unit}.`);
+    log(rows[0].editionId, 'Administração', 'Magistrado', `Desistência registrada: ${record.name} (SEI ${sei || 'não informado'}, pedido em ${dmyOf(requestDate)}). Designações retiradas: ${record.unit}.`);
     res.status(201).json({ success: true, withdrawal: record });
+  });
+
+  // Edita a desistência: inclui ou altera depois o número do SEI e a data do pedido.
+  app.put('/api/panel/withdrawals/:id', (req, res) => {
+    const w = withdrawals.find((x) => x.id === req.params.id);
+    if (!w) return res.status(404).json({ error: 'Registro não encontrado.' });
+    const sei = typeof req.body?.sei === 'string' ? cleanCell(req.body.sei) : w.sei;
+    const requestDate = typeof req.body?.requestDate === 'string' ? req.body.requestDate.trim() : (w.requestDate ?? '');
+    if (sei && (sei.length < 3 || sei.length > 100)) return res.status(400).json({ error: 'Número do processo SEI inválido.' });
+    if (requestDate && !validYmd(requestDate)) return res.status(400).json({ error: 'Data do pedido de desistência inválida.' });
+    const changes: string[] = [];
+    if (sei !== w.sei) { changes.push(`SEI de "${w.sei || 'não informado'}" para "${sei || 'não informado'}"`); w.sei = sei; }
+    if (requestDate !== (w.requestDate ?? '')) { changes.push(`data do pedido de ${dmyOf(w.requestDate)} para ${dmyOf(requestDate)}`); w.requestDate = requestDate || undefined; }
+    if (changes.length) log(w.editionId, 'Administração', 'Magistrado', `Desistência de ${w.name} editada: ${changes.join('; ')}.`);
+    res.json({ success: true, withdrawal: w });
   });
 
   // Desfaz o registro de desistência (ex.: erro de lançamento). O magistrado volta à lista de espera; as designações precisam ser refeitas.
@@ -1295,114 +1312,154 @@ async function startServer() {
     withdrawals = withdrawals.filter((x) => x.id !== w.id);
     const ids = new Set(w.magistrateIds ?? magistrates.filter((m) => norm(m.name) === norm(w.name) && m.editionId === w.editionId).map((m) => m.id));
     magistrates.filter((m) => ids.has(m.id) && m.status === 'Desistente').forEach((m) => { m.status = 'Lista de Espera'; });
-    log(w.editionId, 'Administração', 'Magistrado', `Registro de desistência desfeito: ${w.name} (SEI ${w.sei}).`);
+    log(w.editionId, 'Administração', 'Magistrado', `Registro de desistência desfeito: ${w.name} (SEI ${w.sei || 'não informado'}).`);
     res.json({ success: true });
   });
 
-  // Relatório em PDF: designações vigentes (total e por área) e desistentes (com o SEI).
+  // Relatório em PDF: designações vigentes (total e por área), alterações de vinculação e desistentes.
   app.get('/api/panel/report.pdf', (_req, res) => {
     const rows = panelRows();
     const drops = [...withdrawals].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
-    const brt = (d: Date) => d.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', dateStyle: 'short', timeStyle: 'short' });
-    const day = (iso: string) => new Date(iso).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+    const moves = [...transfers].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR') || a.effectiveDate.localeCompare(b.effectiveDate));
+    const areas = [...new Set(rows.map((r) => r.area.trim()))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+    const tz = 'America/Sao_Paulo';
+    const stamp = new Date().toLocaleString('pt-BR', { timeZone: tz, dateStyle: 'long', timeStyle: 'short' });
+    const dmy = (ymd?: string) => (ymd ? ymd.split('-').reverse().join('/') : '—');
+    const dayBefore = (ymd: string) => { const d = new Date(`${ymd}T00:00:00Z`); d.setUTCDate(d.getUTCDate() - 1); return d.toISOString().slice(0, 10); };
+    const day = (iso: string) => new Date(iso).toLocaleDateString('pt-BR', { timeZone: tz });
+    const acting = (w?: string) => (w === 'Audiência' ? 'Audiências' : w === 'Sentença' ? 'Sentença' : w === 'Audiência e Sentença' ? 'Audiência e sentença' : '—');
+    const unitCell = (r: { unit: string; comarca?: string; startDate?: string }) => unitLabel(r) + (r.startDate ? `\na partir de ${dmy(r.startDate)}` : '');
     // A fonte padrão do PDF cobre o alfabeto latino; troca o que estiver fora dele para não gerar lixo.
-    const t = (x: string) => x.replace(/[^\n -~ -ÿ–—‘’“”…•]/g, '?');
+    const t = (x: string) => x.replace(/[^\n -~ -ÿ–—‘’“”…•]/g, '?');
 
-    const doc = new PDFDocument({ size: 'A4', margin: 48, bufferPages: true, info: { Title: 'Designações vigentes e desistentes', Author: 'Mutirão de Julgamento' } });
+    const doc = new PDFDocument({ size: 'A4', margins: { top: 62, bottom: 62, left: 54, right: 54 }, bufferPages: true,
+      info: { Title: 'Relatório de Designações — Mutirão de Julgamento', Author: 'Mutirão de Julgamento' } });
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename=designacoes-${new Date().toISOString().slice(0, 10)}.pdf`);
+    res.setHeader('Content-Disposition', `attachment; filename=relatorio-designacoes-${new Date().toISOString().slice(0, 10)}.pdf`);
     doc.pipe(res);
 
-    const NAVY = '#1b2b43', BRONZE = '#8a6d3b', MUTED = '#5f6b7a', LINE = '#d9d4c7', ZEBRA = '#f6f4ef';
-    const left = doc.page.margins.left;
-    const width = doc.page.width - left - doc.page.margins.right;
-    const bottom = () => doc.page.height - doc.page.margins.bottom;
+    const NAVY = '#1b2b43', BRONZE = '#8a6d3b', INK = '#1c2530', MUTED = '#6b7686', HAIR = '#d8d3c6', TINT = '#f4f1ea';
+    const L = doc.page.margins.left;
+    const W = doc.page.width - L - doc.page.margins.right;
+    const limit = () => doc.page.height - doc.page.margins.bottom;
+    const need = (h: number) => { if (doc.y + h > limit()) doc.addPage(); };
 
-    type Col = { label: string; w: number };
+    type Col = { label: string; w: number; align?: 'left' | 'right' | 'center' };
     const drawHead = (cols: Col[]) => {
       const y = doc.y;
-      doc.rect(left, y, width, 20).fill(NAVY);
-      doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(8);
-      let x = left;
-      cols.forEach((c) => { doc.text(t(c.label).toUpperCase(), x + 6, y + 6, { width: c.w - 12, lineBreak: false }); x += c.w; });
-      doc.y = y + 20;
+      doc.rect(L, y, W, 22).fill(TINT);
+      doc.moveTo(L, y + 22).lineTo(L + W, y + 22).lineWidth(1).strokeColor(NAVY).stroke();
+      doc.fillColor(NAVY).font('Helvetica-Bold').fontSize(7.2);
+      let x = L;
+      cols.forEach((c) => { doc.text(t(c.label).toUpperCase(), x + 7, y + 8, { width: c.w - 14, align: c.align ?? 'left', lineBreak: false, characterSpacing: 0.5 }); x += c.w; });
+      doc.y = y + 22;
     };
-    const table = (cols: Col[], data: string[][]) => {
-      if (doc.y + 60 > bottom()) doc.addPage();
+    const table = (cols: Col[], data: string[][], opts: { boldFirst?: number } = {}) => {
+      need(70);
       drawHead(cols);
-      data.forEach((r, i) => {
-        doc.font('Helvetica').fontSize(9);
-        const h = Math.max(...r.map((c, k) => doc.heightOfString(t(c), { width: cols[k].w - 12 }))) + 10;
-        if (doc.y + h > bottom()) { doc.addPage(); drawHead(cols); }
+      data.forEach((r) => {
+        const h = Math.max(...r.map((c, k) => { doc.font(k === (opts.boldFirst ?? -1) ? 'Helvetica-Bold' : 'Helvetica').fontSize(8.6); return doc.heightOfString(t(c), { width: cols[k].w - 14, lineGap: 1.5 }); })) + 12;
+        if (doc.y + h > limit()) { doc.addPage(); drawHead(cols); }
         const y = doc.y;
-        if (i % 2 === 1) doc.rect(left, y, width, h).fill(ZEBRA);
-        doc.fillColor('#1c2530').font('Helvetica').fontSize(9);
-        let x = left;
-        r.forEach((c, k) => { doc.text(t(c), x + 6, y + 5, { width: cols[k].w - 12 }); x += cols[k].w; });
-        doc.moveTo(left, y + h).lineTo(left + width, y + h).lineWidth(0.5).strokeColor(LINE).stroke();
+        let x = L;
+        r.forEach((c, k) => {
+          const first = k === (opts.boldFirst ?? -1);
+          doc.fillColor(k === 0 && cols[0].label === 'Nº' ? MUTED : INK).font(first ? 'Helvetica-Bold' : 'Helvetica').fontSize(8.6)
+            .text(t(c), x + 7, y + 7, { width: cols[k].w - 14, align: cols[k].align ?? 'left', lineGap: 1.5 });
+          x += cols[k].w;
+        });
+        doc.moveTo(L, y + h).lineTo(L + W, y + h).lineWidth(0.4).strokeColor(HAIR).stroke();
         doc.y = y + h;
       });
+      doc.moveDown(1.2);
+    };
+    const section = (num: string, title: string, note?: string) => {
+      need(96);
+      doc.moveDown(0.8);
+      doc.fillColor(NAVY).font('Times-Bold').fontSize(14.5).text(`${num}.  ${t(title)}`, L, doc.y, { width: W });
+      const y = doc.y + 4;
+      doc.moveTo(L, y).lineTo(L + 34, y).lineWidth(1.6).strokeColor(BRONZE).stroke();
+      doc.y = y + 7;
+      if (note) doc.fillColor(MUTED).font('Helvetica').fontSize(8.6).text(t(note), L, doc.y, { width: W, lineGap: 1.5 });
       doc.moveDown(0.8);
     };
-    const heading = (text: string, sub?: string) => {
-      if (doc.y + 90 > bottom()) doc.addPage();
-      doc.moveDown(0.6).fillColor(NAVY).font('Helvetica-Bold').fontSize(13).text(t(text), left, doc.y, { width });
-      if (sub) doc.fillColor(MUTED).font('Helvetica').fontSize(9).text(t(sub), left, doc.y + 2, { width });
-      doc.moveDown(0.5);
-    };
+    const empty = (msg: string) => { doc.fillColor(MUTED).font('Helvetica-Oblique').fontSize(9).text(msg, L, doc.y, { width: W }); doc.moveDown(1); };
 
-    // Cabeçalho
-    doc.fillColor(BRONZE).font('Helvetica-Bold').fontSize(8).text('TRIBUNAL DE JUSTIÇA DO ESTADO DO PARANÁ  ·  CORREGEDORIA-GERAL DA JUSTIÇA', left, doc.y, { width });
-    doc.moveDown(0.5).fillColor(NAVY).font('Helvetica-Bold').fontSize(18).text('Mutirão de Julgamento', left, doc.y, { width });
-    doc.fillColor(MUTED).font('Helvetica').fontSize(9).text(`Relatório de designações — emitido em ${brt(new Date())} (horário de Brasília)`, left, doc.y + 4, { width });
-    doc.moveDown(0.8);
-    doc.moveTo(left, doc.y).lineTo(left + width, doc.y).lineWidth(1).strokeColor(BRONZE).stroke();
-    doc.moveDown(0.8);
+    // ---------- Cabeçalho ----------
+    doc.fillColor(BRONZE).font('Helvetica-Bold').fontSize(7.6).text('TRIBUNAL DE JUSTIÇA DO ESTADO DO PARANÁ', L, doc.y, { width: W, characterSpacing: 1.2 });
+    doc.fillColor(MUTED).font('Helvetica').fontSize(7.6).text('Corregedoria-Geral da Justiça', L, doc.y + 2, { width: W, characterSpacing: 0.4 });
+    doc.moveDown(1.4);
+    doc.fillColor(NAVY).font('Times-Bold').fontSize(26).text('Relatório de Designações', L, doc.y, { width: W });
+    doc.fillColor(INK).font('Times-Roman').fontSize(13).text('Mutirão de Julgamento', L, doc.y + 2, { width: W });
+    doc.moveDown(0.9);
+    doc.moveTo(L, doc.y).lineTo(L + W, doc.y).lineWidth(1.2).strokeColor(NAVY).stroke();
+    doc.moveTo(L, doc.y + 3).lineTo(L + W, doc.y + 3).lineWidth(0.4).strokeColor(BRONZE).stroke();
+    doc.y += 11;
+    doc.fillColor(MUTED).font('Helvetica').fontSize(8.4).text(`Emitido em ${stamp} (horário de Brasília)`, L, doc.y, { width: W });
+    doc.moveDown(1.2);
 
-    const areas = [...new Set(rows.map((r) => r.area.trim()))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
-    const dmy = (ymd: string) => ymd.split('-').reverse().join('/');
-    const dayBefore = (ymd: string) => { const d = new Date(`${ymd}T00:00:00Z`); d.setUTCDate(d.getUTCDate() - 1); return d.toISOString().slice(0, 10); };
-    const actingLabel = (w?: string) => (w === 'Audiência' ? 'Audiências' : w === 'Sentença' ? 'Sentença' : w === 'Audiência e Sentença' ? 'Audiência e sentença' : '—');
-    const unitCell = (r: { unit: string; comarca?: string; startDate?: string }) => unitLabel(r) + (r.startDate ? `\n(a partir de ${dmy(r.startDate)})` : '');
-    doc.fillColor('#1c2530').font('Helvetica-Bold').fontSize(10)
-      .text(`Designações vigentes: ${rows.length}   ·   Áreas de atuação: ${areas.length}   ·   Alterações de vinculação: ${transfers.length}   ·   Desistentes: ${drops.length}`, left, doc.y, { width });
+    // Resumo em quatro quadros
+    const stats = [['Designações vigentes', rows.length], ['Áreas de atuação', areas.length], ['Alterações de vinculação', moves.length], ['Desistentes', drops.length]] as const;
+    const bw = (W - 3 * 10) / 4, by = doc.y;
+    stats.forEach(([label, n], i) => {
+      const x = L + i * (bw + 10);
+      doc.rect(x, by, bw, 54).lineWidth(0.6).strokeColor(HAIR).stroke();
+      doc.rect(x, by, 3, 54).fill(i === 0 ? NAVY : BRONZE);
+      doc.fillColor(NAVY).font('Times-Bold').fontSize(22).text(String(n), x + 14, by + 8, { width: bw - 20, lineBreak: false });
+      doc.fillColor(MUTED).font('Helvetica').fontSize(7.6).text(t(label), x + 14, by + 37, { width: bw - 20, lineBreak: false });
+    });
+    doc.y = by + 54;
+    doc.moveDown(0.6);
 
-    heading('1. Designações vigentes — relação total', `${rows.length} designação(ões) em ordem alfabética. Valem até o registro da desistência.`);
-    if (rows.length === 0) doc.fillColor(MUTED).font('Helvetica').fontSize(9).text('Nenhuma designação vigente.', left, doc.y);
-    else table([{ label: 'Nº', w: 26 }, { label: 'Magistrado(a)', w: 125 }, { label: 'Área de atuação', w: 95 }, { label: 'Unidade designada', w: width - 316 }, { label: 'Atuação', w: 70 }],
-      rows.map((r, i) => [String(i + 1), r.name, r.area, unitCell(r), actingLabel(r.workType)]));
+    // ---------- 1. Relação total ----------
+    section('1', 'Designações vigentes — relação total', 'Todas as designações vigentes, em ordem alfabética. Permanecem válidas até o registro da desistência.');
+    if (rows.length === 0) empty('Nenhuma designação vigente.');
+    else table([{ label: 'Nº', w: 28 }, { label: 'Magistrado(a)', w: 150 }, { label: 'Área de atuação', w: 100 }, { label: 'Unidade designada', w: W - 340 }, { label: 'Atuação', w: 62 }],
+      rows.map((r, i) => [String(i + 1), r.name, r.area, unitCell(r), acting(r.workType)]), { boldFirst: 1 });
 
-    heading('2. Designações vigentes — por área de atuação');
-    if (rows.length === 0) doc.fillColor(MUTED).font('Helvetica').fontSize(9).text('Nenhuma designação vigente.', left, doc.y);
+    // ---------- 2. Por área ----------
+    section('2', 'Designações vigentes — por área de atuação');
+    if (rows.length === 0) empty('Nenhuma designação vigente.');
     areas.forEach((area) => {
       const list = rows.filter((r) => r.area.trim() === area);
-      if (doc.y + 80 > bottom()) doc.addPage();
-      doc.fillColor(BRONZE).font('Helvetica-Bold').fontSize(10.5).text(`${t(area)} — ${list.length} designação(ões)`, left, doc.y, { width });
-      doc.moveDown(0.3);
-      table([{ label: 'Nº', w: 26 }, { label: 'Magistrado(a)', w: 150 }, { label: 'Unidade designada', w: width - 246 }, { label: 'Atuação', w: 70 }],
-        list.map((r, i) => [String(i + 1), r.name, unitCell(r), actingLabel(r.workType)]));
+      need(100);
+      doc.fillColor(BRONZE).font('Helvetica-Bold').fontSize(9).text(t(area).toUpperCase(), L, doc.y, { continued: true, characterSpacing: 0.6 })
+        .fillColor(MUTED).font('Helvetica').text(`   ${list.length} designações`, { characterSpacing: 0 });
+      doc.moveDown(0.5);
+      table([{ label: 'Nº', w: 28 }, { label: 'Magistrado(a)', w: 170 }, { label: 'Unidade designada', w: W - 260 }, { label: 'Atuação', w: 62 }],
+        list.map((r, i) => [String(i + 1), r.name, unitCell(r), acting(r.workType)]), { boldFirst: 1 });
     });
 
-    const moves = [...transfers].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR') || a.effectiveDate.localeCompare(b.effectiveDate));
-    heading('3. Alterações de vinculação', `${moves.length} alteração(ões): a vinculação anterior vale até o dia anterior à data informada; a nova, a partir dela.`);
-    if (moves.length === 0) doc.fillColor(MUTED).font('Helvetica').fontSize(9).text('Nenhuma alteração de vinculação registrada.', left, doc.y);
-    else table([{ label: 'Magistrado(a)', w: 110 }, { label: 'Vinculação anterior', w: 195 }, { label: 'Nova vinculação', w: width - 305 }],
+    // ---------- 3. Alterações ----------
+    section('3', 'Alterações de vinculação', 'A vinculação anterior vale até o dia anterior à data informada; a nova vinculação vale a partir dela.');
+    if (moves.length === 0) empty('Nenhuma alteração de vinculação registrada.');
+    else table([{ label: 'Magistrado(a)', w: 120 }, { label: 'Vinculação anterior', w: (W - 120) / 2 }, { label: 'Nova vinculação', w: (W - 120) / 2 }],
       moves.map((m) => [m.name,
-        `${m.fromUnit}\n${actingLabel(m.fromWorkType)} — até ${dmy(dayBefore(m.effectiveDate))}`,
-        `${m.toUnit}\n${actingLabel(m.toWorkType)} — a partir de ${dmy(m.effectiveDate)}`]));
+        `${m.fromUnit}\n${acting(m.fromWorkType)} · até ${dmy(dayBefore(m.effectiveDate))}`,
+        `${m.toUnit}\n${acting(m.toWorkType)} · a partir de ${dmy(m.effectiveDate)}`]), { boldFirst: 0 });
 
-    heading('4. Desistentes', `${drops.length} magistrado(s) que desistiram da participação, com o processo SEI e a data do pedido. Se houver nova inscrição deferida, a desistência vale apenas para o período anterior.`);
-    if (drops.length === 0) doc.fillColor(MUTED).font('Helvetica').fontSize(9).text('Nenhuma desistência registrada.', left, doc.y);
-    else table([{ label: 'Magistrado(a)', w: 100 }, { label: 'Área', w: 55 }, { label: 'Unidade', w: 70 }, { label: 'Processo SEI', w: 120 }, { label: 'Data do pedido', w: 62 }, { label: 'Situação', w: width - 407 }],
-      drops.map((w) => [w.name, w.area, w.unit, w.sei, w.requestDate ? dmy(w.requestDate) : '—', w.endedAt ? `Apenas no período, até ${day(w.endedAt)} (nova inscrição deferida)` : 'Em vigor']));
+    // ---------- 4. Desistentes ----------
+    section('4', 'Desistentes', 'Magistrados que desistiram da participação, com o processo SEI e a data do pedido. Havendo nova inscrição deferida, a desistência vale apenas para o período anterior.');
+    if (drops.length === 0) empty('Nenhuma desistência registrada.');
+    else table([{ label: 'Magistrado(a)', w: 108 }, { label: 'Área e unidade', w: 108 }, { label: 'Processo SEI', w: 130 }, { label: 'Pedido', w: 62 }, { label: 'Situação', w: W - 408 }],
+      drops.map((w) => [w.name, `${w.area}\n${w.unit}`, w.sei || 'A informar', w.requestDate ? dmy(w.requestDate) : 'A informar',
+        w.endedAt ? `Apenas no período, até ${day(w.endedAt)}` : 'Em vigor']), { boldFirst: 0 });
 
-    // Numeração de páginas
+    // ---------- Cabeçalho corrido e rodapé ----------
     const range = doc.bufferedPageRange();
     for (let i = 0; i < range.count; i++) {
       doc.switchToPage(range.start + i);
-      doc.page.margins.bottom = 0; // permite escrever no rodapé sem criar página nova
-      doc.fillColor(MUTED).font('Helvetica').fontSize(8)
-        .text(`Documento de uso restrito da administração  ·  Página ${i + 1} de ${range.count}`, left, doc.page.height - 34, { width, align: 'center', lineBreak: false });
+      const m = doc.page.margins; doc.page.margins = { top: 0, bottom: 0, left: m.left, right: m.right }; // permite escrever nas margens
+      if (i > 0) {
+        doc.fillColor(MUTED).font('Helvetica').fontSize(7.4).text('Relatório de Designações — Mutirão de Julgamento', L, 30, { width: W, lineBreak: false, characterSpacing: 0.3 });
+        doc.moveTo(L, 44).lineTo(L + W, 44).lineWidth(0.4).strokeColor(HAIR).stroke();
+      }
+      const fy = doc.page.height - 42;
+      doc.moveTo(L, fy - 8).lineTo(L + W, fy - 8).lineWidth(0.4).strokeColor(HAIR).stroke();
+      doc.fillColor(MUTED).font('Helvetica').fontSize(7.4)
+        .text('Documento de uso restrito da administração', L, fy, { width: W / 2, lineBreak: false })
+        .text(`Página ${i + 1} de ${range.count}`, L + W / 2, fy, { width: W / 2, align: 'right', lineBreak: false });
+      doc.page.margins = m;
     }
     doc.end();
   });

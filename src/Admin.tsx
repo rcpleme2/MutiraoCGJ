@@ -417,6 +417,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
   const [query, setQuery] = useState('');
   const [areaFilter, setAreaFilter] = useState<string[]>([]);
   const [dropping, setDropping] = useState<PanelRow | null>(null);
+  const [editingWd, setEditingWd] = useState<Withdrawal | null>(null);
   const [moving, setMoving] = useState<{ row: PanelRow; units: Unit[] } | null>(null);
   const [moveUnit, setMoveUnit] = useState('');
   const [moveNewName, setMoveNewName] = useState('');
@@ -453,6 +454,12 @@ function PanelAdmin({ run, confirm, onChanged }: {
     if (!dropping) return;
     const r = await run(() => api('/panel/withdrawals', { method: 'POST', json: { name: dropping.name, sei, requestDate } }), 'Desistência registrada.');
     if (r) { setDropping(null); setSei(''); await load(); onChanged(); }
+  };
+  const submitEditWd = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingWd) return;
+    const r = await run(() => api(`/panel/withdrawals/${editingWd.id}`, { method: 'PUT', json: { sei: editingWd.sei, requestDate: editingWd.requestDate ?? '' } }), 'Desistência atualizada.');
+    if (r) { setEditingWd(null); await load(); }
   };
   const openMove = async (r: PanelRow) => {
     const list = await run(() => api<Unit[]>(`/units?edition=${encodeURIComponent(r.editionId)}`));
@@ -570,14 +577,14 @@ function PanelAdmin({ run, confirm, onChanged }: {
         {data.withdrawals.length === 0 ? <p className="p-8 text-center text-sm text-muted">Nenhuma desistência registrada.</p> : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
-              <thead><tr><th className="th">Magistrado(a)</th><th className="th">Área</th><th className="th">Unidade</th><th className="th">SEI</th><th className="th">Pedido em</th><th className="th">Situação</th><th className="th w-36"></th></tr></thead>
+              <thead><tr><th className="th">Magistrado(a)</th><th className="th">Área</th><th className="th">Unidade</th><th className="th">SEI</th><th className="th">Pedido em</th><th className="th">Situação</th><th className="th w-56"></th></tr></thead>
               <tbody className="divide-y divide-line">
                 {data.withdrawals.map(w => (
                   <tr key={w.id}>
                     <td className="td font-medium">{w.name}</td><td className="td text-muted">{w.area}</td><td className="td">{w.unit}</td>
-                    <td className="td font-mono text-xs">{w.sei}</td><td className="td text-muted whitespace-nowrap">{w.requestDate ? w.requestDate.split('-').reverse().join('/') : '—'}</td>
+                    <td className="td font-mono text-xs">{w.sei || <span className="text-warn font-sans">A informar</span>}</td><td className="td text-muted whitespace-nowrap">{w.requestDate ? w.requestDate.split('-').reverse().join('/') : <span className="text-warn">A informar</span>}</td>
                     <td className="td text-xs">{w.endedAt ? <span className="text-warn">Apenas no período, até {formatDate(w.endedAt)}<br />(nova inscrição deferida)</span> : <span className="text-muted">Em vigor</span>}</td>
-                    <td className="td text-right"><button className="btn-secondary btn-sm" onClick={() => undoWithdrawal(w)}><RotateCcw className="w-3.5 h-3.5" /> Desfazer</button></td>
+                    <td className="td text-right whitespace-nowrap"><button className="btn-secondary btn-sm mr-1" onClick={() => setEditingWd({ ...w })}><Pencil className="w-3.5 h-3.5" /> Editar</button><button className="btn-secondary btn-sm" onClick={() => undoWithdrawal(w)}><RotateCcw className="w-3.5 h-3.5" /> Desfazer</button></td>
                   </tr>
                 ))}
               </tbody>
@@ -654,19 +661,37 @@ function PanelAdmin({ run, confirm, onChanged }: {
         </Modal>
       )}
 
+      {editingWd && (
+        <Modal title="Editar desistência" onClose={() => setEditingWd(null)}>
+          <form onSubmit={submitEditWd} className="space-y-4">
+            <p className="text-sm text-muted"><strong className="text-ink">{editingWd.name}</strong></p>
+            <Field label="Número do processo SEI">
+              <input className="input" autoFocus maxLength={100} value={editingWd.sei} onChange={e => setEditingWd({ ...editingWd, sei: e.target.value })} placeholder="0000000-00.2026.8.16.6000" />
+            </Field>
+            <Field label="Data do pedido de desistência">
+              <input className="input" type="date" value={editingWd.requestDate ?? ''} onChange={e => setEditingWd({ ...editingWd, requestDate: e.target.value })} />
+            </Field>
+            <div className="flex justify-end gap-2">
+              <button type="button" className="btn-ghost" onClick={() => setEditingWd(null)}>Cancelar</button>
+              <button className="btn-primary">Salvar</button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
       {dropping && (
         <Modal title="Registrar desistência" onClose={() => setDropping(null)}>
           <form onSubmit={submitWithdrawal} className="space-y-4">
             <p className="text-sm text-muted"><strong className="text-ink">{dropping.name}</strong> deixará todas as designações vigentes e passará à relação de desistentes.</p>
-            <Field label="Número do processo SEI em que consta a desistência">
-              <input className="input" required autoFocus maxLength={100} value={sei} onChange={e => setSei(e.target.value)} placeholder="0000000-00.2026.8.16.6000" />
+            <Field label="Número do processo SEI em que consta a desistência (pode ser informado depois)">
+              <input className="input" autoFocus maxLength={100} value={sei} onChange={e => setSei(e.target.value)} placeholder="0000000-00.2026.8.16.6000" />
             </Field>
-            <Field label="Data do pedido de desistência">
-              <input className="input" type="date" required value={requestDate} max={today()} onChange={e => setRequestDate(e.target.value)} />
+            <Field label="Data do pedido de desistência (pode ser informada depois)">
+              <input className="input" type="date" value={requestDate} max={today()} onChange={e => setRequestDate(e.target.value)} />
             </Field>
             <div className="flex justify-end gap-2">
               <button type="button" className="btn-ghost" onClick={() => setDropping(null)}>Cancelar</button>
-              <button className="btn-primary" disabled={sei.trim().length < 3 || !requestDate}>Registrar desistência</button>
+              <button className="btn-primary">Registrar desistência</button>
             </div>
           </form>
         </Modal>
@@ -1160,7 +1185,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             {magistrates.length === 0 && <EmptyRow cols={7}>Nenhuma inscrição nesta edição.</EmptyRow>}
             {sortedMagistrates.map(m => (
               <tr key={m.id}>
-                <td className="td"><div className="font-medium">{m.name}</div>{viewAll && <div className="text-[11px] text-bronze">{m.editionTitle}</div>}<div className="text-xs text-muted">{m.email}</div>{m.registeredIp && <div className="text-[11px] text-muted/80">IP {m.registeredIp}</div>}{m.declaration && <div className="text-[11px] text-ok mt-0.5">Declaração de regularidade aceita</div>}{m.priorWithdrawal && <div className="text-[11px] text-warn mt-0.5">Já desistiu antes (SEI {m.priorWithdrawal.sei}{m.priorWithdrawal.requestDate ? `, pedido em ${m.priorWithdrawal.requestDate.split('-').reverse().join('/')}` : ''}). Se deferida esta inscrição, a desistência passa a valer só para o período anterior.</div>}</td>
+                <td className="td"><div className="font-medium">{m.name}</div>{viewAll && <div className="text-[11px] text-bronze">{m.editionTitle}</div>}<div className="text-xs text-muted">{m.email}</div>{m.registeredIp && <div className="text-[11px] text-muted/80">IP {m.registeredIp}</div>}{m.declaration && <div className="text-[11px] text-ok mt-0.5">Declaração de regularidade aceita</div>}{m.priorWithdrawal && <div className="text-[11px] text-warn mt-0.5">Já desistiu antes (SEI {m.priorWithdrawal.sei || 'não informado'}{m.priorWithdrawal.requestDate ? `, pedido em ${m.priorWithdrawal.requestDate.split('-').reverse().join('/')}` : ''}). Se deferida esta inscrição, a desistência passa a valer só para o período anterior.</div>}</td>
                 <td className="td"><DateCell iso={m.createdAt} /></td>
                 <td className="td text-muted">{m.currentLocation}</td>
                 <td className="td text-xs"><div className="text-bronze font-medium">1ª: {m.firstPreference}</div><div className="text-muted">2ª: {m.secondPreference || '—'}</div></td>
