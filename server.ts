@@ -412,7 +412,7 @@ const freeText = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().
 
 type Parsed<T> = { error: string } | { value: T };
 
-/** `strict` (inscrição pública): 2ª escolha e aceite de audiências são obrigatórios e precisam vir preenchidos. */
+/** `strict` (inscrição pública): o aceite de audiências é obrigatório e precisa vir preenchido. A 2ª escolha é opcional. */
 function parseMagistrate(b: any, base?: Magistrate, strict = false): Parsed<Pick<Magistrate, 'name' | 'email' | 'currentLocation' | 'firstPreference' | 'secondPreference' | 'acceptsHearings'>> {
   const pick = (k: keyof Magistrate) => (b?.[k] == null && base ? base[k] : b?.[k]);
   const name = cleanText(pick('name'), 200);
@@ -426,7 +426,6 @@ function parseMagistrate(b: any, base?: Magistrate, strict = false): Parsed<Pick
   const first = pick('firstPreference');
   if (typeof first !== 'string' || !PREFERENCE_AREAS.includes(first)) return { error: 'Escolha uma área válida na 1ª escolha.' };
   const second = pick('secondPreference') ?? '';
-  if (strict && second === '') return { error: 'Escolha a 2ª área de preferência.' };
   if (typeof second !== 'string' || (second !== '' && !PREFERENCE_AREAS.includes(second))) return { error: 'Escolha uma área válida na 2ª escolha.' };
   if (second && second === first) return { error: 'A 2ª escolha não pode ser igual à 1ª escolha.' };
   const hearings = pick('acceptsHearings');

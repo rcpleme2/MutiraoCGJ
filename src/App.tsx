@@ -47,6 +47,7 @@ function AppInner() {
   const [faq, setFaq] = useState<FaqItem[]>([]);
   const [panel, setPanel] = useState<{ visible: boolean; edition?: string; rows?: PanelRow[] }>({ visible: false });
   const [panelQuery, setPanelQuery] = useState('');
+  const [panelAreas, setPanelAreas] = useState<string[]>([]); // áreas escolhidas pelo visitante (vazio = todas)
   const [openFaq, setOpenFaq] = useState('');
   const loadEdition = () => {
     api<FaqItem[]>('/faq').then(setFaq).catch(() => {});
@@ -213,7 +214,14 @@ function AppInner() {
         {tab === 'panel' && (() => {
           const fold = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
           const q = fold(panelQuery.trim());
-          const rows = (panel.rows ?? []).filter(r => !q || fold(`${r.name} ${r.area} ${r.unit}`).includes(q));
+          const allRows = panel.rows ?? [];
+          // Áreas existentes no painel (agrupadas sem distinguir acento/caixa), com a quantidade de designações
+          const areaMap = new Map<string, { label: string; count: number }>();
+          allRows.forEach(r => { const k = fold(r.area.trim()); const cur = areaMap.get(k); if (cur) cur.count++; else areaMap.set(k, { label: r.area.trim(), count: 1 }); });
+          const areas = [...areaMap.entries()].sort((a, b) => a[1].label.localeCompare(b[1].label, 'pt-BR'));
+          const selected = panelAreas.filter(k => areaMap.has(k));
+          const toggleArea = (k: string) => setPanelAreas(selected.includes(k) ? selected.filter(x => x !== k) : [...selected, k]);
+          const rows = allRows.filter(r => (selected.length === 0 || selected.includes(fold(r.area.trim()))) && (!q || fold(`${r.name} ${r.area} ${r.unit}`).includes(q)));
           return (
             <section className="card max-w-4xl mx-auto p-7 sm:p-10">
               <div className="mb-6 pb-6 border-b border-line">
@@ -225,13 +233,32 @@ function AppInner() {
                 <>
                   <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
                     <input className="input max-w-sm" type="search" placeholder="Buscar por nome, área ou unidade" aria-label="Buscar no painel" value={panelQuery} onChange={e => setPanelQuery(e.target.value)} />
-                    <span className="text-xs text-muted">{rows.length} de {(panel.rows ?? []).length} designação(ões)</span>
+                    <span className="text-xs text-muted">{rows.length} de {allRows.length} designação(ões)</span>
                   </div>
+                  {areas.length > 1 && (
+                    <div className="mb-4" role="group" aria-label="Filtrar por área de atuação">
+                      <div className="flex items-center justify-between gap-3 mb-2">
+                        <span className="text-xs font-medium text-muted tracking-wide">Área de atuação</span>
+                        {selected.length > 0 && <button className="text-xs text-bronze hover:underline" onClick={() => setPanelAreas([])}>Limpar filtro</button>}
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {areas.map(([k, a]) => {
+                          const on = selected.includes(k);
+                          return (
+                            <button key={k} type="button" aria-pressed={on} onClick={() => toggleArea(k)}
+                              className={`px-3 py-1.5 rounded-full text-xs border transition-colors ${on ? 'bg-navy text-white border-navy' : 'bg-surface text-muted border-line hover:text-ink hover:border-slate-300'}`}>
+                              {a.label} <span className={on ? 'text-white/70' : 'text-muted/70'}>({a.count})</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
                   <div className="border border-line rounded-md overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead><tr><th className="th">Magistrado(a)</th><th className="th">Área de atuação</th><th className="th">Unidade</th></tr></thead>
                       <tbody className="divide-y divide-line">
-                        {rows.length === 0 && <tr><td colSpan={3} className="px-4 py-10 text-center text-muted">{(panel.rows ?? []).length === 0 ? 'Nenhuma designação publicada ainda.' : 'Nenhum resultado para a busca.'}</td></tr>}
+                        {rows.length === 0 && <tr><td colSpan={3} className="px-4 py-10 text-center text-muted">{allRows.length === 0 ? 'Nenhuma designação publicada ainda.' : 'Nenhum resultado para o filtro escolhido.'}</td></tr>}
                         {rows.map((r, i) => (
                           <tr key={i}><td className="td font-medium">{r.name}</td><td className="td text-muted">{r.area}</td><td className="td">{r.unit}</td></tr>
                         ))}

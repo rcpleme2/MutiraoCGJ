@@ -62,8 +62,8 @@ export function MagistrateForm({
       onSubmit={async e => {
         e.preventDefault();
         // Todos os campos de escolha precisam ser preenchidos (não há valor pré-selecionado)
-        if (!f.firstPreference || (!initial && !f.secondPreference) || !f.acceptsHearings) {
-          setLocalError('Preencha a 1ª escolha, a 2ª escolha e informe se aceita realizar audiências.');
+        if (!f.firstPreference || !f.acceptsHearings) {
+          setLocalError('Preencha a 1ª escolha e informe se aceita realizar audiências.');
           return;
         }
         setLocalError('');
@@ -89,9 +89,9 @@ export function MagistrateForm({
             {PREFERENCE_AREAS.map(a => <option key={a}>{a}</option>)}
           </select>
         </Field>
-        <Field label="2ª escolha (área)">
-          <select required={!initial} className="input" value={f.secondPreference} onChange={set('secondPreference')}>
-            <option value="" disabled={!initial}>{initial ? 'Nenhuma' : 'Selecione…'}</option>
+        <Field label="2ª escolha (área) — opcional">
+          <select className="input" value={f.secondPreference} onChange={set('secondPreference')}>
+            <option value="">Nenhuma</option>
             {PREFERENCE_AREAS.filter(a => a !== f.firstPreference).map(a => <option key={a}>{a}</option>)}
           </select>
         </Field>
