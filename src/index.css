@@ -41,6 +41,7 @@
   .btn-secondary { @apply bg-surface text-ink border border-line hover:bg-paper; }
   .btn-ghost { @apply text-muted hover:bg-paper hover:text-ink px-3 py-2; }
   .btn-danger { @apply text-danger hover:bg-danger-soft px-2.5 py-2; }
+  .input:disabled { @apply bg-paper text-muted cursor-not-allowed; }
   .btn-sm { @apply px-3 py-1.5 text-xs; }
   .th { @apply px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-muted bg-paper; }
   .td { @apply px-4 py-3.5 align-top; }

@@ -1,5 +1,4 @@
 import express from 'express';
-import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
@@ -7,6 +6,8 @@ import XLSX from 'xlsx';
 import crypto from 'crypto';
 import fs from 'fs';
 import { Firestore } from '@google-cloud/firestore';
+import QRCode from 'qrcode';
+import { AsyncLocalStorage } from 'async_hooks';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -69,6 +70,8 @@ interface Unit {
   status: 'Pendente' | 'Atendida' | 'Em Andamento';
   /** Triagem da administração: só unidades "Escolhida" entram na vinculação */
   selection: UnitSelection;
+  /** Quantos magistrados serão alocados nesta unidade (padrão 1; definido pela administração) */
+  slots: number;
   rejectionReason?: string;
   rejectedAt?: string;
 }
@@ -81,7 +84,7 @@ interface Match {
   assignedArea: string;
   /** O que o magistrado fará na unidade: audiências, sentenças ou ambos */
   workType: WorkType;
-  /** Preenchido quando a unidade já tinha outro magistrado: vinculação adicional, em caráter excepcional */
+  /** Legado: motivo informado em vinculações adicionais antes de existir o número de vagas; não é mais exigido */
   exceptionReason?: string;
   status: 'Vinculado' | 'Concluído';
   createdAt: string;
@@ -106,6 +109,8 @@ interface LogEntry {
   actor: 'Administração' | 'Público' | 'Sistema';
   category: LogCategory;
   description: string;
+  /** IP de quem originou a ação (preenchido automaticamente nas requisições) */
+  ip?: string;
 }
 
 // Senha administrativa: defina ADMIN_PASSWORD nos Secrets do AI Studio.
@@ -115,6 +120,40 @@ if (!adminPassword) {
   adminPassword = crypto.randomBytes(9).toString('base64url');
   console.warn(`[SEGURANÇA] ADMIN_PASSWORD não definida. Senha temporária gerada: ${adminPassword}`);
 }
+
+// ---------- Autenticação em dois fatores (TOTP, RFC 6238) ----------
+const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+const base32Encode = (buf: Buffer) => {
+  let bits = 0, value = 0, out = '';
+  for (const byte of buf) { value = (value << 8) | byte; bits += 8; while (bits >= 5) { out += B32[(value >>> (bits - 5)) & 31]; bits -= 5; } }
+  if (bits > 0) out += B32[(value << (5 - bits)) & 31];
+  return out;
+};
+const base32Decode = (s: string) => {
+  let bits = 0, value = 0; const out: number[] = [];
+  for (const ch of s.replace(/=+$/, '').toUpperCase()) { const i = B32.indexOf(ch); if (i < 0) continue; value = (value << 5) | i; bits += 5; if (bits >= 8) { out.push((value >>> (bits - 8)) & 255); bits -= 8; } }
+  return Buffer.from(out);
+};
+const totpAt = (secret: string, step: number) => {
+  const msg = Buffer.alloc(8); msg.writeBigUInt64BE(BigInt(step));
+  const h = crypto.createHmac('sha1', base32Decode(secret)).update(msg).digest();
+  const o = h[h.length - 1] & 0xf;
+  const code = (((h[o] & 0x7f) << 24) | (h[o + 1] << 16) | (h[o + 2] << 8) | h[o + 3]) % 1_000_000;
+  return String(code).padStart(6, '0');
+};
+let lastTotpStep = 0; // impede reutilizar um código já aceito (replay)
+function verifyTotp(secret: string, code: unknown): boolean {
+  if (typeof code !== 'string' || !/^\d{6}$/.test(code)) return false;
+  const now = Math.floor(Date.now() / 30_000);
+  for (const step of [now - 1, now, now + 1]) { // tolera pequena diferença de relógio
+    if (step <= lastTotpStep) continue;
+    const expected = Buffer.from(totpAt(secret, step));
+    if (crypto.timingSafeEqual(expected, Buffer.from(code))) { lastTotpStep = step; return true; }
+  }
+  return false;
+}
+/** Desafios do login: a senha já foi validada; falta o código do segundo fator (ou o cadastro do aplicativo). */
+const challenges = new Map<string, { exp: number; tries: number; pendingSecret?: string }>();
 
 // Sessões administrativas (token opaco, expira em 8h)
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
@@ -130,6 +169,8 @@ const hasValidToken = (req: express.Request) => {
 // Limite de inscrições públicas por IP a cada 10 minutos. Vários servidores do tribunal podem sair pelo
 // mesmo IP, então o valor é ajustável sem alterar o código: defina SIGNUP_MAX_PER_IP no Cloud Run.
 const SIGNUP_MAX_PER_IP = Math.max(1, Number(process.env.SIGNUP_MAX_PER_IP) || 30);
+// Inscrições com erro (validação, duplicidade etc.) têm limite próprio, mais folgado, para frear sondagem de e-mails.
+const SIGNUP_MAX_ERRORS_PER_IP = Math.max(1, Number(process.env.SIGNUP_MAX_ERRORS_PER_IP) || 120);
 const SIGNUP_MAX_GLOBAL_PER_HOUR = Math.max(1, Number(process.env.SIGNUP_MAX_GLOBAL_PER_HOUR) || 600);
 
 // Limitador simples por IP (tentativas de login e consultas por e-mail)
@@ -148,6 +189,7 @@ const refund = (key: string) => { hits.get(key)?.pop(); };
 setInterval(() => {
   const now = Date.now();
   for (const [t, exp] of sessions) if (exp < now) sessions.delete(t);
+  for (const [t, c] of challenges) if (c.exp < now) challenges.delete(t);
   for (const [k, list] of hits) if (!list.some((t) => now - t < 60 * 60_000)) hits.delete(k);
 }, 10 * 60_000).unref();
 
@@ -221,6 +263,7 @@ let units: Unit[] = [
     createdAt: '2026-04-02T11:00:00Z',
     status: 'Pendente',
     selection: 'Escolhida',
+    slots: 1,
   },
   {
     id: 'unit-2',
@@ -235,6 +278,7 @@ let units: Unit[] = [
     createdAt: '2026-04-03T16:45:00Z',
     status: 'Pendente',
     selection: 'Escolhida',
+    slots: 1,
   },
   {
     id: 'unit-3',
@@ -249,6 +293,7 @@ let units: Unit[] = [
     createdAt: '2026-04-04T11:10:00Z',
     status: 'Atendida',
     selection: 'Escolhida',
+    slots: 1,
   },
 ];
 
@@ -266,6 +311,12 @@ let matches: Match[] = [
 ];
 
 let faq: FaqItem[] = [];
+
+/** Autenticação em dois fatores (TOTP) do administrador; o segredo é gravado junto do estado. */
+let adminTotpSecret: string | null = null;
+
+/** Contexto da requisição em andamento (IP), para que todo registro de atividade carregue a origem. */
+const reqCtx = new AsyncLocalStorage<{ ip: string }>();
 
 let activityLog: LogEntry[] = [
   {
@@ -287,6 +338,7 @@ function log(
   category: LogCategory,
   description: string,
 ) {
+  const ip = reqCtx.getStore()?.ip;
   activityLog.unshift({
     id: newId('log'),
     editionId,
@@ -294,8 +346,13 @@ function log(
     actor,
     category,
     description,
+    ...(ip ? { ip } : {}),
   });
-  if (activityLog.length > 5000) activityLog.length = 5000;
+  if (activityLog.length > 5000) activityLog.length = 5000; // corte só na memória; o Firestore mantém o histórico
+  // Cópia estruturada no Cloud Logging (imutável para o aplicativo) das ações administrativas e de acesso
+  if (actor === 'Administração' || category === 'Acesso') {
+    console.log(JSON.stringify({ severity: 'NOTICE', message: description, audit: { category, actor, ip: ip ?? null, editionId } }));
+  }
 }
 
 const clientIp = (req: express.Request) => (req.ip || 'desconhecido').replace(/^::ffff:/, '');
@@ -306,13 +363,16 @@ const defaultWorkType = (unit: Unit, mag: Magistrate): WorkType => {
   return mag.acceptsHearings ? 'Audiência e Sentença' : 'Sentença';
 };
 
-/** Atendimento da unidade conforme as vinculações existentes (regra: 1 magistrado; exceção: mais de um). */
+/** Atendimento da unidade conforme as vinculações existentes e o número de magistrados a alocar (vagas). */
 function refreshUnitStatus(unitId: string) {
   const unit = units.find((u) => u.id === unitId);
   if (!unit) return;
-  if (matches.some((m) => m.unitId === unitId)) unit.status = 'Atendida';
-  else if (unit.status === 'Atendida') unit.status = 'Pendente';
+  const linked = matches.filter((m) => m.unitId === unitId).length;
+  // Pendente: nenhum magistrado; Em Andamento: vagas parcialmente preenchidas; Atendida: todas as vagas preenchidas
+  unit.status = linked === 0 ? 'Pendente' : linked >= (unit.slots || 1) ? 'Atendida' : 'Em Andamento';
 }
+const linkedCount = (unitId: string) => matches.filter((m) => m.unitId === unitId).length;
+const MAX_SLOTS = 20;
 
 // ---------- Validação de entrada ----------
 // Todo dado vindo de formulários é conferido (tipo, tamanho e valores permitidos) antes de ser gravado.
@@ -323,6 +383,16 @@ const PREFERENCE_AREAS = [
   'Juizado Cível, Crime e Fazenda Pública',
 ];
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// Só e-mails institucionais são aceitos nas inscrições. Ajustável por ALLOWED_EMAIL_DOMAINS (lista separada
+// por vírgulas; vazio = sem restrição). Subdomínios do domínio informado também são aceitos.
+const ALLOWED_EMAIL_DOMAINS = (process.env.ALLOWED_EMAIL_DOMAINS ?? 'tjpr.jus.br').split(',').map((d) => d.trim().toLowerCase()).filter(Boolean);
+const emailDomainOk = (email: string) => {
+  if (ALLOWED_EMAIL_DOMAINS.length === 0) return true;
+  const domain = email.split('@')[1]?.toLowerCase() ?? '';
+  return ALLOWED_EMAIL_DOMAINS.some((d) => domain === d || domain.endsWith(`.${d}`));
+};
+const EMAIL_DOMAIN_MESSAGE = `Use o e-mail institucional (${ALLOWED_EMAIL_DOMAINS.map((d) => `@${d}`).join(' ou ')}).`;
+
 const MAGISTRATE_STATUSES: MagistrateStatus[] = ['Aguardando Conferência', 'Aprovado', 'Lista de Espera', 'Atribuído', 'Rejeitado'];
 
 /** Texto obrigatório: precisa ser string, não vazia e dentro do limite. */
@@ -337,7 +407,7 @@ const freeText = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().
 type Parsed<T> = { error: string } | { value: T };
 
 function parseMagistrate(b: any, base?: Magistrate): Parsed<Pick<Magistrate, 'name' | 'email' | 'currentLocation' | 'firstPreference' | 'secondPreference' | 'acceptsHearings'>> {
-  const pick = (k: keyof Magistrate) => (b?.[k] === undefined && base ? base[k] : b?.[k]);
+  const pick = (k: keyof Magistrate) => (b?.[k] == null && base ? base[k] : b?.[k]);
   const name = cleanText(pick('name'), 200);
   const email = cleanText(pick('email'), 200);
   const currentLocation = cleanText(pick('currentLocation'), 300);
@@ -345,6 +415,7 @@ function parseMagistrate(b: any, base?: Magistrate): Parsed<Pick<Magistrate, 'na
     return { error: 'Preencha nome, e-mail e lotação com texto válido (nome até 200, lotação até 300 caracteres).' };
   }
   if (!EMAIL_RE.test(email)) return { error: 'Informe um e-mail válido.' };
+  if ((!base || email.toLowerCase() !== base.email.toLowerCase()) && !emailDomainOk(email)) return { error: EMAIL_DOMAIN_MESSAGE };
   const first = pick('firstPreference');
   if (typeof first !== 'string' || !PREFERENCE_AREAS.includes(first)) return { error: 'Escolha uma área válida na 1ª escolha.' };
   const second = pick('secondPreference') ?? '';
@@ -354,8 +425,8 @@ function parseMagistrate(b: any, base?: Magistrate): Parsed<Pick<Magistrate, 'na
   return { value: { name, email, currentLocation, firstPreference: first, secondPreference: second, acceptsHearings: hearings === true } };
 }
 
-function parseUnit(b: any, base?: Unit): Parsed<Pick<Unit, 'unitName' | 'judgeName' | 'email' | 'comarca' | 'areas' | 'supportNeeded' | 'description'>> {
-  const pick = (k: keyof Unit) => (b?.[k] === undefined && base ? base[k] : b?.[k]);
+function parseUnit(b: any, base?: Unit): Parsed<Pick<Unit, 'unitName' | 'judgeName' | 'email' | 'comarca' | 'areas' | 'supportNeeded' | 'description' | 'slots'>> {
+  const pick = (k: keyof Unit) => (b?.[k] == null && base ? base[k] : b?.[k]);
   const unitName = cleanText(pick('unitName'), 300);
   const judgeName = cleanText(pick('judgeName'), 200);
   const email = cleanText(pick('email'), 200);
@@ -364,6 +435,7 @@ function parseUnit(b: any, base?: Unit): Parsed<Pick<Unit, 'unitName' | 'judgeNa
     return { error: 'Preencha comarca, unidade, responsável e e-mail com texto válido.' };
   }
   if (!EMAIL_RE.test(email)) return { error: 'Informe um e-mail válido.' };
+  if ((!base || email.toLowerCase() !== base.email.toLowerCase()) && !emailDomainOk(email)) return { error: EMAIL_DOMAIN_MESSAGE };
   const areas = pick('areas');
   if (!Array.isArray(areas) || areas.length < 1 || areas.length > PREFERENCE_AREAS.length
     || !areas.every((a) => typeof a === 'string' && PREFERENCE_AREAS.includes(a))) {
@@ -371,9 +443,11 @@ function parseUnit(b: any, base?: Unit): Parsed<Pick<Unit, 'unitName' | 'judgeNa
   }
   const support = pick('supportNeeded') ?? 'Sentença';
   if (!WORK_TYPES.includes(support as WorkType)) return { error: 'Auxílio necessário inválido.' };
+  const slots = pick('slots') ?? 1;
+  if (typeof slots !== 'number' || !Number.isInteger(slots) || slots < 1 || slots > MAX_SLOTS) return { error: `O número de magistrados a alocar deve ser um inteiro de 1 a ${MAX_SLOTS}.` };
   const description = pick('description') ?? '';
   if (typeof description !== 'string' || description.length > 2000) return { error: 'A justificativa pode ter no máximo 2000 caracteres.' };
-  return { value: { unitName, judgeName, email, comarca, areas: [...new Set(areas as string[])], supportNeeded: support as WorkType, description: description.trim() } };
+  return { value: { unitName, judgeName, email, comarca, areas: [...new Set(areas as string[])], supportNeeded: support as WorkType, description: description.trim(), slots } };
 }
 
 /** Dados antigos ou corrompidos (ex.: gravados antes da validação) são convertidos para tipos seguros. */
@@ -394,7 +468,11 @@ function sanitizeStoredRecords() {
 /** Dados gravados antes de existirem a triagem de unidades e a modalidade recebem valores coerentes */
 function normalizeLegacy() {
   sanitizeStoredRecords();
-  units.forEach((u) => { if (!u.selection) u.selection = 'Escolhida'; });
+  units.forEach((u) => {
+    if (!u.selection) u.selection = 'Escolhida';
+    const linked = matches.filter((m) => m.unitId === u.id).length;
+    u.slots = Math.max(1, Number.isInteger(u.slots) ? u.slots : 1, linked);
+  });
   matches.forEach((m) => {
     if (!m.workType) {
       const u = units.find((x) => x.id === m.unitId);
@@ -417,7 +495,35 @@ function resolveEdition(req: express.Request): Edition | undefined {
   return editionById(id);
 }
 
-const publicEdition = (e: Edition) => ({ ...e, isActive: e.id === activeEditionId });
+// ---------- Janela de inscrições ----------
+// As datas das edições são horário de Brasília (sem horário de verão desde 2019); o servidor roda em UTC.
+const BRT = '-03:00';
+type RegistrationState = 'open' | 'not_yet' | 'ended' | 'paused' | 'closed';
+function registrationState(e: Edition): RegistrationState {
+  if (e.status === 'Encerrada') return 'closed';
+  if (!e.isRegistrationOpen) return 'paused';
+  const opens = Date.parse(`${e.openingDate}${BRT}`);
+  const closes = Date.parse(`${e.closingDate}${BRT}`) + 60_000; // inclui o minuto final inteiro (até hh:mm:59)
+  if (Number.isNaN(opens) || Number.isNaN(closes)) return 'paused'; // datas inválidas: fecha por segurança
+  const now = Date.now();
+  if (now < opens) return 'not_yet';
+  if (now >= closes) return 'ended';
+  return 'open';
+}
+const fmtLocal = (local: string) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(local);
+  return m ? `${m[3]}/${m[2]}/${m[1]} às ${m[4]}:${m[5]}` : local;
+};
+function registrationMessage(e: Edition, state: RegistrationState) {
+  if (state === 'not_yet') return `As inscrições ainda não foram abertas. Abertura em ${fmtLocal(e.openingDate)} (horário de Brasília).`;
+  if (state === 'ended') return `O prazo de inscrições foi encerrado em ${fmtLocal(e.closingDate)} (horário de Brasília).`;
+  return 'As inscrições desta edição estão encerradas ou temporariamente suspensas pela coordenação.';
+}
+
+const publicEdition = (e: Edition) => {
+  const state = registrationState(e);
+  return { ...e, isActive: e.id === activeEditionId, registration: { state, message: state === 'open' ? '' : registrationMessage(e, state) } };
+};
 
 function editionStats(e: Edition) {
   const mags = magistrates.filter((m) => m.editionId === e.id);
@@ -447,6 +553,8 @@ const db = process.env.K_SERVICE || process.env.USE_FIRESTORE === 'true'
   : null;
 const PREFIX = 'mutirao_';
 const lastSaved = new Map<string, Map<string, string>>();
+/** Entradas do registro já gravadas: o log é imutável, só se acrescenta e nunca se apaga do banco. */
+let persistedLogIds = new Set<string>();
 let lastMeta = '';
 
 const collectionsNow = (): Record<string, { id: string }[]> => ({
@@ -464,15 +572,20 @@ async function loadState() {
       matches = raw.matches ?? matches;
       activityLog = raw.activityLog ?? activityLog;
       faq = raw.faq ?? faq;
+      adminTotpSecret = raw.adminTotpSecret ?? null;
     } catch { /* primeira execução: usa os dados iniciais */ }
     return;
   }
 
   const loaded: Record<string, any[]> = {};
   for (const name of Object.keys(collectionsNow())) {
-    const snap = await db.collection(PREFIX + name).get();
+    // O registro de atividades é carregado apenas nas 5.000 entradas mais recentes (o restante permanece no banco)
+    const snap = name === 'log'
+      ? await db.collection(PREFIX + name).orderBy('timestamp', 'desc').limit(5000).get()
+      : await db.collection(PREFIX + name).get();
     loaded[name] = snap.docs.map((d) => d.data());
-    lastSaved.set(name, new Map(loaded[name].map((i) => [i.id, JSON.stringify(i)])));
+    if (name === 'log') persistedLogIds = new Set(loaded[name].map((i) => i.id));
+    else lastSaved.set(name, new Map(loaded[name].map((i) => [i.id, JSON.stringify(i)])));
   }
   const meta = (await db.collection(PREFIX + 'meta').doc('state').get()).data();
 
@@ -491,7 +604,8 @@ async function loadState() {
   activityLog = (loaded.log as LogEntry[]).sort((x, y) => y.timestamp.localeCompare(x.timestamp));
   faq = loaded.faq as FaqItem[];
   activeEditionId = meta?.activeEditionId ?? editions[0].id;
-  lastMeta = JSON.stringify({ activeEditionId });
+  adminTotpSecret = meta?.adminTotpSecret ?? null;
+  lastMeta = JSON.stringify({ activeEditionId, adminTotpSecret });
 }
 
 async function persist() {
@@ -499,7 +613,7 @@ async function persist() {
     fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
     fs.writeFileSync(
       DATA_FILE,
-      JSON.stringify({ editions, activeEditionId, magistrates, units, matches, activityLog, faq }),
+      JSON.stringify({ editions, activeEditionId, magistrates, units, matches, activityLog, faq, adminTotpSecret }),
     );
     return;
   }
@@ -509,7 +623,13 @@ async function persist() {
   const ops: Op[] = [];
   const nextSaved = new Map<string, Map<string, string>>();
 
+  const newLogIds: string[] = [];
   for (const [name, items] of Object.entries(collectionsNow())) {
+    if (name === 'log') {
+      const col = db.collection(PREFIX + 'log');
+      for (const item of items) if (!persistedLogIds.has(item.id)) { ops.push({ kind: 'set', ref: col.doc(item.id), data: JSON.parse(JSON.stringify(item)) }); newLogIds.push(item.id); }
+      continue;
+    }
     const prev = lastSaved.get(name) ?? new Map<string, string>();
     const next = new Map<string, string>();
     const col = db.collection(PREFIX + name);
@@ -521,7 +641,7 @@ async function persist() {
     for (const id of prev.keys()) if (!next.has(id)) ops.push({ kind: 'del', ref: col.doc(id) });
     nextSaved.set(name, next);
   }
-  const meta = JSON.stringify({ activeEditionId });
+  const meta = JSON.stringify({ activeEditionId, adminTotpSecret });
   if (meta !== lastMeta) ops.push({ kind: 'set', ref: db.collection(PREFIX + 'meta').doc('state'), data: JSON.parse(meta) });
 
   for (let i = 0; i < ops.length; i += 400) {
@@ -532,6 +652,9 @@ async function persist() {
     await batch.commit();
   }
   nextSaved.forEach((v, k) => lastSaved.set(k, v));
+  newLogIds.forEach((id) => persistedLogIds.add(id));
+  // mantém só os ids ainda presentes na memória, para o conjunto não crescer indefinidamente
+  { const inMemory = new Set(activityLog.map((l) => l.id)); persistedLogIds = new Set([...persistedLogIds].filter((id) => inMemory.has(id))); }
   lastMeta = meta;
 }
 
@@ -587,17 +710,28 @@ async function startServer() {
   app.use(express.json({ limit: '50kb' }));
   await loadState();
   normalizeLegacy();
+  // Perdeu o celular do autenticador? Defina RESET_ADMIN_2FA=true, publique, entre (será pedido novo cadastro) e remova a variável.
+  if (process.env.RESET_ADMIN_2FA === 'true' && adminTotpSecret) {
+    adminTotpSecret = null;
+    log(null, 'Sistema', 'Acesso', 'Autenticação em dois fatores redefinida por variável de ambiente (RESET_ADMIN_2FA).');
+    await saveState();
+  }
   app.set('trust proxy', 1); // Cloud Run: IP real do cliente para o limitador
+  app.set('etag', false);
+  // Todas as respostas da API proíbem cache (painel e consultas contêm dados pessoais)
+  app.use('/api', (_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
+  // IP da origem disponível em todo registro de atividade gerado durante a requisição
+  app.use((req, _res, next) => reqCtx.run({ ip: clientIp(req) }, next));
 
   // Proteção das rotas: somente o necessário é público; o resto exige sessão administrativa.
   app.use('/api', (req, res, next) => {
     const ip = req.ip || 'unknown';
     const admin = hasValidToken(req);
-    const publicRead = req.method === 'GET' && ['/settings', '/status', '/whoami', '/faq'].includes(req.path);
+    const publicRead = (req.method === 'GET' && ['/settings', '/faq'].includes(req.path)) || (req.method === 'POST' && req.path === '/status');
     const publicSignup = req.method === 'POST' && (req.path === '/magistrates' || req.path === '/units');
-    const login = req.method === 'POST' && req.path === '/admin/login';
+    const login = req.method === 'POST' && (req.path === '/admin/login' || req.path === '/admin/login/verify');
 
-    if (req.path === '/status' && rateLimited(`status:${ip}`, 30, 60_000)) {
+    if (req.method === 'POST' && req.path === '/status' && rateLimited(`status:${ip}`, 30, 60_000)) {
       return res.status(429).json({ error: 'Muitas consultas. Aguarde um instante.' });
     }
     if (publicSignup && !admin) {
@@ -610,9 +744,15 @@ async function startServer() {
       const ipKey = `signup:${ip}`;
       const limited = rateLimited(ipKey, SIGNUP_MAX_PER_IP, 10 * 60_000);
       const globalLimited = rateLimited('signup:global', SIGNUP_MAX_GLOBAL_PER_HOUR, 60 * 60_000);
+      // Inscrições com erro (validação, duplicidade, fora do prazo) não gastam o limite principal, mas contam em um
+      // limite próprio mais folgado: impede sondar e-mails já inscritos por tentativa e erro.
+      const errKey = `signuperr:${ip}`;
+      const errOver = (hits.get(errKey) ?? []).filter((t) => Date.now() - t < 10 * 60_000).length >= SIGNUP_MAX_ERRORS_PER_IP;
       res.on('finish', () => {
         if (res.statusCode !== 201 || limited || globalLimited) { refund(ipKey); refund('signup:global'); }
+        if (res.statusCode >= 400 && res.statusCode !== 429) { const l = hits.get(errKey) ?? []; l.push(Date.now()); hits.set(errKey, l); }
       });
+      if (errOver) return res.status(429).json({ error: 'Muitas tentativas com erro. Aguarde alguns minutos e tente novamente.' });
       if (limited || globalLimited) {
         return res.status(429).json({ error: 'Muitas inscrições em pouco tempo. Aguarde alguns minutos e tente novamente.' });
       }
@@ -628,9 +768,13 @@ async function startServer() {
   });
   // Em requisições que alteram dados, grava antes de responder.
   app.use('/api', (req, res, next) => {
+    // Consultas e a etapa 1 do login não alteram dados: só gravam se gerarem registro de segurança (res.locals.persist)
+    const readOnlyPost = ['/status', '/admin/login', '/admin/logout'].includes(req.path);
     if (req.method !== 'GET') {
       const json = res.json.bind(res);
       res.json = (body: any) => {
+        // Respostas de erro (4xx/5xx) não alteraram o estado: não há o que gravar (salvo registros de segurança)
+        if ((res.statusCode >= 400 || readOnlyPost) && !res.locals.persist) return json(body);
         saveState().then((ok) => {
           if (ok) return json(body);
           res.status(500);
@@ -643,21 +787,66 @@ async function startServer() {
   });
 
   // ---------- Admin auth ----------
-  app.post('/api/admin/login', (req, res) => {
+  /** Registro de tentativa malsucedida: sempre no Cloud Logging; no registro interno com limite para não inundá-lo. */
+  const failedLogin = (req: express.Request, res: express.Response, what: string) => {
+    const ip = clientIp(req);
+    console.log(JSON.stringify({ severity: 'WARNING', message: `Falha de autenticação do administrador: ${what}`, audit: { category: 'Acesso', ip } }));
+    if (!rateLimited(`faillog:${ip}`, 5, 10 * 60_000)) log(null, 'Sistema', 'Acesso', `Falha de autenticação do administrador: ${what}.`);
+    res.locals.persist = true; // esta resposta é 4xx, mas o registro precisa ser gravado
+  };
+  const openSession = (res: express.Response, how: string) => {
+    const token = crypto.randomBytes(24).toString('hex');
+    sessions.set(token, Date.now() + SESSION_TTL_MS);
+    log(null, 'Administração', 'Acesso', `Acesso ao painel administrativo (${how}).`);
+    res.json({ success: true, token });
+  };
+
+  // Etapa 1: senha (definida apenas pela variável de ambiente ADMIN_PASSWORD)
+  app.post('/api/admin/login', async (req, res) => {
     if (rateLimited(`login:${req.ip}`, 8, 10 * 60_000)) {
       return res.status(429).json({ success: false, message: 'Muitas tentativas. Tente novamente em alguns minutos.' });
     }
     const given = Buffer.from(String(req.body?.password ?? ''));
     const expected = Buffer.from(adminPassword);
     const ok = given.length === expected.length && crypto.timingSafeEqual(given, expected);
-    if (ok) {
-      const token = crypto.randomBytes(24).toString('hex');
-      sessions.set(token, Date.now() + SESSION_TTL_MS);
-      log(null, 'Administração', 'Acesso', 'Acesso ao painel administrativo.');
-      res.json({ success: true, token });
-    } else {
-      res.status(401).json({ success: false, message: 'Senha administrativa incorreta.' });
+    if (!ok) {
+      failedLogin(req, res, 'senha incorreta');
+      return res.status(401).json({ success: false, message: 'Senha administrativa incorreta.' });
     }
+    const challenge = crypto.randomBytes(24).toString('hex');
+    if (adminTotpSecret) {
+      challenges.set(challenge, { exp: Date.now() + 5 * 60_000, tries: 0 });
+      return res.json({ success: true, step: 'totp', challenge });
+    }
+    // Primeiro acesso: o administrador cadastra o aplicativo autenticador (segredo + QR code)
+    const pendingSecret = base32Encode(crypto.randomBytes(20));
+    challenges.set(challenge, { exp: Date.now() + 10 * 60_000, tries: 0, pendingSecret });
+    const otpauth = `otpauth://totp/${encodeURIComponent('Mutirão CGJ')}:${encodeURIComponent('Administração')}?secret=${pendingSecret}&issuer=${encodeURIComponent('Mutirão CGJ')}`;
+    const qrSvg = await QRCode.toString(otpauth, { type: 'svg', margin: 1, width: 200 });
+    res.json({ success: true, step: 'enroll', challenge, secret: pendingSecret, otpauth, qrSvg });
+  });
+
+  // Etapa 2: código de 6 dígitos (ou confirmação do cadastro do autenticador, no primeiro acesso)
+  app.post('/api/admin/login/verify', (req, res) => {
+    if (rateLimited(`totp:${req.ip}`, 10, 10 * 60_000)) {
+      return res.status(429).json({ success: false, message: 'Muitas tentativas. Tente novamente em alguns minutos.' });
+    }
+    const ch = challenges.get(String(req.body?.challenge ?? ''));
+    if (!ch || ch.exp < Date.now()) return res.status(401).json({ success: false, message: 'Sessão de login expirada. Informe a senha novamente.' });
+    if (++ch.tries > 5) { challenges.delete(String(req.body.challenge)); return res.status(401).json({ success: false, message: 'Tentativas esgotadas. Informe a senha novamente.' }); }
+
+    const secret = ch.pendingSecret ?? adminTotpSecret;
+    if (!secret || !verifyTotp(secret, req.body?.code)) {
+      failedLogin(req, res, 'código de verificação incorreto');
+      return res.status(401).json({ success: false, message: 'Código incorreto.' });
+    }
+    challenges.delete(String(req.body.challenge));
+    if (ch.pendingSecret) {
+      adminTotpSecret = ch.pendingSecret;
+      log(null, 'Administração', 'Acesso', 'Autenticação em dois fatores configurada.');
+      return openSession(res, 'primeiro acesso com cadastro do autenticador');
+    }
+    openSession(res, 'senha e código de verificação');
   });
 
   app.post('/api/admin/logout', (req, res) => {
@@ -666,26 +855,7 @@ async function startServer() {
     res.json({ success: true });
   });
 
-  app.post('/api/admin/password', (req, res) => {
-    const { currentPassword, newPassword } = req.body || {};
-    if (currentPassword !== adminPassword) {
-      return res.status(401).json({ error: 'Senha atual incorreta.' });
-    }
-    if (!newPassword || String(newPassword).length < 6) {
-      return res.status(400).json({ error: 'A nova senha deve ter ao menos 6 caracteres.' });
-    }
-    adminPassword = String(newPassword);
-    // Revoga todas as outras sessões; só a atual (de quem trocou a senha) continua válida
-    const current = req.header('x-admin-token');
-    for (const t of [...sessions.keys()]) if (t !== current) sessions.delete(t);
-    log(null, 'Administração', 'Acesso', 'Senha administrativa alterada; demais sessões encerradas.');
-    res.json({ success: true });
-  });
-
   // ---------- Editions ----------
-  // IP do solicitante (exibido no formulário público e registrado na inscrição)
-  app.get('/api/whoami', (req, res) => res.json({ ip: clientIp(req) }));
-
   // Public settings: the active edition (kept shape-compatible with the former /api/settings).
   app.get('/api/settings', (_req, res) => {
     const active = editionById(activeEditionId) || editions[0];
@@ -849,9 +1019,11 @@ async function startServer() {
     res.json(edition ? magistrates.filter((m) => m.editionId === edition.id) : []);
   });
 
-  // Public consultation across all editions
-  app.get('/api/status', (req, res) => {
-    const emailQuery = ((req.query.email as string) || '').trim().toLowerCase();
+  // Consulta pública (todas as edições). O e-mail vai no corpo da requisição (POST), não na URL, para não
+  // aparecer em registros de acesso. Só devolve o que a tela exibe: nada de IP, e-mail de terceiros ou dados internos.
+  app.post('/api/status', (req, res) => {
+    const raw = req.body?.email;
+    const emailQuery = typeof raw === 'string' ? raw.trim().toLowerCase().slice(0, 200) : '';
     if (!emailQuery) {
       return res.status(400).json({ error: 'Informe o e-mail cadastrado.' });
     }
@@ -868,19 +1040,34 @@ async function startServer() {
     res.json({
       magistrates: matchedMagistrates.map((mag) => {
         const match = matches.find((m) => m.magistrateId === mag.id);
-        const assignedUnit = match ? units.find((u) => u.id === match.unitId) || null : null;
-        // O motivo da rejeição é de uso interno e não é exposto na consulta pública
-        const { rejectionReason: _reason, rejectedAt: _rejectedAt, registeredIp: _ip, ...publicMag } = mag;
+        const assigned = match ? units.find((u) => u.id === match.unitId) : undefined;
         return {
-          ...publicMag,
+          id: mag.id,
+          name: mag.name,
+          currentLocation: mag.currentLocation,
+          firstPreference: mag.firstPreference,
+          secondPreference: mag.secondPreference,
+          acceptsHearings: mag.acceptsHearings,
+          status: mag.status,
+          createdAt: mag.createdAt,
           editionTitle: titleOf(mag.editionId),
-          match: match ? { ...match, unit: assignedUnit } : null,
+          match: match
+            ? { assignedArea: match.assignedArea, workType: match.workType, unit: assigned ? { unitName: assigned.unitName, comarca: assigned.comarca } : null }
+            : null,
         };
       }),
-      units: matchedUnits.map((u) => {
-        const { rejectionReason: _r, rejectedAt: _a, registeredIp: _i, ...publicUnit } = u;
-        return { ...publicUnit, editionTitle: titleOf(u.editionId) };
-      }),
+      units: matchedUnits.map((u) => ({
+        id: u.id,
+        unitName: u.unitName,
+        comarca: u.comarca,
+        judgeName: u.judgeName,
+        areas: u.areas,
+        supportNeeded: u.supportNeeded,
+        status: u.status,
+        selection: u.selection,
+        createdAt: u.createdAt,
+        editionTitle: titleOf(u.editionId),
+      })),
     });
   });
 
@@ -891,8 +1078,9 @@ async function startServer() {
     const parsed = parseMagistrate(req.body);
     if ('error' in parsed) return res.status(400).json({ error: parsed.error });
     const { name, email, currentLocation, firstPreference, secondPreference, acceptsHearings } = parsed.value;
-    if (source !== 'admin' && (!edition.isRegistrationOpen || edition.status === 'Encerrada')) {
-      return res.status(403).json({ error: 'As inscrições desta edição estão encerradas.' });
+    if (source !== 'admin') {
+      const reg = registrationState(edition);
+      if (reg !== 'open') return res.status(403).json({ error: registrationMessage(edition, reg) });
     }
     if (source !== 'admin' && declaration !== true) {
       return res.status(400).json({ error: 'É necessário aceitar a declaração de regularidade para concluir a inscrição.' });
@@ -1082,9 +1270,10 @@ async function startServer() {
     if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
     const parsed = parseUnit(req.body);
     if ('error' in parsed) return res.status(400).json({ error: parsed.error });
-    const { unitName, judgeName, email, comarca, areas, supportNeeded, description } = parsed.value;
-    if (source !== 'admin' && (!edition.isRegistrationOpen || edition.status === 'Encerrada')) {
-      return res.status(403).json({ error: 'As inscrições desta edição estão encerradas.' });
+    const { unitName, judgeName, email, comarca, areas, supportNeeded, description, slots } = parsed.value;
+    if (source !== 'admin') {
+      const reg = registrationState(edition);
+      if (reg !== 'open') return res.status(403).json({ error: registrationMessage(edition, reg) });
     }
 
     const newUnit: Unit = {
@@ -1097,6 +1286,7 @@ async function startServer() {
       areas,
       supportNeeded,
       description,
+      slots,
       registeredIp: source === 'admin' ? undefined : clientIp(req),
       createdAt: new Date().toISOString(),
       status: 'Pendente',
@@ -1166,19 +1356,19 @@ async function startServer() {
 
     const labels: Record<string, string> = {
       unitName: 'unidade', judgeName: 'responsável', email: 'e-mail', comarca: 'comarca',
-      areas: 'áreas', supportNeeded: 'auxílio necessário', description: 'justificativa',
+      areas: 'áreas', supportNeeded: 'auxílio necessário', description: 'justificativa', slots: 'magistrados a alocar',
     };
+    if (next.slots < linkedCount(unit.id)) {
+      return res.status(409).json({ error: `Há ${linkedCount(unit.id)} magistrado(s) vinculado(s) a esta unidade. Desfaça vínculos antes de reduzir o número de vagas.` });
+    }
     const changed = (Object.keys(next) as (keyof typeof next)[])
       .filter((k) => JSON.stringify(next[k]) !== JSON.stringify(unit[k]))
       .map((k) => labels[k]);
     Object.assign(unit, next);
 
-    const isMatched = matches.some((m) => m.unitId === unit.id);
-    const wanted = (b.status === 'Pendente' || b.status === 'Em Andamento' ? b.status : undefined) as Unit['status'] | undefined;
+    // O status é calculado pelas vinculações e pelo número de vagas
     const before = unit.status;
-    if (isMatched) unit.status = 'Atendida';
-    else if (wanted && wanted !== 'Atendida') unit.status = wanted;
-    else if (unit.status === 'Atendida') unit.status = 'Pendente';
+    refreshUnitStatus(unit.id);
     if (unit.status !== before) changed.push(`status (${before} → ${unit.status})`);
 
     if (changed.length) {
@@ -1235,11 +1425,10 @@ async function startServer() {
       return res.status(400).json({ error: 'Modalidade inválida. Use Audiência, Sentença ou Audiência e Sentença.' });
     }
 
-    // Regra: um magistrado por unidade. Um segundo (ou mais) só em caráter de exceção, com motivo.
-    const hasOthers = matches.some((m) => m.unitId === unitId && m.magistrateId !== magistrateId);
-    const exceptionReason = freeText(req.body.exceptionReason, 1000);
-    if (hasOthers && !exceptionReason) {
-      return res.status(409).json({ error: 'Esta unidade já tem magistrado vinculado. Para incluir outro, informe o motivo da exceção.' });
+    // A unidade comporta o número de magistrados definido em "vagas" (padrão 1). Sem motivo a justificar.
+    const others = matches.filter((m) => m.unitId === unitId && m.magistrateId !== magistrateId).length;
+    if (others >= (unit.slots || 1)) {
+      return res.status(409).json({ error: `Todas as ${unit.slots || 1} vaga(s) desta unidade já estão preenchidas. Aumente o número de magistrados da unidade para vincular outro.` });
     }
 
     const existingMatch = matches.find((m) => m.magistrateId === magistrateId);
@@ -1256,7 +1445,6 @@ async function startServer() {
       unitId,
       assignedArea,
       workType: workType || defaultWorkType(unit, mag),
-      exceptionReason: hasOthers ? exceptionReason : undefined,
       status: 'Vinculado',
       createdAt: new Date().toISOString(),
     };
@@ -1264,7 +1452,7 @@ async function startServer() {
     refreshUnitStatus(unit.id);
 
     log(mag.editionId, source === 'ai' ? 'Sistema' : 'Administração', 'Vinculação',
-      `Vinculação ${hasOthers ? 'EXCEPCIONAL (mais de um magistrado na unidade)' : source === 'ai' ? 'sugerida por IA e efetivada' : 'manual'}: ${describeMatch(newMatch)}.${hasOthers ? ` Motivo da exceção: ${exceptionReason}` : ''}`);
+      `Vinculação ${source === 'ai' ? 'sugerida por IA e efetivada' : 'manual'}: ${describeMatch(newMatch)}.`);
     res.status(201).json({ success: true, match: newMatch });
   });
 
@@ -1291,15 +1479,13 @@ async function startServer() {
       return res.status(400).json({ error: 'Só é possível vincular unidades escolhidas para o mutirão.' });
     }
 
-    // O magistrado escolhido não pode estar vinculado em outra unidade, e mover para unidade que já tem magistrado exige exceção
+    // O magistrado escolhido não pode estar vinculado em outra unidade; mover para outra unidade exige vaga livre
     if (matches.some((m) => m.id !== match.id && m.magistrateId === nextMag.id)) {
       return res.status(409).json({ error: 'Este magistrado já está vinculado a outra unidade. Desfaça essa vinculação antes.' });
     }
     const movingUnit = nextUnit.id !== match.unitId;
-    const othersInTarget = matches.some((m) => m.id !== match.id && m.unitId === nextUnit.id);
-    const newReason = freeText(req.body.exceptionReason, 1000);
-    if (movingUnit && othersInTarget && !newReason) {
-      return res.status(409).json({ error: 'A unidade de destino já tem magistrado vinculado. Informe o motivo da exceção.' });
+    if (movingUnit && linkedCount(nextUnit.id) >= (nextUnit.slots || 1)) {
+      return res.status(409).json({ error: `Todas as ${nextUnit.slots || 1} vaga(s) da unidade de destino já estão preenchidas.` });
     }
 
     const oldUnitId = match.unitId;
@@ -1311,8 +1497,7 @@ async function startServer() {
     match.unitId = nextUnit.id;
     match.assignedArea = assignedArea || match.assignedArea;
     match.workType = workType || (movingUnit || changedMag ? defaultWorkType(nextUnit, nextMag) : match.workType);
-    if (movingUnit) match.exceptionReason = othersInTarget ? newReason : undefined;
-    else if (req.body.exceptionReason !== undefined && match.exceptionReason) match.exceptionReason = newReason || match.exceptionReason;
+    match.exceptionReason = undefined;
     nextMag.status = 'Atribuído';
     refreshUnitStatus(oldUnitId);
     refreshUnitStatus(nextUnit.id);
@@ -1342,14 +1527,13 @@ async function startServer() {
     const eMags = magistrates.filter((m) => m.editionId === edition.id);
     const eUnits = units.filter((u) => u.editionId === edition.id && u.selection === 'Escolhida');
     const assignedMagIds = new Set(matches.filter((m) => m.editionId === edition.id).map((m) => m.magistrateId));
-    const assignedUnitIds = new Set(matches.filter((m) => m.editionId === edition.id).map((m) => m.unitId));
     let newMatchesCount = 0;
 
     const pass = (pick: (m: Magistrate) => string) => {
       for (const mag of eMags) {
         const area = pick(mag);
         if (!area || mag.status === 'Aguardando Conferência' || mag.status === 'Rejeitado' || assignedMagIds.has(mag.id)) continue;
-        const target = eUnits.find((u) => !assignedUnitIds.has(u.id) && u.areas.includes(area));
+        const target = eUnits.find((u) => linkedCount(u.id) < (u.slots || 1) && u.areas.includes(area));
         if (!target) continue;
         matches.push({
           id: newId('match'),
@@ -1362,8 +1546,7 @@ async function startServer() {
           createdAt: new Date().toISOString(),
         });
         assignedMagIds.add(mag.id);
-        assignedUnitIds.add(target.id);
-        target.status = 'Atendida';
+        refreshUnitStatus(target.id);
         mag.status = 'Atribuído';
         newMatchesCount++;
       }
@@ -1396,7 +1579,7 @@ async function startServer() {
       const unassignedMags = magistrates.filter(
         (m) => m.editionId === edition.id && m.status !== 'Atribuído' && m.status !== 'Rejeitado' && !assigned.has(m.id),
       );
-      const pendingUnits = units.filter((u) => u.editionId === edition.id && u.selection === 'Escolhida' && u.status === 'Pendente');
+      const pendingUnits = units.filter((u) => u.editionId === edition.id && u.selection === 'Escolhida' && u.status !== 'Atendida');
 
       const prompt = `
         Você é o assistente de inteligência artificial de coordenação de um Mutirão de Julgamento do Tribunal de Justiça.
@@ -1436,7 +1619,7 @@ async function startServer() {
 
   // ---------- Exports ----------
   // Planilha das unidades escolhidas para o mutirão que ainda não têm magistrado: Comarca, Unidade, Juiz(a) responsável.
-  app.get('/api/export/xlsx/unlinked-units', (req, res) => {
+  app.get('/api/export/xlsx/unlinked-units', async (req, res) => {
     const edition = resolveEdition(req);
     if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
 
@@ -1454,12 +1637,13 @@ async function startServer() {
     const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 
     log(edition.id, 'Administração', 'Exportação', `Planilha de unidades sem magistrado (XLSX) exportada: ${data.length} unidade(s).`);
+    if (!(await saveState())) return res.status(503).json({ error: 'Não foi possível registrar a exportação. Tente novamente.' });
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename=unidades-sem-magistrado-${edition.id}-${Date.now()}.xlsx`);
     res.send(buffer);
   });
 
-  app.get('/api/export/xlsx/matches', (req, res) => {
+  app.get('/api/export/xlsx/matches', async (req, res) => {
     const edition = resolveEdition(req);
     if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
 
@@ -1478,12 +1662,13 @@ async function startServer() {
     const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 
     log(edition.id, 'Administração', 'Exportação', 'Planilha de vinculações (XLSX) exportada.');
+    if (!(await saveState())) return res.status(503).json({ error: 'Não foi possível registrar a exportação. Tente novamente.' });
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename=vinculacoes-${edition.id}-${Date.now()}.xlsx`);
     res.send(buffer);
   });
 
-  app.get('/api/export/csv', (req, res) => {
+  app.get('/api/export/csv', async (req, res) => {
     const edition = resolveEdition(req);
     if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
 
@@ -1501,39 +1686,42 @@ async function startServer() {
 
     if (type === 'units' || type === 'all') {
       csv += '=== UNIDADES JUDICIAIS ===\n';
-      csv += 'ID,Unidade,Juiz(a) Responsavel,Email,Comarca,Areas,Auxilio Necessario,IP,Triagem,Status,Motivo Rejeicao,Data Inscr.\n';
+      csv += 'ID,Unidade,Juiz(a) Responsavel,Email,Comarca,Areas,Auxilio Necessario,Vagas,IP,Triagem,Status,Motivo Rejeicao,Data Inscr.\n';
       units.filter((u) => u.editionId === edition.id).forEach((u) => {
-        csv += [u.id, u.unitName, u.judgeName, u.email, u.comarca, u.areas.join(' | '), u.supportNeeded, u.registeredIp ?? '', u.selection, u.status, u.rejectionReason ?? '', u.createdAt].map(csvCell).join(',') + '\n';
+        csv += [u.id, u.unitName, u.judgeName, u.email, u.comarca, u.areas.join(' | '), u.supportNeeded, u.slots, u.registeredIp ?? '', u.selection, u.status, u.rejectionReason ?? '', u.createdAt].map(csvCell).join(',') + '\n';
       });
       csv += '\n\n';
     }
 
     if (type === 'matches' || type === 'all') {
       csv += '=== VINCULACOES REALIZADAS ===\n';
-      csv += 'ID Vinculo,Magistrado,Unidade,Area Atribuida,Modalidade,Excecao (motivo),Status,Data\n';
+      csv += 'ID Vinculo,Magistrado,Unidade,Area Atribuida,Modalidade,Status,Data\n';
       matches.filter((m) => m.editionId === edition.id).forEach((mt) => {
         const mag = magistrates.find((m) => m.id === mt.magistrateId);
         const un = units.find((u) => u.id === mt.unitId);
-        csv += [mt.id, mag?.name || mt.magistrateId, un?.unitName || mt.unitId, mt.assignedArea, mt.workType, mt.exceptionReason ?? '', mt.status, mt.createdAt].map(csvCell).join(',') + '\n';
+        csv += [mt.id, mag?.name || mt.magistrateId, un?.unitName || mt.unitId, mt.assignedArea, mt.workType, mt.status, mt.createdAt].map(csvCell).join(',') + '\n';
       });
       csv += '\n\n';
     }
 
     if (type === 'log' || type === 'all') {
       csv += '=== REGISTRO DE ATIVIDADES ===\n';
-      csv += 'Data/Hora,Responsavel,Categoria,Descricao\n';
+      csv += 'Data/Hora,Responsavel,Categoria,IP,Descricao\n';
       activityLog.filter((l) => l.editionId === edition.id || l.editionId === null).forEach((l) => {
-        csv += [l.timestamp, l.actor, l.category, l.description].map(csvCell).join(',') + '\n';
+        csv += [l.timestamp, l.actor, l.category, l.ip ?? '', l.description].map(csvCell).join(',') + '\n';
       });
     }
 
     log(edition.id, 'Administração', 'Exportação', `Exportação CSV (${type}).`);
+    if (!(await saveState())) return res.status(503).json({ error: 'Não foi possível registrar a exportação. Tente novamente.' });
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename=mutirao-${edition.id}-${type}-${Date.now()}.csv`);
     res.send(csv);
   });
 
   if (process.env.NODE_ENV !== 'production') {
+    // O Vite só existe como dependência de desenvolvimento: carregado sob demanda, nunca em produção.
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
@@ -1545,6 +1733,11 @@ async function startServer() {
       res.sendFile(path.join(process.cwd(), 'dist', 'index.html'));
     });
   }
+
+  // No desligamento (ex.: publicação de nova versão) grava o que ainda estiver pendente
+  process.on('SIGTERM', async () => {
+    try { await Promise.race([saveState(), new Promise((r) => setTimeout(r, 8000))]); } finally { process.exit(0); }
+  });
 
   const port = process.env.PORT || 3000;
   app.listen(port, () => {

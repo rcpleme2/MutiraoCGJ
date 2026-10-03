@@ -25,6 +25,8 @@ export interface Edition {
   status: 'Em andamento' | 'Encerrada';
   createdAt: string;
   isActive: boolean;
+  /** Situação real das inscrições (servidor): chave manual + janela de datas em horário de Brasília */
+  registration?: { state: 'open' | 'not_yet' | 'ended' | 'paused' | 'closed'; message: string };
   stats?: EditionStats;
 }
 
@@ -61,6 +63,7 @@ export interface Unit {
   createdAt: string;
   status: string;
   selection: UnitSelection;
+  slots: number;
   rejectionReason?: string;
   rejectedAt?: string;
   editionTitle?: string;
@@ -85,6 +88,7 @@ export interface LogEntry {
   actor: 'Administração' | 'Público' | 'Sistema';
   category: string;
   description: string;
+  ip?: string;
 }
 
 export const PREFERENCE_AREAS = [

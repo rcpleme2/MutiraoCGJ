@@ -28,6 +28,7 @@ export function MagistrateForm({
   withStatus,
   withDeclaration,
   initial,
+  disabled,
   busy,
 }: {
   onSubmit: (payload: Record<string, unknown>) => Promise<boolean>;
@@ -35,6 +36,8 @@ export function MagistrateForm({
   withStatus?: boolean;
   withDeclaration?: boolean;
   initial?: Magistrate;
+  /** formulário visível, mas impreenchível (fora do prazo de inscrições) */
+  disabled?: boolean;
   busy?: boolean;
 }) {
   const empty = {
@@ -61,11 +64,12 @@ export function MagistrateForm({
         if (ok && !initial) { setF(empty); setDeclared(false); }
       }}
     >
+      <fieldset disabled={disabled} className="space-y-5 min-w-0">
       <Field label="Nome completo do(a) magistrado(a)">
         <input required className="input" value={f.name} onChange={set('name')} />
       </Field>
       <Field label="E-mail institucional">
-        <input required type="email" className="input" value={f.email} onChange={set('email')} />
+        <input required type="email" placeholder="nome@tjpr.jus.br" className="input" value={f.email} onChange={set('email')} />
       </Field>
       <Field label="Lotação atual (vara / comarca)">
         <input required className="input" value={f.currentLocation} onChange={set('currentLocation')} />
@@ -130,6 +134,7 @@ export function MagistrateForm({
       </div>
       )}
       <button type="submit" disabled={busy} className="btn-primary w-full">{busy ? 'Processando…' : submitLabel}</button>
+      </fieldset>
     </form>
   );
 }
@@ -138,15 +143,19 @@ export function UnitForm({
   onSubmit,
   submitLabel,
   initial,
-  withStatus,
+  withSlots,
   withHoneypot,
+  disabled,
   busy,
 }: {
   onSubmit: (payload: Record<string, unknown>) => Promise<boolean>;
   submitLabel: string;
   initial?: Unit;
-  withStatus?: boolean;
+  /** campo "magistrados a alocar" (apenas na administração) */
+  withSlots?: boolean;
   withHoneypot?: boolean;
+  /** formulário visível, mas impreenchível (fora do prazo de inscrições) */
+  disabled?: boolean;
   busy?: boolean;
 }) {
   const [website, setWebsite] = useState('');
@@ -155,12 +164,13 @@ export function UnitForm({
     areas: [PREFERENCE_AREAS[0]] as string[],
     supportNeeded: 'Sentença' as SupportNeeded,
     description: '',
+    slots: 1,
   };
   const [f, setF] = useState(initial ? {
     unitName: initial.unitName, judgeName: initial.judgeName, email: initial.email, comarca: initial.comarca,
     areas: initial.areas, supportNeeded: initial.supportNeeded, description: initial.description,
-    status: initial.status,
-  } : { ...empty, status: 'Pendente' });
+    slots: initial.slots ?? 1,
+  } : empty);
   const text = (k: 'unitName' | 'judgeName' | 'email' | 'comarca' | 'description') =>
     (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setF({ ...f, [k]: e.target.value });
 
@@ -175,9 +185,11 @@ export function UnitForm({
       className="space-y-5"
       onSubmit={async e => {
         e.preventDefault();
-        if ((await onSubmit({ ...f, ...(withHoneypot ? { website } : {}) })) && !initial) setF({ ...empty, status: 'Pendente' });
+        const { slots, ...rest } = f;
+        if ((await onSubmit({ ...rest, ...(withSlots ? { slots } : {}), ...(withHoneypot ? { website } : {}) })) && !initial) setF(empty);
       }}
     >
+      <fieldset disabled={disabled} className="space-y-5 min-w-0">
       <Field label="Comarca">
         <input required className="input" value={f.comarca} onChange={text('comarca')} />
       </Field>
@@ -188,7 +200,7 @@ export function UnitForm({
         <input required className="input" value={f.judgeName} onChange={text('judgeName')} />
       </Field>
       <Field label="E-mail do responsável pela inscrição">
-        <input required type="email" className="input" value={f.email} onChange={text('email')} />
+        <input required type="email" placeholder="nome@tjpr.jus.br" className="input" value={f.email} onChange={text('email')} />
       </Field>
       <Field label="Áreas a serem atendidas (uma ou mais)">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -224,16 +236,11 @@ export function UnitForm({
       <Field label="Justificativa / detalhes da demanda">
         <textarea rows={3} className="input" value={f.description} onChange={text('description')} />
       </Field>
-      {withStatus && initial && (
-        <Field label="Status">
-          {initial.status === 'Atendida' ? (
-            <p className="text-sm text-muted">Atendida (vinculada a um magistrado). Para alterar, desfaça antes a vinculação.</p>
-          ) : (
-            <select className="input" value={f.status} onChange={e => setF({ ...f, status: e.target.value })}>
-              <option>Pendente</option>
-              <option>Em Andamento</option>
-            </select>
-          )}
+      {withSlots && (
+        <Field label="Magistrados a alocar nesta unidade">
+          <select className="input" value={f.slots} onChange={e => setF({ ...f, slots: Number(e.target.value) })}>
+            {Array.from({ length: 20 }, (_, i) => i + 1).map(n => <option key={n} value={n}>{n}</option>)}
+          </select>
         </Field>
       )}
       <p className="text-xs text-muted leading-relaxed border-l-2 border-bronze/50 pl-3">
@@ -245,6 +252,7 @@ export function UnitForm({
       </div>
       )}
       <button type="submit" disabled={busy} className="btn-primary w-full">{busy ? 'Processando…' : submitLabel}</button>
+      </fieldset>
     </form>
   );
 }

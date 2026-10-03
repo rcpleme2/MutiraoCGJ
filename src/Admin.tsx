@@ -89,11 +89,11 @@ function EditionForm({ initial, onSubmit }: { initial?: Edition; onSubmit: (v: a
         <textarea rows={3} className="input" value={f.description} onChange={e => setF({ ...f, description: e.target.value })} />
       </Field>
       <div className="grid sm:grid-cols-2 gap-4">
-        <Field label="Abertura"><input required type="datetime-local" className="input" value={f.openingDate} onChange={e => setF({ ...f, openingDate: e.target.value })} /></Field>
-        <Field label="Encerramento"><input required type="datetime-local" className="input" value={f.closingDate} onChange={e => setF({ ...f, closingDate: e.target.value })} /></Field>
+        <Field label="Abertura (horário de Brasília)"><input required type="datetime-local" className="input" value={f.openingDate} onChange={e => setF({ ...f, openingDate: e.target.value })} /></Field>
+        <Field label="Encerramento (horário de Brasília)"><input required type="datetime-local" className="input" value={f.closingDate} onChange={e => setF({ ...f, closingDate: e.target.value })} /></Field>
       </div>
       {initial ? (
-        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={f.isRegistrationOpen} onChange={e => setF({ ...f, isRegistrationOpen: e.target.checked })} /> Inscrições públicas abertas</label>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={f.isRegistrationOpen} onChange={e => setF({ ...f, isRegistrationOpen: e.target.checked })} /> Inscrições públicas habilitadas <span className="text-muted">(as datas acima também precisam estar vigentes)</span></label>
       ) : (
         <label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-1" checked={f.activate} onChange={e => setF({ ...f, activate: e.target.checked })} />
           <span>Tornar esta a edição vigente <span className="text-muted">(as inscrições públicas passam a ser registradas nela)</span></span></label>
@@ -153,6 +153,25 @@ function WorkTypeWarnings({ unit, mag, workType }: { unit: Unit; mag?: Magistrat
   );
 }
 
+/** Quantos magistrados serão alocados na unidade (vagas). Reduzir abaixo do número de vinculados é recusado pelo servidor. */
+function SlotsControl({ unit, linked, onChange, compact, bare }: { unit: Unit; linked: number; onChange: (n: number) => void; compact?: boolean; bare?: boolean }) {
+  const select = (
+    <select className="input !w-auto !py-1 !px-2 text-sm" value={unit.slots} onChange={e => onChange(Number(e.target.value))}
+      aria-label={`Magistrados a alocar na unidade ${unit.unitName}`}>
+      {Array.from({ length: 20 }, (_, i) => i + 1).map(n => <option key={n} value={n} disabled={n < linked}>{n}</option>)}
+    </select>
+  );
+  // Na tabela (coluna já intitulada "Magistrados") só o seletor e a contagem, para economizar espaço
+  if (bare) return <div className="flex items-center gap-2 whitespace-nowrap">{select}<span className="text-[11px] text-muted">{linked} vinculado{linked === 1 ? '' : 's'}</span></div>;
+  return (
+    <label className={`inline-flex items-center gap-2 ${compact ? 'text-xs' : 'text-sm'} text-muted`}>
+      <span>Magistrados a alocar</span>
+      {select}
+      <span className="text-[11px]">({linked} vinculado{linked === 1 ? '' : 's'})</span>
+    </label>
+  );
+}
+
 /* ---------- Detalhe da unidade (aba Unidades): justificativa e vinculação por área ---------- */
 function UnitDetail({ unit, magistrates, matches, busy, onLink, onUnlink }: {
   unit: Unit;
@@ -165,6 +184,7 @@ function UnitDetail({ unit, magistrates, matches, busy, onLink, onUnlink }: {
   const [picked, setPicked] = useState('');
   const [workType, setWorkType] = useState<WorkType | ''>('');
   const linked = unitMatchesOf(unit, matches);
+  const open = linked.length < unit.slots;
   const candidates = eligibleFor(unit, magistrates, matches).same;
   const chosen = candidates.find(c => c.m.id === picked);
   const effective: WorkType = workType || (chosen ? defaultWorkType(unit, chosen.m) : unit.supportNeeded);
@@ -180,31 +200,24 @@ function UnitDetail({ unit, magistrates, matches, busy, onLink, onUnlink }: {
       </div>
 
       <div>
-        <div className="text-[11px] font-semibold uppercase tracking-wider text-muted mb-2">Vincular magistrado da mesma área</div>
+        <div className="text-[11px] font-semibold uppercase tracking-wider text-muted mb-2">Magistrados da unidade ({linked.length} de {unit.slots})</div>
         {unit.selection !== 'Escolhida' ? (
           <p className="text-sm text-muted">Escolha a unidade para o mutirão antes de vincular um magistrado.</p>
-        ) : linked.length > 0 ? (
+        ) : (
           <div className="space-y-2">
             {linked.map(match => {
               const mag = magistrates.find(m => m.id === match.magistrateId);
               return (
                 <div key={match.id} className="flex items-center justify-between gap-3 bg-ok-soft text-ok rounded-md px-3 py-2.5 text-sm">
-                  <span>
-                    {match.exceptionReason && <strong>Exceção · </strong>}
-                    <strong>{mag?.name || 'magistrado removido'}</strong> · {match.assignedArea} · <strong>{match.workType}</strong>
-                    {match.exceptionReason && <span className="block text-xs opacity-80 mt-0.5">Motivo: {match.exceptionReason}</span>}
-                  </span>
+                  <span><strong>{mag?.name || 'magistrado removido'}</strong> · {match.assignedArea} · <strong>{match.workType}</strong></span>
                   <button className="btn-secondary btn-sm shrink-0" disabled={busy} onClick={() => onUnlink(match.id)}>Desfazer</button>
                 </div>
               );
             })}
-            <p className="text-xs text-muted">A regra é um magistrado por unidade. Para incluir outro, em caráter de exceção, use a aba <strong>Vinculações</strong>.</p>
-          </div>
-        ) : candidates.length === 0 ? (
-          <p className="text-sm text-muted">Nenhum magistrado aprovado e disponível com preferência nas áreas desta unidade ({unit.areas.join(', ')}).</p>
-        ) : (
-          <div className="space-y-2">
-            {candidates.map(({ m, area, rank }) => (
+            {open && candidates.length === 0 && (
+              <p className="text-sm text-muted">Nenhum magistrado aprovado e disponível com preferência nas áreas desta unidade ({unit.areas.join(', ')}).</p>
+            )}
+            {open && candidates.map(({ m, area, rank }) => (
               <label key={m.id} className={`flex items-start gap-3 rounded-md border px-3 py-2.5 cursor-pointer transition-colors ${picked === m.id ? 'border-navy bg-navy/5' : 'border-line bg-surface hover:border-slate-300'}`}>
                 <input type="checkbox" className="mt-1" checked={picked === m.id} onChange={() => { setPicked(picked === m.id ? '' : m.id); setWorkType(''); }} />
                 <span className="text-sm min-w-0">
@@ -217,16 +230,19 @@ function UnitDetail({ unit, magistrates, matches, busy, onLink, onUnlink }: {
                 </span>
               </label>
             ))}
-            {chosen && (
+            {open && chosen && (
               <div className="rounded-md bg-surface border border-line p-3">
                 <div className="label">O magistrado atuará em</div>
                 <WorkTypeSelect value={effective} onChange={setWorkType} />
                 <WorkTypeWarnings unit={unit} mag={chosen.m} workType={effective} />
               </div>
             )}
-            <button className="btn-primary btn-sm" disabled={!chosen || busy} onClick={() => chosen && onLink(chosen.m.id, chosen.area, effective)}>
-              <Check className="w-4 h-4" /> Vincular selecionado
-            </button>
+            {open && candidates.length > 0 && (
+              <button className="btn-primary btn-sm" disabled={!chosen || busy} onClick={() => chosen && onLink(chosen.m.id, chosen.area, effective)}>
+                <Check className="w-4 h-4" /> Vincular selecionado
+              </button>
+            )}
+            {!open && <p className="text-xs text-muted">Todas as vagas estão preenchidas. Aumente o número de magistrados a alocar para vincular mais.</p>}
           </div>
         )}
       </div>
@@ -234,43 +250,32 @@ function UnitDetail({ unit, magistrates, matches, busy, onLink, onUnlink }: {
   );
 }
 
-type SaveLink = (unit: Unit, magistrateId: string, area: string, workType: WorkType, match?: Match, exceptionReason?: string) => void;
+type SaveLink = (unit: Unit, magistrateId: string, area: string, workType: WorkType, match?: Match) => void;
 
-/* ---------- Um magistrado vinculado (ou a vincular) à unidade ---------- */
-function LinkSlot({ unit, magistrates, matches, match, exception, busy, onSave, onUnlink, onCancel }: {
+/* ---------- Uma vaga da unidade: magistrado vinculado ou a vincular ---------- */
+function LinkSlot({ unit, magistrates, matches, match, busy, onSave, onUnlink }: {
   unit: Unit;
   magistrates: Magistrate[];
   matches: Match[];
   match?: Match;
-  /** vínculo novo adicional (exceção): exige motivo */
-  exception?: boolean;
   busy: boolean;
   onSave: SaveLink;
   onUnlink: (matchId: string) => void;
-  onCancel?: () => void;
 }) {
   const { same, other } = eligibleFor(unit, magistrates, matches, match);
   const all = [...same, ...other];
   const [magId, setMagId] = useState(match?.magistrateId ?? '');
   const [workType, setWorkType] = useState<WorkType | ''>(match?.workType ?? '');
-  const [reason, setReason] = useState('');
 
   const sel = all.find(e => e.m.id === magId);
   const effective: WorkType | '' = workType || (sel ? defaultWorkType(unit, sel.m) : '');
   const changed = !!sel && (!match || match.magistrateId !== magId || match.workType !== effective);
-  const reasonOk = !exception || reason.trim().length > 0;
 
   const label = (e: Eligible) =>
     `${e.m.name}${e.rank ? ` — ${e.rank}ª preferência` : ''}${e.m.acceptsHearings ? '' : ' — não aceita audiências'}`;
 
   return (
-    <div className={exception ? 'rounded-md border border-warn/40 bg-warn-soft/40 p-3 sm:p-4' : ''}>
-      {exception && (
-        <p className="text-xs text-warn mb-3"><strong>Vinculação excepcional.</strong> A regra é um magistrado por unidade; registre o motivo para incluir mais um.</p>
-      )}
-      {match?.exceptionReason && (
-        <p className="text-xs mb-2"><Badge tone="warn">Exceção</Badge> <span className="text-muted ml-1">Motivo: {match.exceptionReason}</span></p>
-      )}
+    <div>
       <div className="grid md:grid-cols-[1.4fr_1fr_auto] gap-3 items-start">
         <div>
           <label className="label">Magistrado</label>
@@ -293,43 +298,36 @@ function LinkSlot({ unit, magistrates, matches, match, exception, busy, onSave, 
           <WorkTypeSelect value={(effective || unit.supportNeeded) as WorkType} onChange={setWorkType} />
         </div>
         <div className="flex flex-wrap items-end gap-2 md:pt-[1.55rem]">
-          <button className="btn-primary btn-sm" disabled={!changed || !reasonOk || busy}
-            onClick={() => sel && effective && onSave(unit, sel.m.id, sel.area, effective, match, exception ? reason.trim() : undefined)}>
+          <button className="btn-primary btn-sm" disabled={!changed || busy}
+            onClick={() => sel && effective && onSave(unit, sel.m.id, sel.area, effective, match)}>
             <Check className="w-4 h-4" /> {match ? 'Salvar' : 'Vincular'}
           </button>
           {match && <button className="btn-secondary btn-sm" disabled={busy} onClick={() => onUnlink(match.id)}>Desfazer</button>}
-          {!match && onCancel && <button className="btn-ghost btn-sm" onClick={onCancel}>Cancelar</button>}
         </div>
       </div>
       {sel && effective && <WorkTypeWarnings unit={unit} mag={sel.m} workType={effective} />}
       {sel && sel.rank === 0 && <p className="text-[11px] text-warn mt-1.5">Área fora das preferências do magistrado; será registrada como {sel.area}.</p>}
-      {exception && (
-        <div className="mt-3">
-          <label className="label">Motivo da exceção (obrigatório)</label>
-          <textarea rows={2} className="input" value={reason} onChange={e => setReason(e.target.value)}
-            placeholder="Ex.: Acervo de 900 processos; um único magistrado não comporta o volume no período." />
-        </div>
-      )}
     </div>
   );
 }
 
-/* ---------- Linha da aba Vinculações: uma unidade escolhida e seus magistrados ---------- */
-function UnitLinkRow({ unit, magistrates, matches, busy, onSave, onUnlink }: {
+/* ---------- Linha da aba Vinculações: uma unidade escolhida e suas vagas ---------- */
+function UnitLinkRow({ unit, magistrates, matches, busy, onSave, onUnlink, onSlots }: {
   unit: Unit;
   magistrates: Magistrate[];
   matches: Match[];
   busy: boolean;
   onSave: SaveLink;
   onUnlink: (matchId: string) => void;
+  onSlots: (n: number) => void;
 }) {
   const linked = unitMatchesOf(unit, matches);
-  const [adding, setAdding] = useState(false);
+  const emptySlots = Math.max(0, unit.slots - linked.length);
   const [showWhy, setShowWhy] = useState(false);
-  const canAddMore = linked.length > 0 && eligibleFor(unit, magistrates, matches).same.length + eligibleFor(unit, magistrates, matches).other.length > 0;
+  const full = linked.length >= unit.slots;
 
   return (
-    <div className={`card p-4 sm:p-5 ${linked.length ? 'border-ok/30' : ''}`}>
+    <div className={`card p-4 sm:p-5 ${full ? 'border-ok/30' : ''}`}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="font-serif font-semibold text-navy leading-snug">{unit.unitName}</div>
@@ -345,31 +343,22 @@ function UnitLinkRow({ unit, magistrates, matches, busy, onSave, onUnlink }: {
             </div>
           )}
         </div>
-        <div className="flex flex-col items-end gap-1.5 shrink-0">
-          <Badge tone={linked.length ? 'ok' : 'warn'}>{linked.length ? 'Vinculada' : 'Sem magistrado'}</Badge>
-          {linked.length > 1 && <Badge tone="warn">Exceção: {linked.length} magistrados</Badge>}
+        <div className="flex flex-col items-end gap-2 shrink-0">
+          <Badge tone={full ? 'ok' : linked.length ? 'info' : 'warn'}>
+            {linked.length === 0 ? 'Sem magistrado' : full ? `Vinculada (${linked.length} de ${unit.slots})` : `Em andamento (${linked.length} de ${unit.slots})`}
+          </Badge>
+          <SlotsControl compact unit={unit} linked={linked.length} onChange={onSlots} />
         </div>
       </div>
 
       <div className="mt-4 space-y-4 border-t border-line pt-4">
-        {linked.length === 0 && (
-          <LinkSlot unit={unit} magistrates={magistrates} matches={matches} busy={busy} onSave={onSave} onUnlink={onUnlink} />
-        )}
         {linked.map(m => (
           <LinkSlot key={`${m.id}-${m.magistrateId}-${m.workType}`} unit={unit} magistrates={magistrates} matches={matches} match={m}
             busy={busy} onSave={onSave} onUnlink={onUnlink} />
         ))}
-        {adding && (
-          <LinkSlot exception unit={unit} magistrates={magistrates} matches={matches} busy={busy}
-            onSave={onSave} onUnlink={onUnlink} onCancel={() => setAdding(false)} />
-        )}
-        {linked.length > 0 && !adding && (
-          <button className="text-xs text-bronze hover:underline disabled:opacity-50 disabled:no-underline" disabled={!canAddMore}
-            title={canAddMore ? '' : 'Não há outro magistrado disponível'}
-            onClick={() => setAdding(true)}>
-            + Vincular outro magistrado (exceção)
-          </button>
-        )}
+        {Array.from({ length: emptySlots }, (_, i) => (
+          <LinkSlot key={`empty-${i}`} unit={unit} magistrates={magistrates} matches={matches} busy={busy} onSave={onSave} onUnlink={onUnlink} />
+        ))}
       </div>
     </div>
   );
@@ -401,6 +390,9 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const [authed, setAuthed] = useState(!!getToken());
   const [password, setPassword] = useState('');
   const [loginError, setLoginError] = useState('');
+  // Etapa 2 do login (código do aplicativo autenticador) ou cadastro do aplicativo no primeiro acesso
+  const [loginStep, setLoginStep] = useState<null | { kind: 'totp' | 'enroll'; challenge: string; secret?: string; qrSvg?: string }>(null);
+  const [totpCode, setTotpCode] = useState('');
 
   const [sub, setSub] = useState<Sub>('overview');
   const [editions, setEditions] = useState<Edition[]>([]);
@@ -412,7 +404,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const [log, setLog] = useState<LogEntry[]>([]);
   const [logFilter, setLogFilter] = useState('');
 
-  const [modal, setModal] = useState<null | 'mag' | 'mag-edit' | 'reject' | 'wipe' | 'faq-new' | 'faq-edit' | 'unit' | 'unit-edit' | 'edition-new' | 'edition-edit' | 'password'>(null);
+  const [modal, setModal] = useState<null | 'mag' | 'mag-edit' | 'reject' | 'wipe' | 'faq-new' | 'faq-edit' | 'unit' | 'unit-edit' | 'edition-new' | 'edition-edit'>(null);
   const [matchFilter, setMatchFilter] = useState<'all' | 'open' | 'linked'>('all');
   const [editingEdition, setEditingEdition] = useState<Edition | null>(null);
   const [editingMag, setEditingMag] = useState<Magistrate | null>(null);
@@ -434,7 +426,6 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const [wiping, setWiping] = useState<'magistrates' | 'units' | 'matches' | null>(null);
   const [wipeText, setWipeText] = useState('');
   const [linking, setLinking] = useState(false);
-  const [pw, setPw] = useState({ currentPassword: '', newPassword: '' });
   const [ai, setAi] = useState<{ loading: boolean; items: any[] }>({ loading: false, items: [] });
 
   const selected = editions.find(e => e.id === selectedId);
@@ -483,9 +474,19 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
     e.preventDefault();
     setLoginError('');
     try {
-      const r = await api<{ token: string }>('/admin/login', { method: 'POST', json: { password } });
-      setToken(r.token); setPassword(''); setAuthed(true);
-    } catch (err: any) { setLoginError(err.message); }
+      if (!loginStep) {
+        const r = await api<{ step: 'totp' | 'enroll'; challenge: string; secret?: string; qrSvg?: string }>('/admin/login', { method: 'POST', json: { password } });
+        setPassword('');
+        setLoginStep({ kind: r.step, challenge: r.challenge, secret: r.secret, qrSvg: r.qrSvg });
+        setTotpCode('');
+      } else {
+        const r = await api<{ token: string }>('/admin/login/verify', { method: 'POST', json: { challenge: loginStep.challenge, code: totpCode } });
+        setToken(r.token); setLoginStep(null); setTotpCode(''); setAuthed(true);
+      }
+    } catch (err: any) {
+      setLoginError(err.message);
+      if (loginStep && /expirada|esgotadas/i.test(err.message)) setLoginStep(null);
+    }
   };
   const logout = () => { api('/admin/logout', { method: 'POST' }).catch(() => {}); setToken(''); setAuthed(false); };
 
@@ -501,8 +502,28 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
         <p className="text-sm text-muted mt-1 mb-6">Acesso restrito à coordenação do mutirão.</p>
         {loginError && <div className="mb-4"><Notice tone="danger">{loginError}</Notice></div>}
         <form onSubmit={login} className="space-y-4">
-          <Field label="Senha"><input type="password" required autoFocus className="input" value={password} onChange={e => setPassword(e.target.value)} /></Field>
-          <button className="btn-primary w-full"><Unlock className="w-4 h-4" /> Entrar</button>
+          {!loginStep && (
+            <Field label="Senha"><input type="password" required autoFocus className="input" value={password} onChange={e => setPassword(e.target.value)} /></Field>
+          )}
+          {loginStep?.kind === 'enroll' && (
+            <div className="space-y-3">
+              <p className="text-sm text-muted leading-relaxed">
+                <strong className="text-ink">Primeiro acesso: ative a verificação em duas etapas.</strong> Abra um aplicativo autenticador
+                (Google Authenticator, Microsoft Authenticator ou similar), escaneie o QR code e informe o código de 6 dígitos que ele exibir.
+              </p>
+              {loginStep.qrSvg && <img alt="QR code para o aplicativo autenticador" className="mx-auto w-44 h-44 border border-line rounded-md p-1 bg-white" src={`data:image/svg+xml;utf8,${encodeURIComponent(loginStep.qrSvg)}`} />}
+              <p className="text-xs text-muted text-center break-all">Ou digite a chave: <span className="font-mono text-ink">{loginStep.secret}</span></p>
+            </div>
+          )}
+          {loginStep?.kind === 'totp' && <p className="text-sm text-muted">Informe o código de 6 dígitos do seu aplicativo autenticador.</p>}
+          {loginStep && (
+            <Field label="Código de verificação">
+              <input inputMode="numeric" pattern="\d{6}" maxLength={6} required autoFocus autoComplete="one-time-code" className="input tracking-[0.4em] text-center font-mono"
+                value={totpCode} onChange={e => setTotpCode(e.target.value.replace(/\D/g, ''))} />
+            </Field>
+          )}
+          <button className="btn-primary w-full"><Unlock className="w-4 h-4" /> {loginStep ? (loginStep.kind === 'enroll' ? 'Ativar e entrar' : 'Verificar e entrar') : 'Continuar'}</button>
+          {loginStep && <button type="button" className="btn-ghost w-full" onClick={() => { setLoginStep(null); setLoginError(''); }}>Voltar</button>}
         </form>
       </div>
     );
@@ -561,11 +582,6 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
     await run(() => api(`/editions/${id}/${action}`, { method: 'POST' }), msg);
     refresh();
   };
-  const changePassword = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const r = await run(() => api('/admin/password', { method: 'POST', json: pw }), 'Senha alterada.');
-    if (r) { setModal(null); setPw({ currentPassword: '', newPassword: '' }); }
-  };
 
   const rejectItem = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -604,16 +620,20 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
     if (r) toast(`${r.count} unidade(s) escolhida(s).`);
     refresh();
   };
+  const setSlots = async (unit: Unit, n: number) => {
+    const r = await run(() => api(`/units/${unit.id}`, { method: 'PUT', json: { slots: n } }), `Magistrados a alocar: ${n}.`);
+    if (r) refresh();
+  };
   const chooseUnit = async (id: string) => { await run(() => api(`/units/${id}/choose`, { method: 'POST' }), 'Unidade escolhida para o mutirão.'); refresh(); };
 
   /** Cria ou altera uma vinculação (magistrado, área e atuação: audiência e/ou sentença) */
-  const saveLink = async (unit: Unit, magistrateId: string, area: string, workType: WorkType, match?: Match, exceptionReason?: string) => {
+  const saveLink = async (unit: Unit, magistrateId: string, area: string, workType: WorkType, match?: Match) => {
     setLinking(true);
-    const body = { magistrateId, unitId: unit.id, assignedArea: area, workType, ...(exceptionReason ? { exceptionReason } : {}) };
+    const body = { magistrateId, unitId: unit.id, assignedArea: area, workType };
     const r = await run(() => match
       ? api(`/matches/${match.id}`, { method: 'PUT', json: body })
       : api('/matches', { method: 'POST', json: withEdition(body) }),
-      match ? 'Vinculação atualizada.' : exceptionReason ? 'Vinculação excepcional registrada.' : 'Vinculação efetivada.');
+      match ? 'Vinculação atualizada.' : 'Vinculação efetivada.');
     setLinking(false);
     if (r) refresh();
   };
@@ -737,7 +757,6 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
         <div className="space-y-6">
           <Toolbar title="Edições do mutirão">
             <button className="btn-primary btn-sm" onClick={() => setModal('edition-new')}><Plus className="w-4 h-4" /> Nova edição</button>
-            <button className="btn-secondary btn-sm" onClick={() => setModal('password')}><Lock className="w-4 h-4" /> Alterar senha</button>
           </Toolbar>
           <Table head={['Edição', 'Período', 'Inscritos', 'Situação', 'Ações']}>
             {editions.map(e => (
@@ -751,7 +770,13 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
                 <td className="td space-y-1">
                   <div><Badge tone={e.status === 'Encerrada' ? 'neutral' : 'ok'}>{e.status}</Badge></div>
                   {e.isActive && <div><Badge tone="info">Vigente no portal</Badge></div>}
-                  <div className="text-[11px] text-muted">Inscrições {e.isRegistrationOpen ? 'abertas' : 'fechadas'}</div>
+                  {e.registration && (
+                    <div title={e.registration.message}>
+                      <Badge tone={e.registration.state === 'open' ? 'ok' : e.registration.state === 'not_yet' ? 'warn' : 'neutral'}>
+                        {{ open: 'Inscrições abertas', not_yet: 'Ainda não abriu', ended: 'Prazo encerrado', paused: 'Inscrições suspensas', closed: 'Edição encerrada' }[e.registration.state as string] ?? e.registration.state}
+                      </Badge>
+                    </div>
+                  )}
                 </td>
                 <td className="td text-right whitespace-nowrap">
                   {e.id !== selectedId && <button className="btn-ghost btn-sm" onClick={() => setSelectedId(e.id)}>Gerir</button>}
@@ -828,8 +853,8 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/xlsx/unlinked-units?${q}`, 'unidades-sem-magistrado.xlsx')}><Download className="w-4 h-4" /> Sem magistrado (XLSX)</button>
             <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/csv?type=units&${q}`, 'unidades.csv')}><Download className="w-4 h-4" /> CSV</button>
           </Toolbar>
-          <Table head={['Unidade / Comarca', <SortHeader key="d" label="Inscrição" dir={sortDir.units} onToggle={() => toggleSort('units')} />, 'Áreas e auxílio', 'Triagem', 'Status', 'Ações']}>
-            {units.length === 0 && <EmptyRow cols={6}>Nenhuma unidade inscrita nesta edição.</EmptyRow>}
+          <Table head={['Unidade / Comarca', <SortHeader key="d" label="Inscrição" dir={sortDir.units} onToggle={() => toggleSort('units')} />, 'Áreas e auxílio', 'Magistrados', 'Triagem', 'Status', 'Ações']}>
+            {units.length === 0 && <EmptyRow cols={7}>Nenhuma unidade inscrita nesta edição.</EmptyRow>}
             {sortedUnits.map(u => {
               const open = openUnitId === u.id;
               return (
@@ -843,6 +868,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
                     </td>
                     <td className="td"><DateCell iso={u.createdAt} /></td>
                     <td className="td"><div className="flex flex-wrap gap-1">{u.areas.map(a => <Badge key={a} tone="info">{a}</Badge>)}<Badge tone="neutral">Precisa de: {u.supportNeeded}</Badge></div></td>
+                    <td className="td"><SlotsControl bare unit={u} linked={matches.filter(m => m.unitId === u.id).length} onChange={n => setSlots(u, n)} /></td>
                     <td className="td">
                       <Badge tone={u.selection === 'Escolhida' ? 'ok' : u.selection === 'Rejeitada' ? 'danger' : 'warn'}>{u.selection}</Badge>
                       {u.selection === 'Rejeitada' && u.rejectionReason && (
@@ -862,7 +888,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
                   </tr>
                   {open && (
                     <tr className="bg-paper">
-                      <td colSpan={6} className="px-4 pb-5 pt-1">
+                      <td colSpan={7} className="px-4 pb-5 pt-1">
                         <UnitDetail unit={u} magistrates={magistrates} matches={matches} busy={linking}
                           onLink={(magId, area, workType) => saveLink(u, magId, area, workType)} onUnlink={unlinkFromUnit} />
                       </td>
@@ -893,7 +919,8 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
               <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/xlsx/matches?${q}`, 'vinculacoes.xlsx')}><Download className="w-4 h-4" /> Vinculações (XLSX)</button>
             </Toolbar>
             <p className="text-sm text-muted mb-4">
-              Unidades escolhidas para o mutirão. Selecione o magistrado no menu e informe se a atuação será em <strong className="text-ink">audiências</strong>, <strong className="text-ink">sentenças</strong> ou em ambas. A regra é <strong className="text-ink">um magistrado por unidade</strong>; um segundo só em caráter de exceção, com motivo.
+              Unidades escolhidas para o mutirão. Defina em cada unidade <strong className="text-ink">quantos magistrados serão alocados</strong> (padrão 1),
+              selecione os magistrados nos menus e informe se a atuação será em <strong className="text-ink">audiências</strong>, <strong className="text-ink">sentenças</strong> ou em ambas.
               Os magistrados da mesma área aparecem primeiro; quem está aguardando conferência ou foi rejeitado não é listado.
             </p>
             <div className="flex flex-wrap items-center gap-2 mb-4">
@@ -911,7 +938,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
                 return (
                   <UnitLinkRow key={`${u.id}-${sig}`}
                     unit={u} magistrates={magistrates} matches={matches} busy={linking}
-                    onSave={saveLink} onUnlink={unlinkFromUnit} />
+                    onSave={saveLink} onUnlink={unlinkFromUnit} onSlots={n => setSlots(u, n)} />
                 );
               })}
               {chosenUnits.length > 0 && rows.length === 0 && <div className="card p-8 text-center text-sm text-muted">Nenhuma unidade neste filtro.</div>}
@@ -986,13 +1013,14 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             </select>
             <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/csv?type=log&${q}`, 'registro.csv')}><Download className="w-4 h-4" /> CSV</button>
           </Toolbar>
-          <Table head={['Data/hora', 'Responsável', 'Categoria', 'Descrição']}>
-            {logRows.length === 0 && <EmptyRow cols={4}>Sem registros.</EmptyRow>}
+          <Table head={['Data/hora', 'Responsável', 'Categoria', 'IP', 'Descrição']}>
+            {logRows.length === 0 && <EmptyRow cols={5}>Sem registros.</EmptyRow>}
             {logRows.map(l => (
               <tr key={l.id}>
                 <td className="td text-xs text-muted whitespace-nowrap">{formatDateTime(l.timestamp)}</td>
                 <td className="td text-xs">{l.actor}</td>
                 <td className="td"><Badge tone="neutral">{l.category}</Badge></td>
+                <td className="td text-xs text-muted font-mono whitespace-nowrap">{l.ip ?? '—'}</td>
                 <td className="td">{l.description}</td>
               </tr>
             ))}
@@ -1013,7 +1041,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       )}
       {modal === 'unit' && (
         <Modal title="Cadastrar unidade judicial" onClose={() => setModal(null)}>
-          <UnitForm submitLabel="Salvar unidade" onSubmit={async p => {
+          <UnitForm withSlots submitLabel="Salvar unidade" onSubmit={async p => {
             const r = await run(() => api('/units', { method: 'POST', json: withEdition(p) }), 'Unidade incluída.');
             if (r) { setModal(null); refresh(); }
             return !!r;
@@ -1068,7 +1096,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       )}
       {modal === 'unit-edit' && editingUnit && (
         <Modal title="Editar unidade judicial" onClose={() => setModal(null)}>
-          <UnitForm withStatus initial={editingUnit} submitLabel="Salvar alterações" onSubmit={async p => {
+          <UnitForm withSlots initial={editingUnit} submitLabel="Salvar alterações" onSubmit={async p => {
             const r = await run(() => api(`/units/${editingUnit.id}`, { method: 'PUT', json: p }), 'Unidade atualizada.');
             if (r) { setModal(null); refresh(); }
             return !!r;
@@ -1077,16 +1105,6 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       )}
       {modal === 'edition-new' && <Modal title="Nova edição" onClose={() => setModal(null)}><EditionForm onSubmit={createEdition} /></Modal>}
       {modal === 'edition-edit' && editingEdition && <Modal title="Editar edição" onClose={() => setModal(null)}><EditionForm initial={editingEdition} onSubmit={updateEdition} /></Modal>}
-      {modal === 'password' && (
-        <Modal title="Alterar senha administrativa" onClose={() => setModal(null)}>
-          <form onSubmit={changePassword} className="space-y-4">
-            <Field label="Senha atual"><input required type="password" className="input" value={pw.currentPassword} onChange={e => setPw({ ...pw, currentPassword: e.target.value })} /></Field>
-            <Field label="Nova senha (mín. 6 caracteres)"><input required minLength={6} type="password" className="input" value={pw.newPassword} onChange={e => setPw({ ...pw, newPassword: e.target.value })} /></Field>
-            <p className="text-xs text-muted">Se a variável ADMIN_PASSWORD estiver definida, ela volta a valer após reiniciar o servidor.</p>
-            <button className="btn-primary w-full">Salvar senha</button>
-          </form>
-        </Modal>
-      )}
     </div>
   );
 }

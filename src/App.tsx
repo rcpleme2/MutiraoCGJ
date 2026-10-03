@@ -29,11 +29,11 @@ function PageCard({ icon: Icon, title, subtitle, children }: { icon: React.Eleme
   );
 }
 
-function IpNotice({ ip }: { ip: string }) {
+function RecordNotice() {
   return (
     <div className="rounded-md border border-line bg-paper px-4 py-3 text-xs text-muted leading-relaxed">
-      <strong className="text-ink">Aviso:</strong> seu endereço IP{ip ? <> (<span className="font-mono text-ink">{ip}</span>)</> : ''} e a data e hora desta inscrição serão registrados.
-      O uso inadequado da ferramenta, inclusive a inserção de informações falsas ou em nome de terceiros, poderá gerar responsabilização.
+      <strong className="text-ink">Aviso:</strong> os dados de cada cadastro, inclusive as informações técnicas de acesso, são registrados.
+      O uso inadequado da ferramenta, inclusive a inserção de informações falsas ou em nome de terceiros, poderá ser objeto de responsabilização.
     </div>
   );
 }
@@ -50,8 +50,12 @@ function AppInner() {
     api<FaqItem[]>('/faq').then(setFaq).catch(() => {});
     return api<Edition | null>('/settings').then(setEdition).catch(() => setLoadError(true));
   };
-  const [ip, setIp] = useState('');
-  useEffect(() => { loadEdition(); api<{ ip: string }>('/whoami').then(r => setIp(r.ip)).catch(() => {}); }, []);
+  useEffect(() => {
+    loadEdition();
+    // Atualiza a situação das inscrições (abre/encerra por data) sem exigir que a pessoa recarregue a página
+    const t = setInterval(loadEdition, 60_000);
+    return () => clearInterval(t);
+  }, []);
 
   // Inscrições públicas
   const [busy, setBusy] = useState(false);
@@ -83,7 +87,7 @@ function AppInner() {
     e.preventDefault();
     setConsultError(''); setResult(null); setConsulting(true);
     try {
-      setResult(await api(`/status?email=${encodeURIComponent(email)}`));
+      setResult(await api('/status', { method: 'POST', json: { email } }));
     } catch (err: any) {
       setConsultError(err.message);
     } finally {
@@ -91,11 +95,13 @@ function AppInner() {
     }
   };
 
-  const go = (t: Tab) => { setTab(t); setMenuOpen(false); setFormError(''); setMagOk(false); setUnitOk(false); };
+  const go = (t: Tab) => { if (t === 'home' || t === 'magistrate' || t === 'unit') loadEdition(); setTab(t); setMenuOpen(false); setFormError(''); setMagOk(false); setUnitOk(false); };
 
   if (loadError) return <div className="min-h-screen flex items-center justify-center text-muted">Não foi possível carregar o sistema.</div>;
 
-  const open = edition?.isRegistrationOpen && edition.status === 'Em andamento';
+  const regState = edition?.registration?.state ?? 'closed';
+  const open = regState === 'open';
+  const regMessage = edition?.registration?.message || 'As inscrições não estão abertas no momento.';
   // A página só aparece no menu quando há perguntas publicadas
   const nav = faq.length ? [...NAV, { id: 'faq' as Tab, label: 'Perguntas Frequentes' }] : NAV;
 
@@ -142,7 +148,7 @@ function AppInner() {
             {edition ? (
               <>
                 <div className="flex items-center gap-3 mb-5">
-                  <Badge tone={open ? 'ok' : 'neutral'}>{open ? 'Inscrições abertas' : 'Inscrições encerradas'}</Badge>
+                  <Badge tone={open ? 'ok' : regState === 'not_yet' ? 'warn' : 'neutral'}>{{ open: 'Inscrições abertas', not_yet: 'Inscrições ainda não abertas', ended: 'Prazo de inscrições encerrado', paused: 'Inscrições suspensas', closed: 'Inscrições encerradas' }[regState]}</Badge>
                   <span className="text-xs text-muted">Prazo: {formatDate(edition.openingDate)} a {formatDate(edition.closingDate)}</span>
                 </div>
                 <h1 className="text-4xl sm:text-5xl font-semibold text-navy leading-[1.1] mb-5">{edition.title}</h1>
@@ -174,12 +180,13 @@ function AppInner() {
         {tab === 'magistrate' && (
           <PageCard icon={UserCheck} title="Inscrição de magistrado voluntário"
             subtitle={edition ? `${edition.title}. Informe seus dados institucionais e áreas de preferência.` : 'Sem edição vigente.'}>
-            {!open ? <Notice tone="danger">As inscrições não estão abertas no momento.</Notice> : (
+            {(
               <div className="space-y-5">
+                {!open && <Notice tone="danger">{regMessage}</Notice>}
                 {magOk && <Notice tone="ok"><strong>Inscrição realizada.</strong> Status inicial: Aguardando Conferência. Acompanhe em “Consultar Status”.</Notice>}
                 {formError && <Notice tone="danger">{formError}</Notice>}
-                <IpNotice ip={ip} />
-                <MagistrateForm withDeclaration busy={busy} submitLabel="Concluir inscrição" onSubmit={submitPublic('/magistrates', setMagOk)} />
+                <RecordNotice />
+                <MagistrateForm withDeclaration disabled={!open} busy={busy} submitLabel="Concluir inscrição" onSubmit={submitPublic('/magistrates', setMagOk)} />
               </div>
             )}
           </PageCard>
@@ -188,12 +195,13 @@ function AppInner() {
         {tab === 'unit' && (
           <PageCard icon={Building2} title="Inscrição de unidade judicial"
             subtitle={edition ? `${edition.title}. Cadastre a unidade e indique o tipo de auxílio necessário.` : 'Sem edição vigente.'}>
-            {!open ? <Notice tone="danger">As inscrições não estão abertas no momento.</Notice> : (
+            {(
               <div className="space-y-5">
-                {unitOk && <Notice tone="ok"><strong>Unidade cadastrada.</strong> Ela já está disponível para vinculação.</Notice>}
+                {!open && <Notice tone="danger">{regMessage}</Notice>}
+                {unitOk && <Notice tone="ok"><strong>Unidade cadastrada.</strong> Ela passará pela análise da coordenação antes de ser vinculada a um magistrado.</Notice>}
                 {formError && <Notice tone="danger">{formError}</Notice>}
-                <IpNotice ip={ip} />
-                <UnitForm withHoneypot busy={busy} submitLabel="Concluir inscrição da unidade" onSubmit={submitPublic('/units', setUnitOk)} />
+                <RecordNotice />
+                <UnitForm withHoneypot disabled={!open} busy={busy} submitLabel="Concluir inscrição da unidade" onSubmit={submitPublic('/units', setUnitOk)} />
               </div>
             )}
           </PageCard>
