@@ -106,3 +106,6 @@ export interface FaqItem {
   published?: boolean;
   updatedAt?: string;
 }
+
+export interface PanelRow { name: string; area: string; unit: string }
+export interface PanelEntry extends PanelRow { id: string; editionId: string; createdAt: string }

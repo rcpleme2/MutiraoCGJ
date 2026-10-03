@@ -1,13 +1,13 @@
 import React, { useEffect, useState } from 'react';
-import { Scale, UserCheck, Building2, ShieldCheck, Search, ArrowRight, Menu, X, ChevronDown, HelpCircle } from 'lucide-react';
+import { Scale, UserCheck, Building2, ShieldCheck, Search, ArrowRight, Menu, X, ChevronDown, HelpCircle, LayoutList } from 'lucide-react';
 import { api } from './api';
-import { Edition, FaqItem, Magistrate, Unit } from './types';
+import { Edition, FaqItem, Magistrate, PanelRow, Unit } from './types';
 import { Badge, FeedbackProvider, Notice, formatDate, magistrateTone } from './ui';
 import { MagistrateForm, UnitForm } from './Forms';
 import Admin from './Admin';
 import ErrorBoundary from './ErrorBoundary';
 
-type Tab = 'home' | 'magistrate' | 'unit' | 'status' | 'faq' | 'admin';
+type Tab = 'home' | 'magistrate' | 'unit' | 'status' | 'faq' | 'panel' | 'admin';
 
 const NAV: { id: Tab; label: string }[] = [
   { id: 'home', label: 'Início' },
@@ -45,9 +45,12 @@ function AppInner() {
   const [loadError, setLoadError] = useState(false);
 
   const [faq, setFaq] = useState<FaqItem[]>([]);
+  const [panel, setPanel] = useState<{ visible: boolean; edition?: string; rows?: PanelRow[] }>({ visible: false });
+  const [panelQuery, setPanelQuery] = useState('');
   const [openFaq, setOpenFaq] = useState('');
   const loadEdition = () => {
     api<FaqItem[]>('/faq').then(setFaq).catch(() => {});
+    api<{ visible: boolean; edition?: string; rows?: PanelRow[] }>('/panel').then(setPanel).catch(() => {});
     return api<Edition | null>('/settings').then(setEdition).catch(() => setLoadError(true));
   };
   useEffect(() => {
@@ -95,7 +98,7 @@ function AppInner() {
     }
   };
 
-  const go = (t: Tab) => { if (t === 'home' || t === 'magistrate' || t === 'unit') loadEdition(); setTab(t); setMenuOpen(false); setFormError(''); setMagOk(false); setUnitOk(false); };
+  const go = (t: Tab) => { if (t === 'home' || t === 'magistrate' || t === 'unit' || t === 'panel') loadEdition(); setTab(t); setMenuOpen(false); setFormError(''); setMagOk(false); setUnitOk(false); };
 
   if (loadError) return <div className="min-h-screen flex items-center justify-center text-muted">Não foi possível carregar o sistema.</div>;
 
@@ -103,7 +106,7 @@ function AppInner() {
   const open = regState === 'open';
   const regMessage = edition?.registration?.message || 'As inscrições não estão abertas no momento.';
   // A página só aparece no menu quando há perguntas publicadas
-  const nav = faq.length ? [...NAV, { id: 'faq' as Tab, label: 'Perguntas Frequentes' }] : NAV;
+  const nav = [...NAV, ...(panel.visible ? [{ id: 'panel' as Tab, label: 'Painel de Vinculações' }] : []), ...(faq.length ? [{ id: 'faq' as Tab, label: 'Perguntas Frequentes' }] : [])];
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -207,6 +210,40 @@ function AppInner() {
           </PageCard>
         )}
 
+        {tab === 'panel' && (() => {
+          const fold = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+          const q = fold(panelQuery.trim());
+          const rows = (panel.rows ?? []).filter(r => !q || fold(`${r.name} ${r.area} ${r.unit}`).includes(q));
+          return (
+            <section className="card max-w-4xl mx-auto p-7 sm:p-10">
+              <div className="mb-6 pb-6 border-b border-line">
+                <LayoutList className="w-5 h-5 text-bronze mb-3" />
+                <h2 className="text-2xl font-semibold text-navy">Painel de vinculações</h2>
+                <p className="text-sm text-muted mt-1.5 leading-relaxed">{panel.visible ? `${panel.edition}. Magistrados designados, com a área de atuação e a unidade.` : 'O painel não está disponível no momento.'}</p>
+              </div>
+              {panel.visible && (
+                <>
+                  <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                    <input className="input max-w-sm" type="search" placeholder="Buscar por nome, área ou unidade" aria-label="Buscar no painel" value={panelQuery} onChange={e => setPanelQuery(e.target.value)} />
+                    <span className="text-xs text-muted">{rows.length} de {(panel.rows ?? []).length} designação(ões)</span>
+                  </div>
+                  <div className="border border-line rounded-md overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead><tr><th className="th">Magistrado(a)</th><th className="th">Área de atuação</th><th className="th">Unidade</th></tr></thead>
+                      <tbody className="divide-y divide-line">
+                        {rows.length === 0 && <tr><td colSpan={3} className="px-4 py-10 text-center text-muted">{(panel.rows ?? []).length === 0 ? 'Nenhuma designação publicada ainda.' : 'Nenhum resultado para a busca.'}</td></tr>}
+                        {rows.map((r, i) => (
+                          <tr key={i}><td className="td font-medium">{r.name}</td><td className="td text-muted">{r.area}</td><td className="td">{r.unit}</td></tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+            </section>
+          );
+        })()}
+
         {tab === 'faq' && (
           <PageCard icon={HelpCircle} title="Perguntas frequentes" subtitle="Dúvidas comuns sobre as inscrições e o andamento do mutirão.">
             {faq.length === 0 ? (
@@ -233,7 +270,7 @@ function AppInner() {
 
         {tab === 'status' && (
           <PageCard icon={Search} title="Consultar status"
-            subtitle="Informe o e-mail cadastrado para ver inscrições de magistrado e de unidades, em todas as edições.">
+            subtitle="Informe o e-mail cadastrado para ver inscrições de magistrado e de unidades realizadas a partir de outubro/2026.">
             <form onSubmit={consult} className="flex gap-2">
               <input type="email" required placeholder="nome@tjpr.jus.br" className="input flex-1" value={email} onChange={e => setEmail(e.target.value)} />
               <button className="btn-primary" disabled={consulting}>{consulting ? 'Buscando…' : 'Consultar'}</button>

@@ -132,6 +132,14 @@ Exemplo: `gcloud run services update mutirao-cgj --region southamerica-east1 --u
 
 ## 8. Regras de funcionamento
 
+- **Painel público de vinculações:** vem **desativado**. Em *Administração → Painel público* você o torna visível (aparece o
+  item «Painel de Vinculações» no menu) e escolhe as fontes: as vinculações feitas no sistema e/ou linhas coladas de uma
+  planilha do Excel (colunas **Nome / Área / Designado Para**, com ou sem cabeçalho; também aceita separador `;`). A
+  importação mostra uma conferência antes de gravar (linhas válidas, repetidas e com problema). O painel exibe a edição
+  vigente e somente nome, área e unidade — qualquer visitante pode ver.
+- **Inscrições:** os campos de escolha do magistrado (1ª e 2ª escolha e aceite de audiências) e as áreas da unidade começam
+  sem seleção; todos são obrigatórios (o servidor também valida).
+
 - **Prazo de inscrições:** vale a chave "Inscrições públicas habilitadas" **e** a janela de datas da edição, em horário de
   Brasília (o último minuto de encerramento é incluído). Fora da janela os formulários ficam visíveis, porém bloqueados, com
   a data correta. O cadastro manual pelo painel não é limitado pela janela.

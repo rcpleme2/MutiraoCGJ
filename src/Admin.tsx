@@ -1,11 +1,11 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Lock, Unlock, Plus, Trash2, Check, Pencil, Download, Sparkles, LogOut, Radio, Archive, RotateCcw, ChevronDown, ChevronRight, X, ArrowUp, ArrowDown } from 'lucide-react';
 import { api, download, getToken, setToken } from './api';
-import { Edition, FaqItem, LogEntry, Magistrate, Match, Unit, WorkType, WORK_TYPES } from './types';
+import { Edition, FaqItem, LogEntry, Magistrate, Match, PanelEntry, PanelRow, Unit, WorkType, WORK_TYPES } from './types';
 import { Badge, EmptyRow, Field, Modal, Notice, formatDate, formatDateTime, magistrateTone, useFeedback } from './ui';
 import { MagistrateForm, UnitForm } from './Forms';
 
-type Sub = 'overview' | 'editions' | 'magistrates' | 'units' | 'matches' | 'waiting' | 'faq' | 'log';
+type Sub = 'overview' | 'editions' | 'magistrates' | 'units' | 'matches' | 'waiting' | 'panel' | 'faq' | 'log';
 
 const SUBS: { id: Sub; label: string }[] = [
   { id: 'overview', label: 'Painel' },
@@ -14,6 +14,7 @@ const SUBS: { id: Sub; label: string }[] = [
   { id: 'units', label: 'Unidades' },
   { id: 'matches', label: 'Vinculações' },
   { id: 'waiting', label: 'Lista de espera' },
+  { id: 'panel', label: 'Painel público' },
   { id: 'faq', label: 'Perguntas frequentes' },
   { id: 'log', label: 'Registro' },
 ];
@@ -382,6 +383,160 @@ function FaqForm({ initial, onSubmit }: { initial?: FaqItem; onSubmit: (v: { que
       </label>
       <button className="btn-primary w-full">{initial ? 'Salvar alterações' : 'Adicionar pergunta'}</button>
     </form>
+  );
+}
+
+/* ---------- Painel público de vinculações: visibilidade, colagem de planilha e linhas coladas ---------- */
+type RunFn = <T,>(fn: () => Promise<T>, okMessage?: string) => Promise<T | undefined>;
+interface PanelAdminData {
+  visible: boolean; includeSystem: boolean;
+  activeEdition: { id: string; title: string }; edition: { id: string; title: string };
+  systemCount: number; publicCount: number; entries: PanelEntry[];
+}
+interface PanelPreview { total: number; duplicates: number; errorCount: number; errors: { line: number; message: string }[]; preview: PanelRow[]; mode: 'append' | 'replace' }
+
+function PanelAdmin({ editionId, run, confirm, onChanged }: {
+  editionId: string; run: RunFn; confirm: (m: string, label?: string) => Promise<boolean>; onChanged: () => void;
+}) {
+  const [data, setData] = useState<PanelAdminData | null>(null);
+  const [text, setText] = useState('');
+  const [mode, setMode] = useState<'append' | 'replace'>('append');
+  const [preview, setPreview] = useState<PanelPreview | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    const r = await run(() => api<PanelAdminData>(`/panel/admin?edition=${encodeURIComponent(editionId)}`));
+    if (r) setData(r);
+  }, [editionId, run]);
+  useEffect(() => { setPreview(null); load(); }, [editionId]);
+
+  const settings = async (body: { visible?: boolean; includeSystem?: boolean }, msg: string) => {
+    await run(() => api('/panel/settings', { method: 'PUT', json: body }), msg);
+    await load(); onChanged();
+  };
+  const toggleVisible = async () => {
+    if (!data) return;
+    if (!data.visible && !(await confirm(`Tornar o painel público? Ele exibirá o nome do magistrado, a área e a unidade de ${data.publicCount} designação(ões) para qualquer visitante do portal.`, 'Tornar público'))) return;
+    await settings({ visible: !data.visible }, data.visible ? 'Painel ocultado do público.' : 'Painel visível ao público.');
+  };
+
+  const check = async () => {
+    setBusy(true);
+    const r = await run(() => api<PanelPreview & { success: boolean }>(`/panel/import?edition=${encodeURIComponent(editionId)}`, { method: 'POST', json: { text, mode, dryRun: true } }));
+    setBusy(false);
+    if (r) setPreview(r);
+  };
+  const doImport = async (ignoreErrors: boolean) => {
+    if (mode === 'replace' && !(await confirm('Substituir todas as linhas coladas anteriormente nesta edição pelas novas?', 'Substituir'))) return;
+    setBusy(true);
+    const r = await run(() => api<{ imported: number; duplicates: number }>(`/panel/import?edition=${encodeURIComponent(editionId)}`, { method: 'POST', json: { text, mode, ignoreErrors } }));
+    setBusy(false);
+    if (r) { setText(''); setPreview(null); await load(); onChanged(); }
+  };
+  const removeEntry = async (id: string) => { await run(() => api(`/panel/entries/${id}`, { method: 'DELETE' })); await load(); onChanged(); };
+  const clearAll = async () => {
+    if (!(await confirm(`Remover as ${data?.entries.length} linha(s) coladas desta edição? As vinculações do sistema não são afetadas.`, 'Remover todas'))) return;
+    await run(() => api(`/panel/clear?edition=${encodeURIComponent(editionId)}`, { method: 'POST', json: { confirm: 'EXCLUIR' } }), 'Linhas coladas removidas.');
+    await load(); onChanged();
+  };
+
+  if (!data) return <div className="card p-8 text-sm text-muted">Carregando…</div>;
+  const otherEdition = data.edition.id !== data.activeEdition.id;
+
+  return (
+    <div className="space-y-6">
+      <Toolbar title="Painel público de vinculações" />
+      <p className="text-sm text-muted -mt-2">
+        Página aberta a qualquer visitante, com <strong className="text-ink">Nome do magistrado · Área de atuação · Unidade</strong>.
+        Mostra a edição vigente (<strong className="text-ink">{data.activeEdition.title}</strong>) e é alimentado pelas vinculações do sistema e/ou por linhas coladas de uma planilha.
+      </p>
+
+      <div className="card p-5 flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-2.5">
+            <Badge tone={data.visible ? 'ok' : 'neutral'}>{data.visible ? 'Visível ao público' : 'Oculto'}</Badge>
+            <span className="text-sm text-muted">{data.publicCount} designação(ões) seriam exibidas.</span>
+          </div>
+          <label className="flex items-center gap-2 text-sm mt-3">
+            <input type="checkbox" checked={data.includeSystem} onChange={e => settings({ includeSystem: e.target.checked }, 'Fonte atualizada.')} />
+            Incluir as vinculações feitas no sistema <span className="text-muted">({data.systemCount} na edição em gestão)</span>
+          </label>
+        </div>
+        <button className={data.visible ? 'btn-secondary' : 'btn-primary'} onClick={toggleVisible}>
+          {data.visible ? 'Ocultar do público' : 'Tornar público'}
+        </button>
+      </div>
+
+      {otherEdition && (
+        <Notice tone="danger">Você está gerenciando <strong>{data.edition.title}</strong>, mas o painel público mostra a edição vigente (<strong>{data.activeEdition.title}</strong>). As linhas coladas aqui só aparecerão quando esta edição for a vigente.</Notice>
+      )}
+
+      <div className="card p-5 space-y-4">
+        <div>
+          <h4 className="font-semibold text-navy">Colar de uma planilha</h4>
+          <p className="text-sm text-muted mt-1">
+            No Excel, selecione as colunas <strong className="text-ink">Nome</strong>, <strong className="text-ink">Área</strong> e <strong className="text-ink">Designado Para</strong> (com ou sem a linha de cabeçalho),
+            copie (Ctrl+C) e cole abaixo (Ctrl+V).
+          </p>
+        </div>
+        <textarea rows={8} className="input font-mono text-xs" placeholder={'Nome\tÁrea\tDesignado Para\nDra. Fulana de Tal\tCrime\t1ª Vara Criminal de Curitiba'}
+          value={text} onChange={e => { setText(e.target.value); setPreview(null); }} aria-label="Linhas copiadas da planilha" />
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
+          <label className="flex items-center gap-2"><input type="radio" name="panel-mode" checked={mode === 'append'} onChange={() => { setMode('append'); setPreview(null); }} /> Acrescentar às já coladas</label>
+          <label className="flex items-center gap-2"><input type="radio" name="panel-mode" checked={mode === 'replace'} onChange={() => { setMode('replace'); setPreview(null); }} /> Substituir as coladas anteriormente</label>
+          <button className="btn-secondary btn-sm ml-auto" disabled={!text.trim() || busy} onClick={check}>Conferir</button>
+        </div>
+
+        {preview && (
+          <div className="rounded-md border border-line bg-paper p-4 space-y-3">
+            <div className="text-sm">
+              <strong className="text-ink">{preview.total}</strong> linha(s) válida(s)
+              {preview.duplicates > 0 && <> · <span className="text-muted">{preview.duplicates} repetida(s) (ignoradas)</span></>}
+              {preview.errorCount > 0 && <> · <span className="text-danger">{preview.errorCount} com problema</span></>}
+            </div>
+            {preview.errors.length > 0 && (
+              <ul className="text-xs text-danger list-disc pl-5 space-y-0.5 max-h-32 overflow-y-auto">
+                {preview.errors.map(e => <li key={e.line}>Linha {e.line}: {e.message}</li>)}
+              </ul>
+            )}
+            {preview.preview.length > 0 && (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead><tr><th className="th">Nome</th><th className="th">Área</th><th className="th">Designado para</th></tr></thead>
+                  <tbody className="divide-y divide-line">{preview.preview.map((r, i) => <tr key={i}><td className="px-3 py-2">{r.name}</td><td className="px-3 py-2 text-muted">{r.area}</td><td className="px-3 py-2">{r.unit}</td></tr>)}</tbody>
+                </table>
+                {preview.total > preview.preview.length && <p className="text-[11px] text-muted mt-1.5">Mostrando as {preview.preview.length} primeiras.</p>}
+              </div>
+            )}
+            <div className="flex flex-wrap gap-2">
+              {preview.errorCount === 0 && <button className="btn-primary btn-sm" disabled={busy || preview.total === 0 && preview.duplicates === 0} onClick={() => doImport(false)}><Check className="w-4 h-4" /> Importar {preview.total} linha(s)</button>}
+              {preview.errorCount > 0 && preview.total > 0 && <button className="btn-primary btn-sm" disabled={busy} onClick={() => doImport(true)}><Check className="w-4 h-4" /> Importar {preview.total} válida(s), ignorando as {preview.errorCount} com problema</button>}
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="card overflow-hidden">
+        <div className="flex flex-wrap items-center justify-between gap-3 p-4 border-b border-line">
+          <h4 className="font-semibold text-navy">Linhas coladas ({data.entries.length})</h4>
+          {data.entries.length > 0 && <button className="btn-secondary btn-sm !text-danger" onClick={clearAll}><Trash2 className="w-4 h-4" /> Remover todas</button>}
+        </div>
+        {data.entries.length === 0 ? <p className="p-8 text-center text-sm text-muted">Nenhuma linha colada nesta edição.</p> : (
+          <div className="max-h-96 overflow-auto">
+            <table className="w-full text-sm">
+              <thead className="sticky top-0"><tr><th className="th">Nome</th><th className="th">Área</th><th className="th">Designado para</th><th className="th w-12"></th></tr></thead>
+              <tbody className="divide-y divide-line">
+                {data.entries.slice(0, 300).map(e => (
+                  <tr key={e.id}><td className="px-4 py-2.5">{e.name}</td><td className="px-4 py-2.5 text-muted">{e.area}</td><td className="px-4 py-2.5">{e.unit}</td>
+                    <td className="px-2 py-1 text-right"><button className="btn-danger" title="Remover linha" onClick={() => removeEntry(e.id)}><Trash2 className="w-4 h-4" /></button></td></tr>
+                ))}
+              </tbody>
+            </table>
+            {data.entries.length > 300 && <p className="p-3 text-xs text-muted text-center">Exibindo as 300 mais recentes de {data.entries.length}.</p>}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -966,6 +1121,9 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
           </Table>
         </div>
       )}
+
+      {/* ---------- Painel público ---------- */}
+      {sub === 'panel' && <PanelAdmin editionId={selectedId} run={run} confirm={confirm} onChanged={onEditionsChanged} />}
 
       {/* ---------- Perguntas frequentes ---------- */}
       {sub === 'faq' && (

@@ -42,8 +42,8 @@ export function MagistrateForm({
 }) {
   const empty = {
     name: '', email: '', currentLocation: '',
-    firstPreference: PREFERENCE_AREAS[0], secondPreference: PREFERENCE_AREAS[1],
-    acceptsHearings: 'sim', status: 'Aprovado',
+    firstPreference: '', secondPreference: '',
+    acceptsHearings: '', status: 'Aprovado',
   };
   const [f, setF] = useState(initial ? {
     name: initial.name, email: initial.email, currentLocation: initial.currentLocation,
@@ -52,6 +52,7 @@ export function MagistrateForm({
   } : empty);
   const [declared, setDeclared] = useState(false);
   const [website, setWebsite] = useState('');
+  const [localError, setLocalError] = useState('');
   const set = (k: keyof typeof empty) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setF({ ...f, [k]: e.target.value });
 
@@ -60,6 +61,12 @@ export function MagistrateForm({
       className="space-y-5"
       onSubmit={async e => {
         e.preventDefault();
+        // Todos os campos de escolha precisam ser preenchidos (não há valor pré-selecionado)
+        if (!f.firstPreference || (!initial && !f.secondPreference) || !f.acceptsHearings) {
+          setLocalError('Preencha a 1ª escolha, a 2ª escolha e informe se aceita realizar audiências.');
+          return;
+        }
+        setLocalError('');
         const ok = await onSubmit({ ...f, acceptsHearings: f.acceptsHearings === 'sim', ...(withDeclaration ? { declaration: declared, website } : {}) });
         if (ok && !initial) { setF(empty); setDeclared(false); }
       }}
@@ -76,14 +83,15 @@ export function MagistrateForm({
       </Field>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <Field label="1ª escolha (área)">
-          <select className="input" value={f.firstPreference}
+          <select required className="input" value={f.firstPreference}
             onChange={e => setF({ ...f, firstPreference: e.target.value, secondPreference: f.secondPreference === e.target.value ? '' : f.secondPreference })}>
+            <option value="" disabled>Selecione…</option>
             {PREFERENCE_AREAS.map(a => <option key={a}>{a}</option>)}
           </select>
         </Field>
         <Field label="2ª escolha (área)">
-          <select className="input" value={f.secondPreference} onChange={set('secondPreference')}>
-            <option value="">Nenhuma</option>
+          <select required={!initial} className="input" value={f.secondPreference} onChange={set('secondPreference')}>
+            <option value="" disabled={!initial}>{initial ? 'Nenhuma' : 'Selecione…'}</option>
             {PREFERENCE_AREAS.filter(a => a !== f.firstPreference).map(a => <option key={a}>{a}</option>)}
           </select>
         </Field>
@@ -91,7 +99,7 @@ export function MagistrateForm({
       <Field label="Aceita realizar audiências?">
         <Segmented
           value={f.acceptsHearings}
-          onChange={v => setF({ ...f, acceptsHearings: v })}
+          onChange={v => { setLocalError(''); setF({ ...f, acceptsHearings: v }); }}
           options={[
             { value: 'sim', label: 'Sim, aceito realizar audiências' },
             { value: 'nao', label: 'Não, apenas sentenças' },
@@ -128,6 +136,7 @@ export function MagistrateForm({
       <p className="text-xs text-muted leading-relaxed border-l-2 border-bronze/50 pl-3">
         A preferência indicada será atendida na medida do possível, considerando a disponibilidade de unidades e o interesse público.
       </p>
+      {localError && <p role="alert" className="text-sm text-danger">{localError}</p>}
       {withDeclaration && (
         <div aria-hidden="true" style={{ position: 'absolute', left: '-9999px', width: 1, height: 1, overflow: 'hidden' }}>
         <label>Não preencha este campo<input tabIndex={-1} autoComplete="off" value={website} onChange={e => setWebsite(e.target.value)} /></label>
@@ -161,7 +170,7 @@ export function UnitForm({
   const [website, setWebsite] = useState('');
   const empty = {
     unitName: '', judgeName: '', email: '', comarca: '',
-    areas: [PREFERENCE_AREAS[0]] as string[],
+    areas: [] as string[],
     supportNeeded: 'Sentença' as SupportNeeded,
     description: '',
     slots: 1,
@@ -174,9 +183,10 @@ export function UnitForm({
   const text = (k: 'unitName' | 'judgeName' | 'email' | 'comarca' | 'description') =>
     (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setF({ ...f, [k]: e.target.value });
 
+  const [areasError, setAreasError] = useState('');
   const toggleArea = (area: string) => {
     const has = f.areas.includes(area);
-    if (has && f.areas.length === 1) return;
+    setAreasError('');
     setF({ ...f, areas: has ? f.areas.filter(a => a !== area) : [...f.areas, area] });
   };
 
@@ -185,6 +195,7 @@ export function UnitForm({
       className="space-y-5"
       onSubmit={async e => {
         e.preventDefault();
+        if (f.areas.length === 0) { setAreasError('Marque ao menos uma área a ser atendida.'); return; }
         const { slots, ...rest } = f;
         if ((await onSubmit({ ...rest, ...(withSlots ? { slots } : {}), ...(withHoneypot ? { website } : {}) })) && !initial) setF(empty);
       }}
@@ -225,6 +236,7 @@ export function UnitForm({
             );
           })}
         </div>
+        {areasError && <p role="alert" className="text-sm text-danger mt-2">{areasError}</p>}
       </Field>
       <Field label="Necessita de auxílio para">
         <Segmented

@@ -312,6 +312,12 @@ let matches: Match[] = [
 
 let faq: FaqItem[] = [];
 
+/** Painel público de vinculações: linhas coladas de planilha (Nome / Área / Designado Para) e a chave de visibilidade. */
+interface PanelEntry { id: string; editionId: string; name: string; area: string; unit: string; createdAt: string }
+let panelEntries: PanelEntry[] = [];
+let panelVisible = false;          // o painel só é público quando a administração o ativa
+let panelIncludeSystem = true;     // inclui também as vinculações feitas pelo sistema
+
 /** Autenticação em dois fatores (TOTP) do administrador; o segredo é gravado junto do estado. */
 let adminTotpSecret: string | null = null;
 
@@ -406,7 +412,8 @@ const freeText = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().
 
 type Parsed<T> = { error: string } | { value: T };
 
-function parseMagistrate(b: any, base?: Magistrate): Parsed<Pick<Magistrate, 'name' | 'email' | 'currentLocation' | 'firstPreference' | 'secondPreference' | 'acceptsHearings'>> {
+/** `strict` (inscrição pública): 2ª escolha e aceite de audiências são obrigatórios e precisam vir preenchidos. */
+function parseMagistrate(b: any, base?: Magistrate, strict = false): Parsed<Pick<Magistrate, 'name' | 'email' | 'currentLocation' | 'firstPreference' | 'secondPreference' | 'acceptsHearings'>> {
   const pick = (k: keyof Magistrate) => (b?.[k] == null && base ? base[k] : b?.[k]);
   const name = cleanText(pick('name'), 200);
   const email = cleanText(pick('email'), 200);
@@ -419,9 +426,11 @@ function parseMagistrate(b: any, base?: Magistrate): Parsed<Pick<Magistrate, 'na
   const first = pick('firstPreference');
   if (typeof first !== 'string' || !PREFERENCE_AREAS.includes(first)) return { error: 'Escolha uma área válida na 1ª escolha.' };
   const second = pick('secondPreference') ?? '';
+  if (strict && second === '') return { error: 'Escolha a 2ª área de preferência.' };
   if (typeof second !== 'string' || (second !== '' && !PREFERENCE_AREAS.includes(second))) return { error: 'Escolha uma área válida na 2ª escolha.' };
   if (second && second === first) return { error: 'A 2ª escolha não pode ser igual à 1ª escolha.' };
   const hearings = pick('acceptsHearings');
+  if (strict && typeof hearings !== 'boolean') return { error: 'Informe se aceita realizar audiências.' };
   return { value: { name, email, currentLocation, firstPreference: first, secondPreference: second, acceptsHearings: hearings === true } };
 }
 
@@ -557,8 +566,10 @@ const lastSaved = new Map<string, Map<string, string>>();
 let persistedLogIds = new Set<string>();
 let lastMeta = '';
 
+const metaJson = () => JSON.stringify({ activeEditionId, adminTotpSecret, panelVisible, panelIncludeSystem });
+
 const collectionsNow = (): Record<string, { id: string }[]> => ({
-  editions, magistrates, units, matches, log: activityLog, faq,
+  editions, magistrates, units, matches, log: activityLog, faq, panel: panelEntries,
 });
 
 async function loadState() {
@@ -573,6 +584,9 @@ async function loadState() {
       activityLog = raw.activityLog ?? activityLog;
       faq = raw.faq ?? faq;
       adminTotpSecret = raw.adminTotpSecret ?? null;
+      panelEntries = raw.panel ?? [];
+      panelVisible = raw.panelVisible === true;
+      panelIncludeSystem = raw.panelIncludeSystem !== false;
     } catch { /* primeira execução: usa os dados iniciais */ }
     return;
   }
@@ -605,7 +619,10 @@ async function loadState() {
   faq = loaded.faq as FaqItem[];
   activeEditionId = meta?.activeEditionId ?? editions[0].id;
   adminTotpSecret = meta?.adminTotpSecret ?? null;
-  lastMeta = JSON.stringify({ activeEditionId, adminTotpSecret });
+  panelEntries = loaded.panel as PanelEntry[];
+  panelVisible = meta?.panelVisible === true;
+  panelIncludeSystem = meta?.panelIncludeSystem !== false;
+  lastMeta = metaJson();
 }
 
 async function persist() {
@@ -613,7 +630,7 @@ async function persist() {
     fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
     fs.writeFileSync(
       DATA_FILE,
-      JSON.stringify({ editions, activeEditionId, magistrates, units, matches, activityLog, faq, adminTotpSecret }),
+      JSON.stringify({ editions, activeEditionId, magistrates, units, matches, activityLog, faq, adminTotpSecret, panel: panelEntries, panelVisible, panelIncludeSystem }),
     );
     return;
   }
@@ -641,7 +658,7 @@ async function persist() {
     for (const id of prev.keys()) if (!next.has(id)) ops.push({ kind: 'del', ref: col.doc(id) });
     nextSaved.set(name, next);
   }
-  const meta = JSON.stringify({ activeEditionId, adminTotpSecret });
+  const meta = metaJson();
   if (meta !== lastMeta) ops.push({ kind: 'set', ref: db.collection(PREFIX + 'meta').doc('state'), data: JSON.parse(meta) });
 
   for (let i = 0; i < ops.length; i += 400) {
@@ -707,7 +724,9 @@ async function startServer() {
     next();
   });
 
-  app.use(express.json({ limit: '50kb' }));
+  const smallJson = express.json({ limit: '50kb' });
+  const bigJson = express.json({ limit: '1mb' }); // colagem de planilhas inteiras no painel de vinculações
+  app.use((req, res, next) => (req.path === '/api/panel/import' ? bigJson : smallJson)(req, res, next));
   await loadState();
   normalizeLegacy();
   // Perdeu o celular do autenticador? Defina RESET_ADMIN_2FA=true, publique, entre (será pedido novo cadastro) e remova a variável.
@@ -727,7 +746,7 @@ async function startServer() {
   app.use('/api', (req, res, next) => {
     const ip = req.ip || 'unknown';
     const admin = hasValidToken(req);
-    const publicRead = (req.method === 'GET' && ['/settings', '/faq'].includes(req.path)) || (req.method === 'POST' && req.path === '/status');
+    const publicRead = (req.method === 'GET' && ['/settings', '/faq', '/panel'].includes(req.path)) || (req.method === 'POST' && req.path === '/status');
     const publicSignup = req.method === 'POST' && (req.path === '/magistrates' || req.path === '/units');
     const login = req.method === 'POST' && (req.path === '/admin/login' || req.path === '/admin/login/verify');
 
@@ -1004,6 +1023,145 @@ async function startServer() {
     res.json({ success: true });
   });
 
+  // ---------- Painel público de vinculações ----------
+  const norm = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const panelKey = (r: { name: string; area: string; unit: string }) => `${norm(r.name)}|${norm(r.area)}|${norm(r.unit)}`;
+  const cleanCell = (t: string) => t.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
+
+  /** Linhas exibidas no painel público: vinculações do sistema (se habilitado) + linhas coladas, da edição vigente, sem repetição. */
+  function panelRows(editionId: string) {
+    const seen = new Map<string, { name: string; area: string; unit: string }>();
+    const add = (r: { name: string; area: string; unit: string }) => { const k = panelKey(r); if (!seen.has(k)) seen.set(k, { name: r.name, area: r.area, unit: r.unit }); };
+    if (panelIncludeSystem) {
+      for (const mt of matches.filter((m) => m.editionId === editionId)) {
+        const mag = magistrates.find((m) => m.id === mt.magistrateId);
+        const un = units.find((u) => u.id === mt.unitId);
+        if (mag && un) add({ name: mag.name, area: mt.assignedArea, unit: un.unitName });
+      }
+    }
+    panelEntries.filter((e) => e.editionId === editionId).forEach(add);
+    return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR') || a.unit.localeCompare(b.unit, 'pt-BR'));
+  }
+
+  /** Lê texto copiado do Excel (colunas separadas por tabulação; também aceita ';'). Aspas de células são respeitadas. */
+  function parseSheetText(text: string): string[][] {
+    const delim = text.includes('\t') ? '\t' : text.includes(';') ? ';' : '\t';
+    const rows: string[][] = [];
+    let row: string[] = []; let cell = ''; let inQuotes = false;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (inQuotes) {
+        if (ch === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else inQuotes = false; } else cell += ch;
+      } else if (ch === '"' && cell === '') inQuotes = true;
+      else if (ch === delim) { row.push(cell); cell = ''; }
+      else if (ch === '\n' || ch === '\r') { if (ch === '\r' && text[i + 1] === '\n') i++; row.push(cell); cell = ''; rows.push(row); row = []; }
+      else cell += ch;
+    }
+    if (cell !== '' || row.length) { row.push(cell); rows.push(row); }
+    return rows;
+  }
+
+  // Público: o painel só é entregue se a administração o tornou visível
+  app.get('/api/panel', (_req, res) => {
+    const ed = editionById(activeEditionId);
+    if (!panelVisible || !ed) return res.json({ visible: false });
+    res.json({ visible: true, edition: ed.title, rows: panelRows(ed.id) });
+  });
+
+  app.get('/api/panel/admin', (req, res) => {
+    const edition = resolveEdition(req);
+    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+    res.json({
+      visible: panelVisible,
+      includeSystem: panelIncludeSystem,
+      activeEdition: { id: activeEditionId, title: editionById(activeEditionId)?.title ?? '' },
+      edition: { id: edition.id, title: edition.title },
+      systemCount: matches.filter((m) => m.editionId === edition.id).length,
+      publicCount: panelRows(activeEditionId).length,
+      entries: panelEntries.filter((e) => e.editionId === edition.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+    });
+  });
+
+  app.put('/api/panel/settings', (req, res) => {
+    const { visible, includeSystem } = req.body || {};
+    if ((visible !== undefined && typeof visible !== 'boolean') || (includeSystem !== undefined && typeof includeSystem !== 'boolean')) {
+      return res.status(400).json({ error: 'Valores inválidos.' });
+    }
+    if (typeof visible === 'boolean' && visible !== panelVisible) {
+      panelVisible = visible;
+      log(null, 'Administração', 'Conteúdo', `Painel público de vinculações ${visible ? 'ATIVADO (visível ao público)' : 'desativado'}.`);
+    }
+    if (typeof includeSystem === 'boolean' && includeSystem !== panelIncludeSystem) {
+      panelIncludeSystem = includeSystem;
+      log(null, 'Administração', 'Conteúdo', `Painel público: vinculações do sistema ${includeSystem ? 'incluídas' : 'excluídas'}.`);
+    }
+    res.json({ success: true, visible: panelVisible, includeSystem: panelIncludeSystem });
+  });
+
+  // Importa linhas coladas de planilha: Nome / Área / Designado Para (com ou sem linha de cabeçalho).
+  // dryRun = apenas confere e mostra o que seria importado.
+  app.post('/api/panel/import', (req, res) => {
+    const edition = resolveEdition(req);
+    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+    const text = req.body?.text;
+    if (typeof text !== 'string' || !text.trim()) return res.status(400).json({ error: 'Cole as linhas da planilha (colunas Nome, Área e Designado Para).' });
+    if (text.length > 900_000) return res.status(400).json({ error: 'Texto grande demais. Divida a planilha em partes.' });
+    const mode = req.body?.mode === 'replace' ? 'replace' : 'append';
+
+    const MAX_ROWS = 3000;
+    const raw = parseSheetText(text).filter((r) => r.some((c) => c.trim() !== ''));
+    const errors: { line: number; message: string }[] = [];
+    const valid: { name: string; area: string; unit: string }[] = [];
+    let start = 0;
+    if (raw[0] && norm(raw[0][0] ?? '').startsWith('nome') && norm(raw[0][1] ?? '').startsWith('area') && norm(raw[0][2] ?? '').startsWith('design')) start = 1;
+    if (raw.length - start > MAX_ROWS) return res.status(400).json({ error: `Máximo de ${MAX_ROWS} linhas por importação.` });
+
+    const inBatch = new Set<string>();
+    let duplicates = 0;
+    const existing = new Set(mode === 'append' ? panelEntries.filter((e) => e.editionId === edition.id).map(panelKey) : []);
+    for (let i = start; i < raw.length; i++) {
+      const [name, area, unit] = [cleanCell(raw[i][0] ?? ''), cleanCell(raw[i][1] ?? ''), cleanCell(raw[i][2] ?? '')];
+      const line = i + 1;
+      if (!name || !area || !unit) { errors.push({ line, message: 'a linha precisa ter Nome, Área e Designado Para preenchidos (colunas separadas por tabulação).' }); continue; }
+      if (name.length > 200 || area.length > 150 || unit.length > 300) { errors.push({ line, message: 'texto longo demais em uma das colunas.' }); continue; }
+      const key = panelKey({ name, area, unit });
+      if (inBatch.has(key) || existing.has(key)) { duplicates++; continue; }
+      inBatch.add(key); valid.push({ name, area, unit });
+    }
+
+    if (req.body?.dryRun === true) {
+      return res.json({ success: true, dryRun: true, mode, total: valid.length, duplicates, errorCount: errors.length, errors: errors.slice(0, 50), preview: valid.slice(0, 10) });
+    }
+    if (errors.length && req.body?.ignoreErrors !== true) {
+      return res.status(400).json({ error: `${errors.length} linha(s) com problema. Corrija a planilha ou confirme a importação ignorando essas linhas.`, errorCount: errors.length, errors: errors.slice(0, 50) });
+    }
+    if (valid.length === 0 && duplicates > 0) return res.json({ success: true, imported: 0, duplicates, ignored: errors.length }); // tudo já constava no painel
+    if (valid.length === 0) return res.status(400).json({ error: 'Nenhuma linha válida para importar.' });
+
+    if (mode === 'replace') panelEntries = panelEntries.filter((e) => e.editionId !== edition.id);
+    const now = new Date().toISOString();
+    valid.forEach((v) => panelEntries.push({ id: newId('pn'), editionId: edition.id, ...v, createdAt: now }));
+    log(edition.id, 'Administração', 'Conteúdo', `Painel público: ${valid.length} linha(s) importada(s) de planilha (${mode === 'replace' ? 'substituindo as coladas anteriormente' : 'acrescentando'})${errors.length ? `; ${errors.length} linha(s) ignorada(s)` : ''}.`);
+    res.json({ success: true, imported: valid.length, duplicates, ignored: errors.length });
+  });
+
+  app.delete('/api/panel/entries/:id', (req, res) => {
+    const entry = panelEntries.find((e) => e.id === req.params.id);
+    if (entry) log(entry.editionId, 'Administração', 'Conteúdo', `Painel público: linha removida (${entry.name} — ${entry.unit}).`);
+    panelEntries = panelEntries.filter((e) => e.id !== req.params.id);
+    res.json({ success: true });
+  });
+
+  app.post('/api/panel/clear', (req, res) => {
+    const edition = resolveEdition(req);
+    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+    if (!confirmedWipe(req)) return res.status(400).json({ error: 'Confirmação ausente.' });
+    const count = panelEntries.filter((e) => e.editionId === edition.id).length;
+    panelEntries = panelEntries.filter((e) => e.editionId !== edition.id);
+    log(edition.id, 'Administração', 'Conteúdo', `Painel público: ${count} linha(s) coladas removidas.`);
+    res.json({ success: true, count });
+  });
+
   // ---------- Activity log ----------
   app.get('/api/log', (req, res) => {
     const edition = (req.query.edition as string) || '';
@@ -1075,7 +1233,7 @@ async function startServer() {
     const { declaration, status, source } = req.body;
     const edition = resolveEdition(req);
     if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
-    const parsed = parseMagistrate(req.body);
+    const parsed = parseMagistrate(req.body, undefined, req.body?.source !== 'admin');
     if ('error' in parsed) return res.status(400).json({ error: parsed.error });
     const { name, email, currentLocation, firstPreference, secondPreference, acceptsHearings } = parsed.value;
     if (source !== 'admin') {
