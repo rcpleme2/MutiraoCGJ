@@ -114,6 +114,7 @@ export function MagistrateForm({
             {initial && <option>Lista de Espera</option>}
             {initial?.status === 'Atribuído' && <option>Atribuído</option>}
             {initial?.status === 'Rejeitado' && <option>Rejeitado</option>}
+            {initial?.status === 'Desistente' && <option>Desistente</option>}
           </select>
           {initial?.status === 'Atribuído' && <p className="text-xs text-muted mt-1.5">Magistrado vinculado a uma unidade: para alterar o status, desfaça antes a vinculação.</p>}
         </Field>

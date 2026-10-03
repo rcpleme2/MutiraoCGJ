@@ -1,4 +1,4 @@
-export type MagistrateStatus = 'Aguardando Conferência' | 'Aprovado' | 'Lista de Espera' | 'Atribuído' | 'Rejeitado';
+export type MagistrateStatus = 'Aguardando Conferência' | 'Aprovado' | 'Lista de Espera' | 'Atribuído' | 'Rejeitado' | 'Desistente';
 
 export type SupportNeeded = 'Audiência' | 'Sentença' | 'Audiência e Sentença';
 export const SUPPORT_OPTIONS: SupportNeeded[] = ['Audiência', 'Sentença', 'Audiência e Sentença'];
@@ -107,5 +107,5 @@ export interface FaqItem {
   updatedAt?: string;
 }
 
-export interface PanelRow { name: string; area: string; unit: string }
-export interface PanelEntry extends PanelRow { id: string; editionId: string; createdAt: string }
+export interface PanelRow { id: string; kind: 'match' | 'entry'; name: string; area: string; unit: string; comarca?: string; workType?: string }
+export interface Withdrawal { id: string; editionId: string; name: string; area: string; unit: string; sei: string; createdAt: string }

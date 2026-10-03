@@ -14,7 +14,9 @@
   "dependencies": {
     "@google-cloud/firestore": "^9.3.0",
     "@google/genai": "^2.4.0",
+    "@types/pdfkit": "^0.17.6",
     "express": "^4.21.2",
+    "pdfkit": "^0.20.2",
     "qrcode": "^1.5.4",
     "xlsx": "^0.18.5"
   },

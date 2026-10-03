@@ -132,11 +132,11 @@ Exemplo: `gcloud run services update mutirao-cgj --region southamerica-east1 --u
 
 ## 8. Regras de funcionamento
 
-- **Painel público de vinculações:** vem **desativado**. Em *Administração → Painel público* você o torna visível (aparece o
-  item «Painel de Vinculações» no menu) e escolhe as fontes: as vinculações feitas no sistema e/ou linhas coladas de uma
-  planilha do Excel (colunas **Nome / Área / Designado Para**, com ou sem cabeçalho; também aceita separador `;`). A
-  importação mostra uma conferência antes de gravar (linhas válidas, repetidas e com problema). O painel exibe a edição
-  vigente e somente nome, área e unidade — qualquer visitante pode ver.
+- **Painel de vinculações (restrito à administração):** *Administração → Painel de vinculações*. Tabela única com as vinculações do
+  sistema e as importadas de planilha (colunas **Nome / Área / Designado Para**); desfazer uma vinculação a remove do painel.
+  Cada linha tem o botão *Desistência* (pede o número do SEI e move o magistrado para a relação de desistentes). O botão
+  *Exportar relatório em PDF* gera designações vigentes (total e por área) e desistentes com o SEI. Publicamente, só a
+  *Consulta pelo nome completo* (em Consultar Status) informa se há vinculação ativa ou revogada por desistência.
 - **Inscrições:** os campos de escolha do magistrado (1ª e 2ª escolha e aceite de audiências) e as áreas da unidade começam
   sem seleção; todos são obrigatórios (o servidor também valida).
 

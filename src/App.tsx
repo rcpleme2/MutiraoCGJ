@@ -1,13 +1,13 @@
 import React, { useEffect, useState } from 'react';
-import { Scale, UserCheck, Building2, ShieldCheck, Search, ArrowRight, Menu, X, ChevronDown, HelpCircle, LayoutList } from 'lucide-react';
+import { Scale, UserCheck, Building2, ShieldCheck, Search, ArrowRight, Menu, X, ChevronDown, HelpCircle } from 'lucide-react';
 import { api } from './api';
-import { Edition, FaqItem, Magistrate, PanelRow, Unit } from './types';
+import { Edition, FaqItem, Magistrate, Unit } from './types';
 import { Badge, FeedbackProvider, Notice, formatDate, magistrateTone } from './ui';
 import { MagistrateForm, UnitForm } from './Forms';
 import Admin from './Admin';
 import ErrorBoundary from './ErrorBoundary';
 
-type Tab = 'home' | 'magistrate' | 'unit' | 'status' | 'faq' | 'panel' | 'admin';
+type Tab = 'home' | 'magistrate' | 'unit' | 'status' | 'faq' | 'admin';
 
 const NAV: { id: Tab; label: string }[] = [
   { id: 'home', label: 'Início' },
@@ -45,13 +45,9 @@ function AppInner() {
   const [loadError, setLoadError] = useState(false);
 
   const [faq, setFaq] = useState<FaqItem[]>([]);
-  const [panel, setPanel] = useState<{ visible: boolean; edition?: string; rows?: PanelRow[] }>({ visible: false });
-  const [panelQuery, setPanelQuery] = useState('');
-  const [panelAreas, setPanelAreas] = useState<string[]>([]); // áreas escolhidas pelo visitante (vazio = todas)
   const [openFaq, setOpenFaq] = useState('');
   const loadEdition = () => {
     api<FaqItem[]>('/faq').then(setFaq).catch(() => {});
-    api<{ visible: boolean; edition?: string; rows?: PanelRow[] }>('/panel').then(setPanel).catch(() => {});
     return api<Edition | null>('/settings').then(setEdition).catch(() => setLoadError(true));
   };
   useEffect(() => {
@@ -99,7 +95,24 @@ function AppInner() {
     }
   };
 
-  const go = (t: Tab) => { if (t === 'home' || t === 'magistrate' || t === 'unit' || t === 'panel') loadEdition(); setTab(t); setMenuOpen(false); setFormError(''); setMagOk(false); setUnitOk(false); };
+  // Consulta pelo nome completo: só informa a situação no painel de vinculações
+  const [personName, setPersonName] = useState('');
+  const [nameResult, setNameResult] = useState<'ativa' | 'revogada' | 'nao_consta' | null>(null);
+  const [nameError, setNameError] = useState('');
+  const [nameBusy, setNameBusy] = useState(false);
+  const consultName = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setNameError(''); setNameResult(null); setNameBusy(true);
+    try {
+      setNameResult((await api<{ situation: 'ativa' | 'revogada' | 'nao_consta' }>('/status', { method: 'POST', json: { name: personName } })).situation);
+    } catch (err: any) {
+      setNameError(err.message);
+    } finally {
+      setNameBusy(false);
+    }
+  };
+
+  const go = (t: Tab) => { if (t === 'home' || t === 'magistrate' || t === 'unit') loadEdition(); setTab(t); setMenuOpen(false); setFormError(''); setMagOk(false); setUnitOk(false); };
 
   if (loadError) return <div className="min-h-screen flex items-center justify-center text-muted">Não foi possível carregar o sistema.</div>;
 
@@ -107,7 +120,7 @@ function AppInner() {
   const open = regState === 'open';
   const regMessage = edition?.registration?.message || 'As inscrições não estão abertas no momento.';
   // A página só aparece no menu quando há perguntas publicadas
-  const nav = [...NAV, ...(panel.visible ? [{ id: 'panel' as Tab, label: 'Painel de Vinculações' }] : []), ...(faq.length ? [{ id: 'faq' as Tab, label: 'Perguntas Frequentes' }] : [])];
+  const nav = [...NAV, ...(faq.length ? [{ id: 'faq' as Tab, label: 'Perguntas Frequentes' }] : [])];
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -211,66 +224,6 @@ function AppInner() {
           </PageCard>
         )}
 
-        {tab === 'panel' && (() => {
-          const fold = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-          const q = fold(panelQuery.trim());
-          const allRows = panel.rows ?? [];
-          // Áreas existentes no painel (agrupadas sem distinguir acento/caixa), com a quantidade de designações
-          const areaMap = new Map<string, { label: string; count: number }>();
-          allRows.forEach(r => { const k = fold(r.area.trim()); const cur = areaMap.get(k); if (cur) cur.count++; else areaMap.set(k, { label: r.area.trim(), count: 1 }); });
-          const areas = [...areaMap.entries()].sort((a, b) => a[1].label.localeCompare(b[1].label, 'pt-BR'));
-          const selected = panelAreas.filter(k => areaMap.has(k));
-          const toggleArea = (k: string) => setPanelAreas(selected.includes(k) ? selected.filter(x => x !== k) : [...selected, k]);
-          const rows = allRows.filter(r => (selected.length === 0 || selected.includes(fold(r.area.trim()))) && (!q || fold(`${r.name} ${r.area} ${r.unit}`).includes(q)));
-          return (
-            <section className="card max-w-4xl mx-auto p-7 sm:p-10">
-              <div className="mb-6 pb-6 border-b border-line">
-                <LayoutList className="w-5 h-5 text-bronze mb-3" />
-                <h2 className="text-2xl font-semibold text-navy">Painel de vinculações</h2>
-                <p className="text-sm text-muted mt-1.5 leading-relaxed">{panel.visible ? 'Relação Total das vinculações vigentes' : 'O painel não está disponível no momento.'}</p>
-              </div>
-              {panel.visible && (
-                <>
-                  <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-                    <input className="input max-w-sm" type="search" placeholder="Buscar por nome, área ou unidade" aria-label="Buscar no painel" value={panelQuery} onChange={e => setPanelQuery(e.target.value)} />
-                    <span className="text-xs text-muted">{rows.length} de {allRows.length} designações</span>
-                  </div>
-                  {areas.length > 1 && (
-                    <div className="mb-4" role="group" aria-label="Filtrar por área de atuação">
-                      <div className="flex items-center justify-between gap-3 mb-2">
-                        <span className="text-xs font-medium text-muted tracking-wide">Área de atuação</span>
-                        {selected.length > 0 && <button className="text-xs text-bronze hover:underline" onClick={() => setPanelAreas([])}>Limpar filtro</button>}
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        {areas.map(([k, a]) => {
-                          const on = selected.includes(k);
-                          return (
-                            <button key={k} type="button" aria-pressed={on} onClick={() => toggleArea(k)}
-                              className={`px-3 py-1.5 rounded-full text-xs border transition-colors ${on ? 'bg-navy text-white border-navy' : 'bg-surface text-muted border-line hover:text-ink hover:border-slate-300'}`}>
-                              {a.label} <span className={on ? 'text-white/70' : 'text-muted/70'}>({a.count})</span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-                  <div className="border border-line rounded-md overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead><tr><th className="th">Magistrado(a)</th><th className="th">Área de atuação</th><th className="th">Unidade</th></tr></thead>
-                      <tbody className="divide-y divide-line">
-                        {rows.length === 0 && <tr><td colSpan={3} className="px-4 py-10 text-center text-muted">{allRows.length === 0 ? 'Nenhuma designação publicada ainda.' : 'Nenhum resultado para o filtro escolhido.'}</td></tr>}
-                        {rows.map((r, i) => (
-                          <tr key={i}><td className="td font-medium">{r.name}</td><td className="td text-muted">{r.area}</td><td className="td">{r.unit}</td></tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </>
-              )}
-            </section>
-          );
-        })()}
-
         {tab === 'faq' && (
           <PageCard icon={HelpCircle} title="Perguntas frequentes" subtitle="Dúvidas comuns sobre as inscrições e o andamento do mutirão.">
             {faq.length === 0 ? (
@@ -350,6 +303,18 @@ function AppInner() {
                 )}
               </div>
             )}
+            <div className="mt-10 pt-8 border-t border-line">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-bronze mb-1">Consulta pelo nome do magistrado</h3>
+              <p className="text-sm text-muted mb-4">Informe o nome completo para verificar se há vinculação ativa ou vinculação revogada por desistência.</p>
+              <form onSubmit={consultName} className="flex gap-2">
+                <input required placeholder="Nome completo do magistrado" aria-label="Nome completo do magistrado" className="input flex-1" value={personName} onChange={e => { setPersonName(e.target.value); setNameResult(null); }} />
+                <button className="btn-primary" disabled={nameBusy}>{nameBusy ? 'Buscando…' : 'Consultar'}</button>
+              </form>
+              {nameError && <div className="mt-4"><Notice tone="danger">{nameError}</Notice></div>}
+              {nameResult === 'ativa' && <div className="mt-4"><Notice tone="ok"><strong>Vinculação ativa.</strong></Notice></div>}
+              {nameResult === 'revogada' && <div className="mt-4"><Notice tone="danger"><strong>Vinculação revogada por desistência.</strong></Notice></div>}
+              {nameResult === 'nao_consta' && <div className="mt-4"><div className="rounded-md px-4 py-3 text-sm bg-paper text-muted border border-line">Não consta vinculação ativa nem revogada para o nome informado.</div></div>}
+            </div>
           </PageCard>
         )}
 

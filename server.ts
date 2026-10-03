@@ -7,6 +7,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import { Firestore } from '@google-cloud/firestore';
 import QRCode from 'qrcode';
+import PDFDocument from 'pdfkit';
 import { AsyncLocalStorage } from 'async_hooks';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -19,7 +20,7 @@ const ai = process.env.GEMINI_API_KEY
     })
   : null;
 
-type MagistrateStatus = 'Aguardando Conferência' | 'Aprovado' | 'Lista de Espera' | 'Atribuído' | 'Rejeitado';
+type MagistrateStatus = 'Aguardando Conferência' | 'Aprovado' | 'Lista de Espera' | 'Atribuído' | 'Rejeitado' | 'Desistente';
 
 interface Edition {
   id: string;
@@ -312,11 +313,12 @@ let matches: Match[] = [
 
 let faq: FaqItem[] = [];
 
-/** Painel público de vinculações: linhas coladas de planilha (Nome / Área / Designado Para) e a chave de visibilidade. */
+/** Painel de vinculações (uso restrito da administração): linhas coladas de planilha (Nome / Área / Designado Para). */
 interface PanelEntry { id: string; editionId: string; name: string; area: string; unit: string; createdAt: string }
 let panelEntries: PanelEntry[] = [];
-let panelVisible = false;          // o painel só é público quando a administração o ativa
-let panelIncludeSystem = true;     // inclui também as vinculações feitas pelo sistema
+/** Desistências de participação, com o número do processo SEI em que constam. */
+interface Withdrawal { id: string; editionId: string; name: string; area: string; unit: string; sei: string; createdAt: string }
+let withdrawals: Withdrawal[] = [];
 
 /** Autenticação em dois fatores (TOTP) do administrador; o segredo é gravado junto do estado. */
 let adminTotpSecret: string | null = null;
@@ -399,7 +401,7 @@ const emailDomainOk = (email: string) => {
 };
 const EMAIL_DOMAIN_MESSAGE = `Use o e-mail institucional (${ALLOWED_EMAIL_DOMAINS.map((d) => `@${d}`).join(' ou ')}).`;
 
-const MAGISTRATE_STATUSES: MagistrateStatus[] = ['Aguardando Conferência', 'Aprovado', 'Lista de Espera', 'Atribuído', 'Rejeitado'];
+const MAGISTRATE_STATUSES: MagistrateStatus[] = ['Aguardando Conferência', 'Aprovado', 'Lista de Espera', 'Atribuído', 'Rejeitado', 'Desistente'];
 
 /** Texto obrigatório: precisa ser string, não vazia e dentro do limite. */
 function cleanText(v: unknown, max: number): string | null {
@@ -541,7 +543,7 @@ function editionStats(e: Edition) {
     magistrates: mags.length,
     units: us.length,
     matches: ms.length,
-    waiting: mags.filter((m) => m.status !== 'Atribuído' && m.status !== 'Rejeitado').length,
+    waiting: mags.filter((m) => m.status !== 'Atribuído' && m.status !== 'Rejeitado' && m.status !== 'Desistente').length,
     pendingUnits: us.filter((u) => u.selection === 'Escolhida' && u.status === 'Pendente').length,
   };
 }
@@ -565,10 +567,10 @@ const lastSaved = new Map<string, Map<string, string>>();
 let persistedLogIds = new Set<string>();
 let lastMeta = '';
 
-const metaJson = () => JSON.stringify({ activeEditionId, adminTotpSecret, panelVisible, panelIncludeSystem });
+const metaJson = () => JSON.stringify({ activeEditionId, adminTotpSecret });
 
 const collectionsNow = (): Record<string, { id: string }[]> => ({
-  editions, magistrates, units, matches, log: activityLog, faq, panel: panelEntries,
+  editions, magistrates, units, matches, log: activityLog, faq, panel: panelEntries, withdrawals,
 });
 
 async function loadState() {
@@ -584,8 +586,7 @@ async function loadState() {
       faq = raw.faq ?? faq;
       adminTotpSecret = raw.adminTotpSecret ?? null;
       panelEntries = raw.panel ?? [];
-      panelVisible = raw.panelVisible === true;
-      panelIncludeSystem = raw.panelIncludeSystem !== false;
+      withdrawals = raw.withdrawals ?? [];
     } catch { /* primeira execução: usa os dados iniciais */ }
     return;
   }
@@ -619,8 +620,7 @@ async function loadState() {
   activeEditionId = meta?.activeEditionId ?? editions[0].id;
   adminTotpSecret = meta?.adminTotpSecret ?? null;
   panelEntries = loaded.panel as PanelEntry[];
-  panelVisible = meta?.panelVisible === true;
-  panelIncludeSystem = meta?.panelIncludeSystem !== false;
+  withdrawals = loaded.withdrawals as Withdrawal[];
   lastMeta = metaJson();
 }
 
@@ -629,7 +629,7 @@ async function persist() {
     fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
     fs.writeFileSync(
       DATA_FILE,
-      JSON.stringify({ editions, activeEditionId, magistrates, units, matches, activityLog, faq, adminTotpSecret, panel: panelEntries, panelVisible, panelIncludeSystem }),
+      JSON.stringify({ editions, activeEditionId, magistrates, units, matches, activityLog, faq, adminTotpSecret, panel: panelEntries, withdrawals }),
     );
     return;
   }
@@ -745,7 +745,7 @@ async function startServer() {
   app.use('/api', (req, res, next) => {
     const ip = req.ip || 'unknown';
     const admin = hasValidToken(req);
-    const publicRead = (req.method === 'GET' && ['/settings', '/faq', '/panel'].includes(req.path)) || (req.method === 'POST' && req.path === '/status');
+    const publicRead = (req.method === 'GET' && ['/settings', '/faq'].includes(req.path)) || (req.method === 'POST' && req.path === '/status');
     const publicSignup = req.method === 'POST' && (req.path === '/magistrates' || req.path === '/units');
     const login = req.method === 'POST' && (req.path === '/admin/login' || req.path === '/admin/login/verify');
 
@@ -1022,31 +1022,56 @@ async function startServer() {
     res.json({ success: true });
   });
 
-  // ---------- Painel público de vinculações ----------
-  const norm = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+  // ---------- Painel de vinculações (restrito à administração) ----------
+  const norm = (t: string) => t.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
   const panelKey = (r: { name: string; area: string; unit: string }) => `${norm(r.name)}|${norm(r.area)}|${norm(r.unit)}`;
   const cleanCell = (t: string) => t.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
 
-  /** Linhas exibidas no painel público: vinculações do sistema (se habilitado) + linhas coladas, da edição vigente, sem repetição. */
   /** Linha de cabeçalho colada da planilha (ex.: Magistrado / Área / Designado para). */
   function isHeaderRow(name: string, area: string, unit: string) {
     const [a, b, c] = [norm(name), norm(area), norm(unit)];
     return /^(nome|magistrad|juiz|juiza)/.test(a) && b.startsWith('area') && /^(design|unidade|vara|lotac)/.test(c);
   }
 
-  function panelRows(editionId: string) {
-    const seen = new Map<string, { name: string; area: string; unit: string }>();
-    const add = (r: { name: string; area: string; unit: string }) => { const k = panelKey(r); if (!seen.has(k)) seen.set(k, { name: r.name, area: r.area, unit: r.unit }); };
-    if (panelIncludeSystem) {
-      for (const mt of matches.filter((m) => m.editionId === editionId)) {
-        const mag = magistrates.find((m) => m.id === mt.magistrateId);
-        const un = units.find((u) => u.id === mt.unitId);
-        if (mag && un) add({ name: mag.name, area: mt.assignedArea, unit: un.unitName });
-      }
+  /** Uma designação do painel: vinda do sistema (kind 'match', com vínculo real) ou colada de planilha (kind 'entry'). */
+  interface PanelRow { id: string; kind: 'match' | 'entry'; name: string; area: string; unit: string; comarca?: string; workType?: string }
+
+  /** Tabela única de designações vigentes da edição, sem separar a origem. Desistentes não constam. */
+  function panelRows(editionId: string): PanelRow[] {
+    const seen = new Map<string, PanelRow>();
+    const add = (r: PanelRow) => { const k = panelKey(r); if (!seen.has(k)) seen.set(k, r); };
+    for (const mt of matches.filter((m) => m.editionId === editionId)) {
+      const mag = magistrates.find((m) => m.id === mt.magistrateId);
+      const un = units.find((u) => u.id === mt.unitId);
+      if (mag && un) add({ id: mt.id, kind: 'match', name: mag.name, area: mt.assignedArea, unit: un.unitName, comarca: un.comarca, workType: mt.workType });
     }
-    panelEntries.filter((e) => e.editionId === editionId && !isHeaderRow(e.name, e.area, e.unit)).forEach(add);
+    panelEntries.filter((e) => e.editionId === editionId && !isHeaderRow(e.name, e.area, e.unit))
+      .forEach((e) => add({ id: e.id, kind: 'entry', name: e.name, area: e.area, unit: e.unit }));
     return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR') || a.unit.localeCompare(b.unit, 'pt-BR'));
   }
+
+  /** Linhas coladas que passaram a existir também como vinculação do sistema deixam de ser separadas: ficam só como vínculo real. */
+  function absorbEntries(editionId: string) {
+    const keys = new Set(matches.filter((m) => m.editionId === editionId).flatMap((mt) => {
+      const mag = magistrates.find((m) => m.id === mt.magistrateId);
+      const un = units.find((u) => u.id === mt.unitId);
+      return mag && un ? [panelKey({ name: mag.name, area: mt.assignedArea, unit: un.unitName })] : [];
+    }));
+    panelEntries = panelEntries.filter((e) => e.editionId !== editionId || !keys.has(panelKey(e)));
+  }
+
+  /** Desfaz uma vinculação (o painel é calculado a partir delas, então a linha some automaticamente). */
+  function undoMatch(id: string, reason = 'Vinculação desfeita') {
+    const match = matches.find((m) => m.id === id);
+    if (!match) return;
+    const mag = magistrates.find((m) => m.id === match.magistrateId);
+    if (mag && mag.status === 'Atribuído') mag.status = 'Lista de Espera';
+    log(match.editionId, 'Administração', 'Vinculação', `${reason}: ${describeMatch(match)}.`);
+    matches = matches.filter((m) => m.id !== id);
+    refreshUnitStatus(match.unitId);
+  }
+
+  const unitLabel = (r: { unit: string; comarca?: string }) => (r.comarca ? `${r.unit} (${r.comarca})` : r.unit);
 
   /** Lê texto copiado do Excel (colunas separadas por tabulação; também aceita ';'). Aspas de células são respeitadas. */
   function parseSheetText(text: string): string[][] {
@@ -1066,41 +1091,14 @@ async function startServer() {
     return rows;
   }
 
-  // Público: o painel só é entregue se a administração o tornou visível
-  app.get('/api/panel', (_req, res) => {
-    const ed = editionById(activeEditionId);
-    if (!panelVisible || !ed) return res.json({ visible: false });
-    res.json({ visible: true, edition: ed.title, rows: panelRows(ed.id) });
-  });
-
   app.get('/api/panel/admin', (req, res) => {
     const edition = resolveEdition(req);
     if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
     res.json({
-      visible: panelVisible,
-      includeSystem: panelIncludeSystem,
-      activeEdition: { id: activeEditionId, title: editionById(activeEditionId)?.title ?? '' },
       edition: { id: edition.id, title: edition.title },
-      systemCount: matches.filter((m) => m.editionId === edition.id).length,
-      publicCount: panelRows(activeEditionId).length,
-      entries: panelEntries.filter((e) => e.editionId === edition.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+      rows: panelRows(edition.id),
+      withdrawals: withdrawals.filter((w) => w.editionId === edition.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     });
-  });
-
-  app.put('/api/panel/settings', (req, res) => {
-    const { visible, includeSystem } = req.body || {};
-    if ((visible !== undefined && typeof visible !== 'boolean') || (includeSystem !== undefined && typeof includeSystem !== 'boolean')) {
-      return res.status(400).json({ error: 'Valores inválidos.' });
-    }
-    if (typeof visible === 'boolean' && visible !== panelVisible) {
-      panelVisible = visible;
-      log(null, 'Administração', 'Conteúdo', `Painel público de vinculações ${visible ? 'ATIVADO (visível ao público)' : 'desativado'}.`);
-    }
-    if (typeof includeSystem === 'boolean' && includeSystem !== panelIncludeSystem) {
-      panelIncludeSystem = includeSystem;
-      log(null, 'Administração', 'Conteúdo', `Painel público: vinculações do sistema ${includeSystem ? 'incluídas' : 'excluídas'}.`);
-    }
-    res.json({ success: true, visible: panelVisible, includeSystem: panelIncludeSystem });
   });
 
   // Importa linhas coladas de planilha: Nome / Área / Designado Para (com ou sem linha de cabeçalho).
@@ -1111,7 +1109,6 @@ async function startServer() {
     const text = req.body?.text;
     if (typeof text !== 'string' || !text.trim()) return res.status(400).json({ error: 'Cole as linhas da planilha (colunas Nome, Área e Designado Para).' });
     if (text.length > 900_000) return res.status(400).json({ error: 'Texto grande demais. Divida a planilha em partes.' });
-    const mode = req.body?.mode === 'replace' ? 'replace' : 'append';
 
     const MAX_ROWS = 3000;
     const raw = parseSheetText(text).filter((r) => r.some((c) => c.trim() !== ''));
@@ -1123,7 +1120,7 @@ async function startServer() {
 
     const inBatch = new Set<string>();
     let duplicates = 0;
-    const existing = new Set(mode === 'append' ? panelEntries.filter((e) => e.editionId === edition.id).map(panelKey) : []);
+    const existing = new Set(panelRows(edition.id).map(panelKey)); // já consta no painel (do sistema ou colada)
     for (let i = start; i < raw.length; i++) {
       const [name, area, unit] = [cleanCell(raw[i][0] ?? ''), cleanCell(raw[i][1] ?? ''), cleanCell(raw[i][2] ?? '')];
       const line = i + 1;
@@ -1136,7 +1133,7 @@ async function startServer() {
     }
 
     if (req.body?.dryRun === true) {
-      return res.json({ success: true, dryRun: true, mode, total: valid.length, duplicates, errorCount: errors.length, errors: errors.slice(0, 50), preview: valid.slice(0, 10) });
+      return res.json({ success: true, dryRun: true, total: valid.length, duplicates, errorCount: errors.length, errors: errors.slice(0, 50), preview: valid.slice(0, 10) });
     }
     if (errors.length && req.body?.ignoreErrors !== true) {
       return res.status(400).json({ error: `${errors.length} linha(s) com problema. Corrija a planilha ou confirme a importação ignorando essas linhas.`, errorCount: errors.length, errors: errors.slice(0, 50) });
@@ -1144,17 +1141,61 @@ async function startServer() {
     if (valid.length === 0 && duplicates > 0) return res.json({ success: true, imported: 0, duplicates, ignored: errors.length }); // tudo já constava no painel
     if (valid.length === 0) return res.status(400).json({ error: 'Nenhuma linha válida para importar.' });
 
-    if (mode === 'replace') panelEntries = panelEntries.filter((e) => e.editionId !== edition.id);
     const now = new Date().toISOString();
     valid.forEach((v) => panelEntries.push({ id: newId('pn'), editionId: edition.id, ...v, createdAt: now }));
-    log(edition.id, 'Administração', 'Conteúdo', `Painel público: ${valid.length} linha(s) importada(s) de planilha (${mode === 'replace' ? 'substituindo as coladas anteriormente' : 'acrescentando'})${errors.length ? `; ${errors.length} linha(s) ignorada(s)` : ''}.`);
+    log(edition.id, 'Administração', 'Vinculação', `Painel de vinculações: ${valid.length} designação(ões) importada(s) de planilha${errors.length ? `; ${errors.length} linha(s) ignorada(s)` : ''}.`);
     res.json({ success: true, imported: valid.length, duplicates, ignored: errors.length });
   });
 
-  app.delete('/api/panel/entries/:id', (req, res) => {
-    const entry = panelEntries.find((e) => e.id === req.params.id);
-    if (entry) log(entry.editionId, 'Administração', 'Conteúdo', `Painel público: linha removida (${entry.name} — ${entry.unit}).`);
-    panelEntries = panelEntries.filter((e) => e.id !== req.params.id);
+  // Exclui uma designação do painel: se for vinculação do sistema, a vinculação é desfeita; se for linha colada, é removida.
+  app.delete('/api/panel/rows/:kind/:id', (req, res) => {
+    const { kind, id } = req.params;
+    if (kind === 'match') {
+      if (!matches.some((m) => m.id === id)) return res.status(404).json({ error: 'Vinculação não encontrada.' });
+      undoMatch(id, 'Vinculação desfeita pelo painel');
+    } else if (kind === 'entry') {
+      const entry = panelEntries.find((e) => e.id === id);
+      if (!entry) return res.status(404).json({ error: 'Designação não encontrada.' });
+      log(entry.editionId, 'Administração', 'Vinculação', `Painel de vinculações: designação removida (${entry.name} — ${entry.unit}).`);
+      panelEntries = panelEntries.filter((e) => e.id !== id);
+    } else return res.status(400).json({ error: 'Tipo inválido.' });
+    res.json({ success: true });
+  });
+
+  // Registra a desistência de um magistrado: sai de todas as designações vigentes e passa à relação de desistentes.
+  app.post('/api/panel/withdrawals', (req, res) => {
+    const edition = resolveEdition(req);
+    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+    const name = typeof req.body?.name === 'string' ? cleanCell(req.body.name) : '';
+    const sei = typeof req.body?.sei === 'string' ? cleanCell(req.body.sei) : '';
+    if (!name) return res.status(400).json({ error: 'Magistrado não informado.' });
+    if (sei.length < 3 || sei.length > 100) return res.status(400).json({ error: 'Informe o número do processo SEI em que consta a desistência.' });
+
+    const rows = panelRows(edition.id).filter((r) => norm(r.name) === norm(name));
+    if (rows.length === 0) return res.status(404).json({ error: 'Este magistrado não consta no painel de vinculações.' });
+    const uniq = (xs: string[]) => [...new Set(xs)].join(' / ');
+    const record: Withdrawal = {
+      id: newId('wd'), editionId: edition.id, name: rows[0].name, sei, createdAt: new Date().toISOString(),
+      area: uniq(rows.map((r) => r.area)), unit: uniq(rows.map((r) => unitLabel(r))),
+    };
+    rows.filter((r) => r.kind === 'match').forEach((r) => undoMatch(r.id, 'Vinculação desfeita por desistência'));
+    panelEntries = panelEntries.filter((e) => e.editionId !== edition.id || norm(e.name) !== norm(name));
+    magistrates.filter((m) => m.editionId === edition.id && norm(m.name) === norm(name)).forEach((m) => { m.status = 'Desistente'; });
+    withdrawals.push(record);
+    log(edition.id, 'Administração', 'Magistrado', `Desistência registrada: ${record.name} (SEI ${sei}). Designações retiradas: ${record.unit}.`);
+    res.status(201).json({ success: true, withdrawal: record });
+  });
+
+  // Desfaz o registro de desistência (ex.: erro de lançamento). O magistrado volta à lista de espera; as designações precisam ser refeitas.
+  app.delete('/api/panel/withdrawals/:id', (req, res) => {
+    const w = withdrawals.find((x) => x.id === req.params.id);
+    if (!w) return res.status(404).json({ error: 'Registro não encontrado.' });
+    withdrawals = withdrawals.filter((x) => x.id !== w.id);
+    if (!withdrawals.some((x) => x.editionId === w.editionId && norm(x.name) === norm(w.name))) {
+      magistrates.filter((m) => m.editionId === w.editionId && norm(m.name) === norm(w.name) && m.status === 'Desistente')
+        .forEach((m) => { m.status = 'Lista de Espera'; });
+    }
+    log(w.editionId, 'Administração', 'Magistrado', `Registro de desistência desfeito: ${w.name} (SEI ${w.sei}).`);
     res.json({ success: true });
   });
 
@@ -1164,8 +1205,107 @@ async function startServer() {
     if (!confirmedWipe(req)) return res.status(400).json({ error: 'Confirmação ausente.' });
     const count = panelEntries.filter((e) => e.editionId === edition.id).length;
     panelEntries = panelEntries.filter((e) => e.editionId !== edition.id);
-    log(edition.id, 'Administração', 'Conteúdo', `Painel público: ${count} linha(s) coladas removidas.`);
+    log(edition.id, 'Administração', 'Vinculação', `Painel de vinculações: ${count} linha(s) coladas removidas.`);
     res.json({ success: true, count });
+  });
+
+  // Relatório em PDF: designações vigentes (total e por área) e desistentes (com o SEI).
+  app.get('/api/panel/report.pdf', (req, res) => {
+    const edition = resolveEdition(req);
+    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+    const rows = panelRows(edition.id);
+    const drops = withdrawals.filter((w) => w.editionId === edition.id).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+    const brt = (d: Date) => d.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', dateStyle: 'short', timeStyle: 'short' });
+    const day = (iso: string) => new Date(iso).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+    // A fonte padrão do PDF cobre o alfabeto latino; troca o que estiver fora dele para não gerar lixo.
+    const t = (x: string) => x.replace(/[^ -~ -ÿ–—‘’“”…•]/g, '?');
+
+    const doc = new PDFDocument({ size: 'A4', margin: 48, bufferPages: true, info: { Title: `Designações – ${edition.title}`, Author: 'Mutirão de Julgamento' } });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename=designacoes-${new Date().toISOString().slice(0, 10)}.pdf`);
+    doc.pipe(res);
+
+    const NAVY = '#1b2b43', BRONZE = '#8a6d3b', MUTED = '#5f6b7a', LINE = '#d9d4c7', ZEBRA = '#f6f4ef';
+    const left = doc.page.margins.left;
+    const width = doc.page.width - left - doc.page.margins.right;
+    const bottom = () => doc.page.height - doc.page.margins.bottom;
+
+    type Col = { label: string; w: number };
+    const drawHead = (cols: Col[]) => {
+      const y = doc.y;
+      doc.rect(left, y, width, 20).fill(NAVY);
+      doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(8);
+      let x = left;
+      cols.forEach((c) => { doc.text(t(c.label).toUpperCase(), x + 6, y + 6, { width: c.w - 12, lineBreak: false }); x += c.w; });
+      doc.y = y + 20;
+    };
+    const table = (cols: Col[], data: string[][]) => {
+      if (doc.y + 60 > bottom()) doc.addPage();
+      drawHead(cols);
+      data.forEach((r, i) => {
+        doc.font('Helvetica').fontSize(9);
+        const h = Math.max(...r.map((c, k) => doc.heightOfString(t(c), { width: cols[k].w - 12 }))) + 10;
+        if (doc.y + h > bottom()) { doc.addPage(); drawHead(cols); }
+        const y = doc.y;
+        if (i % 2 === 1) doc.rect(left, y, width, h).fill(ZEBRA);
+        doc.fillColor('#1c2530').font('Helvetica').fontSize(9);
+        let x = left;
+        r.forEach((c, k) => { doc.text(t(c), x + 6, y + 5, { width: cols[k].w - 12 }); x += cols[k].w; });
+        doc.moveTo(left, y + h).lineTo(left + width, y + h).lineWidth(0.5).strokeColor(LINE).stroke();
+        doc.y = y + h;
+      });
+      doc.moveDown(0.8);
+    };
+    const heading = (text: string, sub?: string) => {
+      if (doc.y + 90 > bottom()) doc.addPage();
+      doc.moveDown(0.6).fillColor(NAVY).font('Helvetica-Bold').fontSize(13).text(t(text), left, doc.y, { width });
+      if (sub) doc.fillColor(MUTED).font('Helvetica').fontSize(9).text(t(sub), left, doc.y + 2, { width });
+      doc.moveDown(0.5);
+    };
+
+    // Cabeçalho
+    doc.fillColor(BRONZE).font('Helvetica-Bold').fontSize(8).text('TRIBUNAL DE JUSTIÇA DO ESTADO DO PARANÁ  ·  CORREGEDORIA-GERAL DA JUSTIÇA', left, doc.y, { width });
+    doc.moveDown(0.5).fillColor(NAVY).font('Helvetica-Bold').fontSize(18).text('Mutirão de Julgamento', left, doc.y, { width });
+    doc.fillColor('#1c2530').font('Helvetica').fontSize(11).text(t(edition.title), left, doc.y + 2, { width });
+    doc.fillColor(MUTED).fontSize(9).text(`Relatório de designações — emitido em ${brt(new Date())} (horário de Brasília)`, left, doc.y + 4, { width });
+    doc.moveDown(0.8);
+    doc.moveTo(left, doc.y).lineTo(left + width, doc.y).lineWidth(1).strokeColor(BRONZE).stroke();
+    doc.moveDown(0.8);
+
+    const areas = [...new Set(rows.map((r) => r.area.trim()))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+    doc.fillColor('#1c2530').font('Helvetica-Bold').fontSize(10)
+      .text(`Designações vigentes: ${rows.length}   ·   Áreas de atuação: ${areas.length}   ·   Desistentes: ${drops.length}`, left, doc.y, { width });
+
+    heading('1. Designações vigentes — relação total', `${rows.length} designação(ões), em ordem alfabética.`);
+    if (rows.length === 0) doc.fillColor(MUTED).font('Helvetica').fontSize(9).text('Nenhuma designação vigente.', left, doc.y);
+    else table([{ label: 'Nº', w: 32 }, { label: 'Magistrado(a)', w: 170 }, { label: 'Área de atuação', w: 120 }, { label: 'Unidade designada', w: width - 322 }],
+      rows.map((r, i) => [String(i + 1), r.name, r.area, unitLabel(r)]));
+
+    heading('2. Designações vigentes — por área de atuação');
+    if (rows.length === 0) doc.fillColor(MUTED).font('Helvetica').fontSize(9).text('Nenhuma designação vigente.', left, doc.y);
+    areas.forEach((area) => {
+      const list = rows.filter((r) => r.area.trim() === area);
+      if (doc.y + 80 > bottom()) doc.addPage();
+      doc.fillColor(BRONZE).font('Helvetica-Bold').fontSize(10.5).text(`${t(area)} — ${list.length} designação(ões)`, left, doc.y, { width });
+      doc.moveDown(0.3);
+      table([{ label: 'Nº', w: 32 }, { label: 'Magistrado(a)', w: 200 }, { label: 'Unidade designada', w: width - 232 }],
+        list.map((r, i) => [String(i + 1), r.name, unitLabel(r)]));
+    });
+
+    heading('3. Desistentes', `${drops.length} magistrado(s) que desistiram da participação, com o processo SEI em que consta a desistência.`);
+    if (drops.length === 0) doc.fillColor(MUTED).font('Helvetica').fontSize(9).text('Nenhuma desistência registrada.', left, doc.y);
+    else table([{ label: 'Magistrado(a)', w: 120 }, { label: 'Área', w: 70 }, { label: 'Unidade', w: 95 }, { label: 'Processo SEI', w: 135 }, { label: 'Data', w: width - 420 }],
+      drops.map((w) => [w.name, w.area, w.unit, w.sei, day(w.createdAt)]));
+
+    // Numeração de páginas
+    const range = doc.bufferedPageRange();
+    for (let i = 0; i < range.count; i++) {
+      doc.switchToPage(range.start + i);
+      doc.page.margins.bottom = 0; // permite escrever no rodapé sem criar página nova
+      doc.fillColor(MUTED).font('Helvetica').fontSize(8)
+        .text(`Documento de uso restrito da administração  ·  Página ${i + 1} de ${range.count}`, left, doc.page.height - 34, { width, align: 'center', lineBreak: false });
+    }
+    doc.end();
   });
 
   // ---------- Activity log ----------
@@ -1186,6 +1326,19 @@ async function startServer() {
   // Consulta pública (todas as edições). O e-mail vai no corpo da requisição (POST), não na URL, para não
   // aparecer em registros de acesso. Só devolve o que a tela exibe: nada de IP, e-mail de terceiros ou dados internos.
   app.post('/api/status', (req, res) => {
+    // Consulta pelo nome completo: só informa a situação no painel de vinculações (nada além disso).
+    if (typeof req.body?.name === 'string') {
+      const q = req.body.name.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 200);
+      // Ignora acentos, pontuação e tratamentos (Dr., Dra., Juiz...) para que o nome digitado coincida com o do painel.
+      const fold = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z\s]/g, ' ')
+        .split(/\s+/).filter((w) => w && !['dr', 'dra', 'juiz', 'juiza', 'des', 'desa', 'desembargador', 'desembargadora', 'exmo', 'exma', 'sr', 'sra'].includes(w)).join(' ');
+      const wanted = fold(q);
+      if (wanted.split(' ').length < 2 || wanted.length < 6) return res.status(400).json({ error: 'Informe o nome completo do magistrado.' });
+      const active = editions.some((ed) => panelRows(ed.id).some((r) => fold(r.name) === wanted));
+      const revoked = withdrawals.some((w) => fold(w.name) === wanted);
+      const situation = active ? 'ativa' : revoked ? 'revogada' : 'nao_consta';
+      return res.json({ situation });
+    }
     const raw = req.body?.email;
     const emailQuery = typeof raw === 'string' ? raw.trim().toLowerCase().slice(0, 200) : '';
     if (!emailQuery) {
@@ -1299,8 +1452,8 @@ async function startServer() {
     const wanted: MagistrateStatus | undefined = MAGISTRATE_STATUSES.includes(b.status) ? b.status : undefined;
     const before = mag.status;
     if (isMatched) mag.status = 'Atribuído';
-    else if (mag.status === 'Rejeitado' && (!wanted || wanted === 'Rejeitado')) { /* mantém rejeitado */ }
-    else if (wanted && wanted !== 'Atribuído' && wanted !== 'Rejeitado') mag.status = wanted;
+    else if ((mag.status === 'Rejeitado' || mag.status === 'Desistente') && (!wanted || wanted === mag.status)) { /* mantém */ }
+    else if (wanted && wanted !== 'Atribuído' && wanted !== 'Rejeitado' && wanted !== 'Desistente') mag.status = wanted;
     else if (mag.status === 'Atribuído') mag.status = 'Lista de Espera';
     if (before === 'Rejeitado' && mag.status !== 'Rejeitado') { mag.rejectionReason = undefined; mag.rejectedAt = undefined; }
     if (mag.status !== before) changed.push(`status (${before} → ${mag.status})`);
@@ -1582,6 +1735,9 @@ async function startServer() {
     if (mag.status === 'Rejeitado') {
       return res.status(400).json({ error: 'A inscrição deste magistrado foi rejeitada. Reconsidere-a antes de vincular.' });
     }
+    if (mag.status === 'Desistente') {
+      return res.status(400).json({ error: 'Este magistrado desistiu da participação. Desfaça o registro de desistência antes de vincular.' });
+    }
     if (unit.selection !== 'Escolhida') {
       return res.status(400).json({ error: 'Só é possível vincular unidades escolhidas para o mutirão.' });
     }
@@ -1614,6 +1770,7 @@ async function startServer() {
     };
     matches.unshift(newMatch);
     refreshUnitStatus(unit.id);
+    absorbEntries(mag.editionId);
 
     log(mag.editionId, source === 'ai' ? 'Sistema' : 'Administração', 'Vinculação',
       `Vinculação ${source === 'ai' ? 'sugerida por IA e efetivada' : 'manual'}: ${describeMatch(newMatch)}.`);
@@ -1665,6 +1822,7 @@ async function startServer() {
     nextMag.status = 'Atribuído';
     refreshUnitStatus(oldUnitId);
     refreshUnitStatus(nextUnit.id);
+    absorbEntries(match.editionId);
 
     log(match.editionId, 'Administração', 'Vinculação', `Vinculação alterada: de ${before} para ${describeMatch(match)}.`);
     res.json({ success: true, match });
@@ -1672,14 +1830,7 @@ async function startServer() {
 
   app.delete('/api/matches/:id', (req, res) => {
     const { id } = req.params;
-    const match = matches.find((m) => m.id === id);
-    if (match) {
-      const mag = magistrates.find((m) => m.id === match.magistrateId);
-      if (mag) mag.status = 'Lista de Espera';
-      log(match.editionId, 'Administração', 'Vinculação', `Vinculação desfeita: ${describeMatch(match)}.`);
-    }
-    matches = matches.filter((m) => m.id !== id);
-    if (match) refreshUnitStatus(match.unitId);
+    undoMatch(id); // a linha correspondente do painel de vinculações deixa de existir automaticamente
     res.json({ success: true, id });
   });
 
@@ -1696,7 +1847,7 @@ async function startServer() {
     const pass = (pick: (m: Magistrate) => string) => {
       for (const mag of eMags) {
         const area = pick(mag);
-        if (!area || mag.status === 'Aguardando Conferência' || mag.status === 'Rejeitado' || assignedMagIds.has(mag.id)) continue;
+        if (!area || mag.status === 'Aguardando Conferência' || mag.status === 'Rejeitado' || mag.status === 'Desistente' || assignedMagIds.has(mag.id)) continue;
         const target = eUnits.find((u) => linkedCount(u.id) < (u.slots || 1) && u.areas.includes(area));
         if (!target) continue;
         matches.push({
@@ -1717,6 +1868,7 @@ async function startServer() {
     };
     pass((m) => m.firstPreference);
     pass((m) => m.secondPreference);
+    absorbEntries(edition.id);
 
     log(edition.id, 'Administração', 'Vinculação',
       `Vinculação automática executada: ${newMatchesCount} nova(s) vinculação(ões).`);
@@ -1727,7 +1879,7 @@ async function startServer() {
     const edition = resolveEdition(req);
     if (!edition) return res.json([]);
     const assigned = new Set(matches.filter((m) => m.editionId === edition.id).map((m) => m.magistrateId));
-    res.json(magistrates.filter((m) => m.editionId === edition.id && m.status !== 'Atribuído' && m.status !== 'Rejeitado' && !assigned.has(m.id)));
+    res.json(magistrates.filter((m) => m.editionId === edition.id && m.status !== 'Atribuído' && m.status !== 'Rejeitado' && m.status !== 'Desistente' && !assigned.has(m.id)));
   });
 
   // ---------- AI recommendations ----------
@@ -1741,7 +1893,7 @@ async function startServer() {
     try {
       const assigned = new Set(matches.filter((m) => m.editionId === edition.id).map((m) => m.magistrateId));
       const unassignedMags = magistrates.filter(
-        (m) => m.editionId === edition.id && m.status !== 'Atribuído' && m.status !== 'Rejeitado' && !assigned.has(m.id),
+        (m) => m.editionId === edition.id && m.status !== 'Atribuído' && m.status !== 'Rejeitado' && m.status !== 'Desistente' && !assigned.has(m.id),
       );
       const pendingUnits = units.filter((u) => u.editionId === edition.id && u.selection === 'Escolhida' && u.status !== 'Atendida');
 
