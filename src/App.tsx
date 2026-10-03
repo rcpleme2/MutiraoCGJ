@@ -227,13 +227,13 @@ function AppInner() {
               <div className="mb-6 pb-6 border-b border-line">
                 <LayoutList className="w-5 h-5 text-bronze mb-3" />
                 <h2 className="text-2xl font-semibold text-navy">Painel de vinculações</h2>
-                <p className="text-sm text-muted mt-1.5 leading-relaxed">{panel.visible ? `${panel.edition}. Magistrados designados, com a área de atuação e a unidade.` : 'O painel não está disponível no momento.'}</p>
+                <p className="text-sm text-muted mt-1.5 leading-relaxed">{panel.visible ? 'Relação Total das vinculações vigentes' : 'O painel não está disponível no momento.'}</p>
               </div>
               {panel.visible && (
                 <>
                   <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
                     <input className="input max-w-sm" type="search" placeholder="Buscar por nome, área ou unidade" aria-label="Buscar no painel" value={panelQuery} onChange={e => setPanelQuery(e.target.value)} />
-                    <span className="text-xs text-muted">{rows.length} de {allRows.length} designação(ões)</span>
+                    <span className="text-xs text-muted">{rows.length} de {allRows.length} designações</span>
                   </div>
                   {areas.length > 1 && (
                     <div className="mb-4" role="group" aria-label="Filtrar por área de atuação">

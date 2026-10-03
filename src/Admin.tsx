@@ -416,7 +416,7 @@ function PanelAdmin({ editionId, run, confirm, onChanged }: {
   };
   const toggleVisible = async () => {
     if (!data) return;
-    if (!data.visible && !(await confirm(`Tornar o painel público? Ele exibirá o nome do magistrado, a área e a unidade de ${data.publicCount} designação(ões) para qualquer visitante do portal.`, 'Tornar público'))) return;
+    if (!data.visible && !(await confirm(`Tornar o painel público? Ele exibirá o nome do magistrado, a área e a unidade de ${data.publicCount} designações para qualquer visitante do portal.`, 'Tornar público'))) return;
     await settings({ visible: !data.visible }, data.visible ? 'Painel ocultado do público.' : 'Painel visível ao público.');
   };
 
@@ -455,7 +455,7 @@ function PanelAdmin({ editionId, run, confirm, onChanged }: {
         <div>
           <div className="flex items-center gap-2.5">
             <Badge tone={data.visible ? 'ok' : 'neutral'}>{data.visible ? 'Visível ao público' : 'Oculto'}</Badge>
-            <span className="text-sm text-muted">{data.publicCount} designação(ões) seriam exibidas.</span>
+            <span className="text-sm text-muted">{data.publicCount} designações seriam exibidas.</span>
           </div>
           <label className="flex items-center gap-2 text-sm mt-3">
             <input type="checkbox" checked={data.includeSystem} onChange={e => settings({ includeSystem: e.target.checked }, 'Fonte atualizada.')} />
