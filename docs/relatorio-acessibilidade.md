@@ -13,7 +13,7 @@ A base é boa: a página reflui corretamente até 320 px, respeita o espaçament
 | Indicador | Resultado |
 |---|---|
 | Violações automáticas (axe-core 4.14, regras WCAG 2.0/2.1/2.2 A e AA + boas práticas) | **3 regras violadas**: `label` (crítica, 12 campos), `select-name` (crítica, 4 campos), `page-has-heading-one` (moderada, 4 telas) |
-| Achados no total (automáticos + testes manuais, que ferramentas automáticas não detectam) | **19** (6 prioridade P1, 6 prioridade P2, 7 prioridade P3 — ver seção 4) |
+| Achados no total (automáticos + testes manuais, que ferramentas automáticas não detectam) | **19** (5 de prioridade P1, 7 de prioridade P2 e 7 de prioridade P3 — ver seção 4) |
 | Critérios de sucesso WCAG com falha (total, automáticos + manuais) | ao menos 14 (1.3.1, 1.3.5, 1.4.1, 1.4.3, 1.4.11, 2.4.1, 2.4.2, 2.4.6, 2.4.7, 3.3.1, 3.3.2, 3.3.3, 4.1.2, 4.1.3) e 1 da WCAG 2.2 (2.5.8) |
 | Impacto principal | Uma pessoa que usa leitor de tela **não consegue saber o nome dos campos** do formulário de inscrição. Usuários de teclado e de baixa visão enfrentam foco e bordas pouco visíveis. |
 | Esforço estimado para chegar ao nível AA | cerca de **3 a 5 dias de desenvolvimento** + 1 a 2 dias de validação com tecnologias assistivas (estimativa, ver seção 6) |
