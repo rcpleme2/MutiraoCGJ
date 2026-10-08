@@ -1209,6 +1209,31 @@ async function startServer() {
     return rows;
   }
 
+  /**
+   * Conferência das unidades das edições que não são a inicial: indica, a partir do painel geral de vinculações
+   * (designações vigentes de todas as edições), se já há magistrado atuando na comarca e/ou na mesma vara.
+   * As vinculações da própria unidade não contam.
+   */
+  app.get('/api/panel/presence', (_req, res) => {
+    const rows = panelRows();
+    const unitOf = new Map(units.map((u) => [u.id, u]));
+    const out: Record<string, { comarca: string[]; unit: string[] }> = {};
+    for (const u of units) {
+      if (editionById(u.editionId)?.isInitial) continue;
+      const c = norm(u.comarca), n = norm(u.unitName);
+      const comarca = new Set<string>(), unit = new Set<string>();
+      for (const r of rows) {
+        if (r.unitId === u.id) continue;
+        const ru = unitOf.get(r.unitId);
+        const rc = norm(ru?.comarca ?? '');
+        if (c && rc === c) comarca.add(r.name);
+        if (norm(r.unit) === n && (!c || !rc || rc === c)) unit.add(r.name);
+      }
+      if (comarca.size || unit.size) out[u.id] = { comarca: [...comarca], unit: [...unit] };
+    }
+    res.json(out);
+  });
+
   app.get('/api/panel/admin', (_req, res) => {
     res.json({
       rows: panelRows(),

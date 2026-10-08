@@ -69,6 +69,17 @@ function ColSort({ label, active, dir, onToggle }: { label: string; active: bool
   );
 }
 
+/** Aviso discreto: já há magistrado atuando na comarca e/ou na vara no painel geral de vinculações. */
+function PresenceNote({ p }: { p: { comarca: string[]; unit: string[] } }) {
+  const parts = [p.unit.length ? 'vara' : '', p.comarca.length ? 'comarca' : ''].filter(Boolean);
+  const names = [...new Set([...p.unit, ...p.comarca])];
+  return (
+    <span className="text-[11px] text-bronze block" title={`Painel geral de vinculações: ${names.join(', ')}`}>
+      ◦ Já há atuação {parts.length === 2 ? 'na vara e na comarca' : parts[0] === 'vara' ? 'nesta vara' : 'nesta comarca'} ({names.length})
+    </span>
+  );
+}
+
 function Table({ head, children }: { head: React.ReactNode[]; children: React.ReactNode }) {
   return (
     <div className="card overflow-hidden">
@@ -797,6 +808,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const [editingMag, setEditingMag] = useState<Magistrate | null>(null);
   const [editingUnit, setEditingUnit] = useState<Unit | null>(null);
   const [openUnitId, setOpenUnitId] = useState('');
+  const [presence, setPresence] = useState<Record<string, { comarca: string[]; unit: string[] }>>({});
   const [rejecting, setRejecting] = useState<{ kind: 'magistrates' | 'units'; id: string; name: string; linked: boolean } | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [sortDir, setSortDir] = useState<Record<'magistrates' | 'units' | 'waiting', SortDir>>(() => {
@@ -862,6 +874,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       api<Magistrate[]>(`/waiting-list${q}`), api<LogEntry[]>(`/log${q}`),
     ]));
     if (!r) return;
+    api<Record<string, { comarca: string[]; unit: string[] }>>('/panel/presence').then(setPresence).catch(() => setPresence({}));
     [setMagistrates, setUnits, setMatches, setWaiting, setLog].forEach((set, i) => (set as any)(r[i]));
   }, [selectedId, viewAll, run]);
 
@@ -1281,7 +1294,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
                     <td className="td">
                       <button className="flex items-start gap-1.5 text-left" onClick={() => setOpenUnitId(open ? '' : u.id)} aria-expanded={open} title="Ver justificativa e vincular magistrado">
                         {open ? <ChevronDown className="w-4 h-4 mt-0.5 shrink-0 text-bronze" /> : <ChevronRight className="w-4 h-4 mt-0.5 shrink-0 text-muted" />}
-                        <span><span className="font-medium block">{unitLabel(u)}</span>{viewAll && <span className="text-[11px] text-bronze block">{u.editionTitle}</span>}<span className="text-xs text-muted block">Resp.: {u.judgeName}</span><span className="text-xs text-muted block">{u.email}</span>{u.registeredIp && <span className="text-[11px] text-muted/80 block">IP {u.registeredIp}</span>}</span>
+                        <span><span className="font-medium block">{unitLabel(u)}</span>{presence[u.id] && <PresenceNote p={presence[u.id]} />}{viewAll && <span className="text-[11px] text-bronze block">{u.editionTitle}</span>}<span className="text-xs text-muted block">Resp.: {u.judgeName}</span><span className="text-xs text-muted block">{u.email}</span>{u.registeredIp && <span className="text-[11px] text-muted/80 block">IP {u.registeredIp}</span>}</span>
                       </button>
                     </td>
                     <td className="td"><DateCell iso={u.createdAt} /></td>
