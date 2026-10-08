@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Lock, Unlock, Plus, Trash2, Check, Pencil, Download, Sparkles, LogOut, Radio, Archive, RotateCcw, ChevronDown, ChevronRight, X, ArrowUp, ArrowDown } from 'lucide-react';
+import { Lock, Unlock, Plus, Trash2, Check, Pencil, Download, Sparkles, LogOut, Radio, Archive, RotateCcw, ChevronDown, ChevronRight, X, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 import { api, download, getToken, setToken } from './api';
 import { Edition, FaqItem, LogEntry, Magistrate, Match, PanelRow, Transfer, Unit, Withdrawal, WorkType, WORK_TYPES } from './types';
 import { Badge, EmptyRow, Field, Modal, Notice, formatDate, formatDateTime, magistrateTone, useFeedback } from './ui';
@@ -49,6 +49,25 @@ function DateCell({ iso }: { iso: string }) {
 
 const byDate = <T extends { createdAt: string; id: string }>(dir: SortDir) => (a: T, b: T) =>
   (dir === 'asc' ? 1 : -1) * (a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+
+/** "Nome da unidade" + separador + "comarca" (ex.: Juizado Especial Cível de São João). */
+const unitLabel = (u: { unitName: string; comarca?: string; separator?: string }) =>
+  [u.unitName, u.comarca && (u.separator?.trim() || 'de'), u.comarca].filter(Boolean).join(' ');
+
+type UnitSortKey = 'date' | 'name' | 'selection';
+const SELECTION_ORDER: Record<string, number> = { 'Em análise': 0, 'Escolhida': 1, 'Rejeitada': 2 };
+const collator = new Intl.Collator('pt-BR', { sensitivity: 'base', numeric: true });
+
+/** Cabeçalho de coluna clicável; a seta só aparece (em destaque) na coluna que ordena a tabela. */
+function ColSort({ label, active, dir, onToggle }: { label: string; active: boolean; dir: SortDir; onToggle: () => void }) {
+  const Icon = !active ? ArrowUpDown : dir === 'desc' ? ArrowDown : ArrowUp;
+  return (
+    <button type="button" onClick={onToggle} className="inline-flex items-center gap-1 uppercase tracking-wider hover:text-ink"
+      aria-label={`Ordenar por ${label}${active ? (dir === 'asc' ? ' (crescente)' : ' (decrescente)') : ''}`}>
+      {label} <Icon className={`w-3.5 h-3.5 ${active ? 'text-bronze' : 'text-muted'}`} />
+    </button>
+  );
+}
 
 function Table({ head, children }: { head: React.ReactNode[]; children: React.ReactNode }) {
   return (
@@ -347,8 +366,8 @@ function UnitLinkRow({ unit, magistrates, matches, busy, onSave, onUnlink, onSlo
     <div className={`card p-4 sm:p-5 ${full ? 'border-ok/30' : ''}`}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="font-serif font-semibold text-navy leading-snug">{unit.unitName}</div>
-          <div className="text-xs text-muted mt-0.5">{unit.comarca} · {unit.judgeName}</div>
+          <div className="font-serif font-semibold text-navy leading-snug">{unitLabel(unit)}</div>
+          <div className="text-xs text-muted mt-0.5">{unit.judgeName}</div>
           <div className="flex flex-wrap gap-1.5 mt-3">
             {unit.areas.map(a => <Badge key={a} tone="info">{a}</Badge>)}
             <Badge tone={workTypeTone(unit.supportNeeded)}>Precisa de: {unit.supportNeeded}</Badge>
@@ -642,7 +661,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
             <Field label="Nova unidade">
               <select className="input" required={!moveNewName.trim()} value={moveUnit} onChange={e => setMoveUnit(e.target.value)} disabled={!!moveNewName.trim()}>
                 <option value="" disabled>Selecione…</option>
-                {moving.units.map(u => <option key={u.id} value={u.id}>{u.unitName}{u.comarca ? ` — ${u.comarca}` : ''}</option>)}
+                {moving.units.map(u => <option key={u.id} value={u.id}>{unitLabel(u)}</option>)}
               </select>
             </Field>
             {moving.row.editionId === data.initialEdition.id && (
@@ -783,6 +802,18 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const [sortDir, setSortDir] = useState<Record<'magistrates' | 'units' | 'waiting', SortDir>>(() => {
     try { return { magistrates: 'desc', units: 'desc', waiting: 'desc', ...JSON.parse(localStorage.getItem('mutirao-sort') || '{}') }; }
     catch { return { magistrates: 'desc', units: 'desc', waiting: 'desc' }; }
+  });
+  const [unitSort, setUnitSort] = useState<{ key: UnitSortKey; dir: SortDir }>(() => {
+    try {
+      const v = JSON.parse(localStorage.getItem('mutirao-unit-sort') || '{}');
+      if (['date', 'name', 'selection'].includes(v.key) && ['asc', 'desc'].includes(v.dir)) return v;
+    } catch { /* armazenamento indisponível */ }
+    return { key: 'date', dir: 'desc' };
+  });
+  const toggleUnitSort = (key: UnitSortKey) => setUnitSort(prev => {
+    const next = prev.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } as const : { key, dir: key === 'date' ? 'desc' : 'asc' } as const;
+    try { localStorage.setItem('mutirao-unit-sort', JSON.stringify(next)); } catch { /* armazenamento indisponível */ }
+    return next;
   });
   const toggleSort = (k: 'magistrates' | 'units' | 'waiting') => setSortDir(prev => {
     const next = { ...prev, [k]: prev[k] === 'desc' ? 'asc' : 'desc' } as typeof prev;
@@ -1016,7 +1047,13 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   };
 
   const sortedMagistrates = [...magistrates].sort(byDate<Magistrate>(sortDir.magistrates));
-  const sortedUnits = [...units].sort(byDate<Unit>(sortDir.units));
+  const sortedUnits = [...units].sort((a, b) => {
+    if (unitSort.key === 'date') return byDate<Unit>(unitSort.dir)(a, b);
+    const cmp = unitSort.key === 'name'
+      ? collator.compare(unitLabel(a), unitLabel(b))
+      : (SELECTION_ORDER[a.selection] ?? 9) - (SELECTION_ORDER[b.selection] ?? 9);
+    return (unitSort.dir === 'asc' ? 1 : -1) * cmp || byDate<Unit>('desc')(a, b);
+  });
   const sortedWaiting = [...waiting].sort(byDate<Magistrate>(sortDir.waiting));
 
   const readOnlyEdition = selected?.status === 'Encerrada';
@@ -1229,7 +1266,12 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
           </>}
           </Toolbar>
           <EditionFilter editions={editions} value={viewAll ? 'all' : selectedId} onChange={pickEdition} what="unidades" />
-          <Table head={['Unidade / Comarca', <SortHeader key="d" label="Inscrição" dir={sortDir.units} onToggle={() => toggleSort('units')} />, 'Áreas e auxílio', 'Magistrados', 'Triagem', 'Status', 'Ações']}>
+          <Table head={[
+            <ColSort key="n" label="Unidade / Comarca" active={unitSort.key === 'name'} dir={unitSort.dir} onToggle={() => toggleUnitSort('name')} />,
+            <ColSort key="d" label="Inscrição" active={unitSort.key === 'date'} dir={unitSort.dir} onToggle={() => toggleUnitSort('date')} />,
+            'Áreas e auxílio', 'Magistrados',
+            <ColSort key="s" label="Triagem" active={unitSort.key === 'selection'} dir={unitSort.dir} onToggle={() => toggleUnitSort('selection')} />,
+            'Status', 'Ações']}>
             {units.length === 0 && <EmptyRow cols={7}>Nenhuma unidade inscrita nesta edição.</EmptyRow>}
             {sortedUnits.map(u => {
               const open = openUnitId === u.id;
@@ -1239,7 +1281,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
                     <td className="td">
                       <button className="flex items-start gap-1.5 text-left" onClick={() => setOpenUnitId(open ? '' : u.id)} aria-expanded={open} title="Ver justificativa e vincular magistrado">
                         {open ? <ChevronDown className="w-4 h-4 mt-0.5 shrink-0 text-bronze" /> : <ChevronRight className="w-4 h-4 mt-0.5 shrink-0 text-muted" />}
-                        <span><span className="font-medium block">{u.unitName}</span>{viewAll && <span className="text-[11px] text-bronze block">{u.editionTitle}</span>}<span className="text-xs text-muted block">{u.comarca} · Resp.: {u.judgeName}</span><span className="text-xs text-muted block">{u.email}</span>{u.registeredIp && <span className="text-[11px] text-muted/80 block">IP {u.registeredIp}</span>}</span>
+                        <span><span className="font-medium block">{unitLabel(u)}</span>{viewAll && <span className="text-[11px] text-bronze block">{u.editionTitle}</span>}<span className="text-xs text-muted block">Resp.: {u.judgeName}</span><span className="text-xs text-muted block">{u.email}</span>{u.registeredIp && <span className="text-[11px] text-muted/80 block">IP {u.registeredIp}</span>}</span>
                       </button>
                     </td>
                     <td className="td"><DateCell iso={u.createdAt} /></td>

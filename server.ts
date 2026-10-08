@@ -66,6 +66,8 @@ interface Unit {
   judgeName: string;
   email: string;
   comarca: string;
+  /** Liga o nome da unidade à comarca na exibição (ex.: "de", "da", "do") */
+  separator: string;
   areas: string[];
   supportNeeded: 'Audiência' | 'Sentença' | 'Audiência e Sentença';
   description: string;
@@ -264,6 +266,7 @@ let units: Unit[] = [
     judgeName: 'Dr. Roberto Sampaio',
     email: 'cascavel.jecc@tjp.jus.br',
     comarca: 'Cascavel',
+    separator: 'de',
     areas: ['Juizado Cível, Crime e Fazenda Pública', 'Crime'],
     supportNeeded: 'Audiência e Sentença',
     description: 'Acervo elevado de processos conclusos para sentença há mais de 100 dias.',
@@ -279,6 +282,7 @@ let units: Unit[] = [
     judgeName: 'Dra. Fernanda Vasconcelos',
     email: 'pg.2civel@tjp.jus.br',
     comarca: 'Ponta Grossa',
+    separator: 'de',
     areas: ['Cível e Fazenda Pública'],
     supportNeeded: 'Sentença',
     description: 'Demanda reprimida em execuções fiscais e ações de cobrança.',
@@ -294,6 +298,7 @@ let units: Unit[] = [
     judgeName: 'Dr. Lucas Ribeiro',
     email: 'beatriz.lima@tjp.jus.br',
     comarca: 'Maringá',
+    separator: 'de',
     areas: ['Família e Infância'],
     supportNeeded: 'Audiência',
     description: 'Necessidade de mutirão em audiências concentradas e medidas protetivas.',
@@ -447,12 +452,13 @@ function parseMagistrate(b: any, base?: Magistrate, strict = false, lenient = fa
   return { value: { name, email, currentLocation, firstPreference: first, secondPreference: second, acceptsHearings: hearings === true } };
 }
 
-function parseUnit(b: any, base?: Unit, lenient = false): Parsed<Pick<Unit, 'unitName' | 'judgeName' | 'email' | 'comarca' | 'areas' | 'supportNeeded' | 'description' | 'slots'>> {
+function parseUnit(b: any, base?: Unit, lenient = false): Parsed<Pick<Unit, 'unitName' | 'judgeName' | 'email' | 'comarca' | 'separator' | 'areas' | 'supportNeeded' | 'description' | 'slots'>> {
   const pick = (k: keyof Unit) => (b?.[k] == null && base ? base[k] : b?.[k]);
   const unitName = cleanText(pick('unitName'), 300);
   const judgeName = cleanText(pick('judgeName'), 200) ?? '';
   const email = cleanText(pick('email'), 200) ?? '';
   const comarca = cleanText(pick('comarca'), 150) ?? '';
+  const separator = cleanText(pick('separator'), 20) || 'de';
   if (!unitName || (!lenient && (!judgeName || !email || !comarca))) {
     return { error: 'Preencha comarca, unidade, responsável e e-mail com texto válido.' };
   }
@@ -472,7 +478,7 @@ function parseUnit(b: any, base?: Unit, lenient = false): Parsed<Pick<Unit, 'uni
   if (typeof slots !== 'number' || !Number.isInteger(slots) || slots < 1 || slots > MAX_SLOTS) return { error: `O número de magistrados a alocar deve ser um inteiro de 1 a ${MAX_SLOTS}.` };
   const description = pick('description') ?? '';
   if (typeof description !== 'string' || description.length > 2000) return { error: 'A justificativa pode ter no máximo 2000 caracteres.' };
-  return { value: { unitName, judgeName, email, comarca, areas: [...new Set(areas as string[])], supportNeeded: support as WorkType, description: description.trim(), slots } };
+  return { value: { unitName, judgeName, email, comarca, separator, areas: [...new Set(areas as string[])], supportNeeded: support as WorkType, description: description.trim(), slots } };
 }
 
 /** Dados antigos ou corrompidos (ex.: gravados antes da validação) são convertidos para tipos seguros. */
@@ -485,7 +491,7 @@ function sanitizeStoredRecords() {
   });
   units.forEach((u) => {
     u.unitName = asText(u.unitName); u.judgeName = asText(u.judgeName); u.email = asText(u.email);
-    u.comarca = asText(u.comarca); u.description = asText(u.description);
+    u.comarca = asText(u.comarca); u.separator = asText(u.separator).trim() || 'de'; u.description = asText(u.description);
     u.areas = Array.isArray(u.areas) ? u.areas.map(asText) : u.areas ? [asText(u.areas)] : [];
   });
 }
@@ -778,7 +784,7 @@ function ensureInitialUnit(unitName: string, area: string): Unit {
   let unit = units.find((u) => u.editionId === ed.id && normName(u.unitName) === normName(unitName));
   if (!unit) {
     unit = {
-      id: newId('unit'), editionId: ed.id, unitName, judgeName: '', email: '', comarca: '', areas: area ? [area] : [],
+      id: newId('unit'), editionId: ed.id, unitName, judgeName: '', email: '', comarca: '', separator: 'de', areas: area ? [area] : [],
       supportNeeded: 'Audiência e Sentença', description: '', createdAt: new Date().toISOString(), status: 'Pendente', selection: 'Escolhida', slots: 1,
     };
     units.push(unit);
@@ -1806,7 +1812,7 @@ async function startServer() {
     if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
     const parsed = parseUnit(req.body, undefined, source === 'admin' && edition.isInitial === true);
     if ('error' in parsed) return res.status(400).json({ error: parsed.error });
-    const { unitName, judgeName, email, comarca, areas, supportNeeded, description, slots } = parsed.value;
+    const { unitName, judgeName, email, comarca, separator, areas, supportNeeded, description, slots } = parsed.value;
     if (source !== 'admin') {
       const reg = registrationState(edition);
       if (reg !== 'open') return res.status(403).json({ error: registrationMessage(edition, reg) });
@@ -1819,6 +1825,7 @@ async function startServer() {
       judgeName,
       email,
       comarca,
+      separator,
       areas,
       supportNeeded,
       description,
@@ -1891,7 +1898,7 @@ async function startServer() {
     const next = parsed.value;
 
     const labels: Record<string, string> = {
-      unitName: 'unidade', judgeName: 'responsável', email: 'e-mail', comarca: 'comarca',
+      unitName: 'unidade', judgeName: 'responsável', email: 'e-mail', comarca: 'comarca', separator: 'separador',
       areas: 'áreas', supportNeeded: 'auxílio necessário', description: 'justificativa', slots: 'magistrados a alocar',
     };
     if (next.slots < linkedCount(unit.id)) {

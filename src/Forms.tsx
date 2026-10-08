@@ -177,18 +177,18 @@ export function UnitForm({
 }) {
   const [website, setWebsite] = useState('');
   const empty = {
-    unitName: '', judgeName: '', email: '', comarca: '',
+    unitName: '', judgeName: '', email: '', comarca: '', separator: 'de',
     areas: [] as string[],
     supportNeeded: 'Sentença' as SupportNeeded,
     description: '',
     slots: 1,
   };
   const [f, setF] = useState(initial ? {
-    unitName: initial.unitName, judgeName: initial.judgeName, email: initial.email, comarca: initial.comarca,
+    unitName: initial.unitName, judgeName: initial.judgeName, email: initial.email, comarca: initial.comarca, separator: initial.separator || 'de',
     areas: initial.areas, supportNeeded: initial.supportNeeded, description: initial.description,
     slots: initial.slots ?? 1,
   } : empty);
-  const text = (k: 'unitName' | 'judgeName' | 'email' | 'comarca' | 'description') =>
+  const text = (k: 'unitName' | 'judgeName' | 'email' | 'comarca' | 'separator' | 'description') =>
     (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setF({ ...f, [k]: e.target.value });
 
   const [areasError, setAreasError] = useState('');
@@ -209,12 +209,16 @@ export function UnitForm({
       }}
     >
       <fieldset disabled={disabled} className="space-y-5 min-w-0">
-      <Field label="Comarca">
-        <input required={!relaxed} className="input" value={f.comarca} onChange={text('comarca')} />
-      </Field>
       <Field label="Unidade judicial">
         <input required className="input" value={f.unitName} onChange={text('unitName')} />
       </Field>
+      <Field label="Separador (liga a unidade à comarca)">
+        <input required maxLength={20} className="input" value={f.separator} onChange={text('separator')} placeholder="de" />
+      </Field>
+      <Field label="Comarca">
+        <input required={!relaxed} className="input" value={f.comarca} onChange={text('comarca')} />
+      </Field>
+      <p className="text-xs text-muted -mt-3">Exibição: <strong className="text-ink">{[f.unitName || 'Unidade', f.comarca && (f.separator.trim() || 'de'), f.comarca].filter(Boolean).join(' ')}</strong></p>
       <Field label="Juiz(a) titular / responsável">
         <input required={!relaxed} className="input" value={f.judgeName} onChange={text('judgeName')} />
       </Field>

@@ -60,6 +60,8 @@ export interface Unit {
   judgeName: string;
   email: string;
   comarca: string;
+  /** Liga o nome da unidade à comarca (padrão "de") */
+  separator?: string;
   areas: string[];
   supportNeeded: SupportNeeded;
   description: string;
