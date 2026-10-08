@@ -1163,7 +1163,7 @@ async function startServer() {
   const cleanCell = (t: string) => t.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
 
   /** Uma designação vigente: vinculação real de qualquer edição. Vale até que seja registrada a desistência. */
-  interface PanelRow { id: string; editionId: string; editionTitle: string; magistrateId: string; unitId: string; name: string; area: string; unit: string; comarca?: string; workType?: string; startDate?: string }
+  interface PanelRow { id: string; editionId: string; editionTitle: string; magistrateId: string; unitId: string; name: string; area: string; unit: string; comarca?: string; separator?: string; workType?: string; startDate?: string }
 
   /** Tabela única com as designações vigentes de TODAS as edições (as de edições anteriores continuam valendo até a desistência). */
   function panelRows(): PanelRow[] {
@@ -1173,7 +1173,7 @@ async function startServer() {
       const un = units.find((u) => u.id === mt.unitId);
       if (!mag || !un || mag.status === 'Desistente' || isHeaderRow(mag.name, mt.assignedArea, un.unitName)) continue;
       const k = `${panelKey({ name: mag.name, area: mt.assignedArea, unit: un.unitName })}|${mt.editionId}`;
-      if (!seen.has(k)) seen.set(k, { id: mt.id, editionId: mt.editionId, editionTitle: editionById(mt.editionId)?.title ?? '', magistrateId: mag.id, unitId: un.id, name: mag.name, area: mt.assignedArea, unit: un.unitName, comarca: un.comarca, workType: mt.workType, startDate: mt.startDate });
+      if (!seen.has(k)) seen.set(k, { id: mt.id, editionId: mt.editionId, editionTitle: editionById(mt.editionId)?.title ?? '', magistrateId: mag.id, unitId: un.id, name: mag.name, area: mt.assignedArea, unit: un.unitName, comarca: un.comarca, separator: un.separator, workType: mt.workType, startDate: mt.startDate });
     }
     return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR') || a.unit.localeCompare(b.unit, 'pt-BR'));
   }

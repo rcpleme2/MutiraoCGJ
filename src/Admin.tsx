@@ -80,6 +80,61 @@ function PresenceNote({ p }: { p: { comarca: string[]; unit: string[] } }) {
   );
 }
 
+/** Dashboard: unidades atendidas (escolhidas e com magistrado vinculado, de todas as edições), com os magistrados e filtro/separação por área. */
+function AttendedUnits({ refreshKey }: { refreshKey: number }) {
+  const [rows, setRows] = useState<PanelRow[]>([]);
+  const [area, setArea] = useState('');
+  const [split, setSplit] = useState(false);
+  useEffect(() => {
+    api<PanelAdminData>('/panel/admin').then(d => setRows(d.rows)).catch(() => setRows([]));
+  }, [refreshKey]);
+  const areas = [...new Set(rows.map(r => r.area.trim()).filter(Boolean))].sort(collator.compare);
+  const shown = rows.filter(r => !area || r.area.trim() === area);
+  const groupUnits = (list: PanelRow[]) => {
+    const m = new Map<string, { label: string; edition: string; rows: PanelRow[] }>();
+    for (const r of list) {
+      const g = m.get(r.unitId) ?? { label: unitLabel({ unitName: r.unit, comarca: r.comarca, separator: r.separator }), edition: r.editionTitle, rows: [] };
+      g.rows.push(r); m.set(r.unitId, g);
+    }
+    return [...m.values()].sort((a, b) => collator.compare(a.label, b.label));
+  };
+  const renderTable = (list: PanelRow[]) => (
+    <Table head={['Unidade / Comarca', 'Magistrados vinculados', 'Edição']}>
+      {list.length === 0 && <EmptyRow cols={3}>Nenhuma unidade atendida.</EmptyRow>}
+      {groupUnits(list).map(g => (
+        <tr key={g.label + g.edition}>
+          <td className="td font-medium">{g.label}</td>
+          <td className="td">
+            <ul className="space-y-0.5">
+              {g.rows.map(r => <li key={r.id} className="text-sm">{r.name}{!area && !split && <span className="text-xs text-bronze"> · {r.area}</span>}</li>)}
+            </ul>
+          </td>
+          <td className="td text-xs text-muted">{[...new Set(g.rows.map(r => r.editionTitle))].join(', ')}</td>
+        </tr>
+      ))}
+    </Table>
+  );
+  return (
+    <div className="card p-5 space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h4 className="font-semibold text-navy">Unidades atendidas <span className="text-xs font-normal text-muted">({groupUnits(shown).length} {groupUnits(shown).length === 1 ? 'unidade' : 'unidades'} · todas as edições)</span></h4>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={split} onChange={e => setSplit(e.target.checked)} /> Separar por área</label>
+      </div>
+      <div className="flex flex-wrap gap-1.5" role="group" aria-label="Filtrar por área">
+        {['', ...areas].map(a => (
+          <button key={a || 'all'} type="button" aria-pressed={area === a} onClick={() => setArea(a)}
+            className={`px-2.5 py-1 rounded-full border text-xs ${area === a ? 'bg-navy text-white border-navy' : 'border-line text-muted hover:text-ink'}`}>{a || 'Todas as áreas'}</button>
+        ))}
+      </div>
+      {split
+        ? (areas.filter(a => !area || a === area).map(a => (
+          <div key={a}><h5 className="text-sm font-semibold text-bronze mb-2">{a}</h5>{renderTable(shown.filter(r => r.area.trim() === a))}</div>
+        )))
+        : renderTable(shown)}
+    </div>
+  );
+}
+
 function Table({ head, children }: { head: React.ReactNode[]; children: React.ReactNode }) {
   return (
     <div className="card overflow-hidden">
@@ -1137,6 +1192,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
               </div>
             </div>
           </div>
+          <AttendedUnits refreshKey={matches.length + units.length} />
           {ai.items.length > 0 && (
             <div className="card p-5">
               <h4 className="font-semibold text-navy mb-3">Sugestões da IA</h4>
