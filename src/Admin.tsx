@@ -6,7 +6,7 @@ import { COMARCAS, canonicalComarca, catalogById, fullUnitName, unitsOfComarca }
 import { Badge, EmptyRow, Field, Modal, Notice, formatDate, formatDateTime, magistrateTone, useFeedback } from './ui';
 import { MagistrateForm, UnitForm } from './Forms';
 
-type Sub = 'overview' | 'editions' | 'magistrates' | 'units' | 'matches' | 'waiting' | 'panel' | 'faq' | 'log' | 'backup' | 'standardize';
+type Sub = 'overview' | 'editions' | 'magistrates' | 'units' | 'matches' | 'waiting' | 'panel' | 'faq' | 'log' | 'backup' | 'standardize' | 'users';
 
 const SUBS: { id: Sub; label: string }[] = [
   { id: 'overview', label: 'Painel' },
@@ -20,6 +20,7 @@ const SUBS: { id: Sub; label: string }[] = [
   { id: 'faq', label: 'Perguntas frequentes' },
   { id: 'log', label: 'Registro' },
   { id: 'backup', label: 'Backup' },
+  { id: 'users', label: 'Usuários' },
 ];
 
 const toLocalInput = (iso: string) => iso.slice(0, 16);
@@ -1034,6 +1035,77 @@ function StandardizeAdmin({ run, confirm, onChanged }: { run: RunFn; confirm: (m
   );
 }
 
+/* ---------- Usuários administrativos (perfil Administrador) ---------- */
+type Role = 'admin' | 'gestor' | 'consulta';
+const ROLE_NAMES: Record<Role, string> = { admin: 'Administrador', gestor: 'Gestor', consulta: 'Consulta' };
+interface AdminUserView { id: string; name: string; email: string; role: Role; active: boolean; hasTotp: boolean; createdAt: string; lastLoginAt?: string }
+
+function UsersAdmin({ run, confirm }: { run: RunFn; confirm: (m: string, label?: string) => Promise<boolean> }) {
+  const [list, setList] = useState<AdminUserView[]>([]);
+  const [f, setF] = useState({ name: '', email: '', role: 'gestor' as Role, password: '' });
+  const [pwFor, setPwFor] = useState<AdminUserView | null>(null);
+  const [pw, setPw] = useState('');
+  const load = useCallback(async () => { const r = await run(() => api<AdminUserView[]>('/admin/users')); if (r) setList(r); }, [run]);
+  useEffect(() => { load(); }, []);
+  const update = async (u: AdminUserView, body: object, msg: string) => { if (await run(() => api(`/admin/users/${u.id}`, { method: 'PUT', json: body }), msg)) await load(); };
+  const create = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (await run(() => api('/admin/users', { method: 'POST', json: f }), 'Usuário criado.')) { setF({ name: '', email: '', role: 'gestor', password: '' }); await load(); }
+  };
+  return (
+    <div className="space-y-6">
+      <Toolbar title="Usuários administrativos" />
+      <p className="text-sm text-muted -mt-2">
+        Cada pessoa entra com o próprio e-mail, senha e aplicativo autenticador, e o Registro mostra quem fez cada ação.
+        <strong className="text-ink"> Administrador</strong>: tudo, inclusive usuários, backup e exclusões em lote · <strong className="text-ink">Gestor</strong>: operação do mutirão · <strong className="text-ink">Consulta</strong>: somente leitura.
+        Com ao menos um Administrador cadastrado, a senha compartilhada deixa de funcionar.
+      </p>
+      <Table head={['Nome / e-mail', 'Perfil', 'Situação', 'Último acesso', '']}>
+        {list.length === 0 && <EmptyRow cols={5}>Nenhum usuário cadastrado: o acesso ainda é pela senha compartilhada.</EmptyRow>}
+        {list.map(u => (
+          <tr key={u.id} className={u.active ? '' : 'opacity-60'}>
+            <td className="td"><div className="font-medium">{u.name}</div><div className="text-xs text-muted">{u.email}</div></td>
+            <td className="td">
+              <select className="input !py-1.5 !w-auto text-sm" value={u.role} onChange={e => update(u, { role: e.target.value }, 'Perfil alterado.')} aria-label="Perfil">
+                {(Object.keys(ROLE_NAMES) as Role[]).map(r => <option key={r} value={r}>{ROLE_NAMES[r]}</option>)}
+              </select>
+            </td>
+            <td className="td"><Badge tone={u.active ? 'ok' : 'neutral'}>{u.active ? 'Ativo' : 'Desativado'}</Badge>{!u.hasTotp && u.active && <div className="text-[11px] text-warn mt-1">Autenticador a cadastrar no próximo acesso</div>}</td>
+            <td className="td text-xs text-muted whitespace-nowrap">{u.lastLoginAt ? formatDateTime(u.lastLoginAt) : '—'}</td>
+            <td className="td text-right whitespace-nowrap space-x-1">
+              <button className="btn-secondary btn-sm" onClick={() => { setPwFor(u); setPw(''); }}>Redefinir senha</button>
+              {u.hasTotp && <button className="btn-secondary btn-sm" onClick={async () => { if (await confirm(`Redefinir o autenticador de ${u.name}? No próximo acesso será pedido novo cadastro do aplicativo.`, 'Redefinir')) await update(u, { resetTotp: true }, 'Autenticador redefinido.'); }}>Redefinir 2FA</button>}
+              <button className={`btn-sm ${u.active ? 'btn-danger' : 'btn-secondary'}`} onClick={async () => { if (await confirm(`${u.active ? 'Desativar' : 'Reativar'} ${u.name}?`, u.active ? 'Desativar' : 'Reativar')) await update(u, { active: !u.active }, u.active ? 'Usuário desativado.' : 'Usuário reativado.'); }}>{u.active ? 'Desativar' : 'Reativar'}</button>
+            </td>
+          </tr>
+        ))}
+      </Table>
+      <form onSubmit={create} className="card p-5 space-y-4">
+        <h4 className="font-semibold text-navy">Novo usuário</h4>
+        <div className="grid sm:grid-cols-2 gap-4">
+          <Field label="Nome"><input className="input" required maxLength={120} value={f.name} onChange={e => setF({ ...f, name: e.target.value })} /></Field>
+          <Field label="E-mail"><input className="input" type="email" required value={f.email} onChange={e => setF({ ...f, email: e.target.value })} /></Field>
+          <Field label="Perfil">
+            <select className="input" value={f.role} onChange={e => setF({ ...f, role: e.target.value as Role })}>
+              {(Object.keys(ROLE_NAMES) as Role[]).map(r => <option key={r} value={r}>{ROLE_NAMES[r]}</option>)}
+            </select>
+          </Field>
+          <Field label="Senha inicial (mín. 10 caracteres; informe à pessoa por canal seguro)"><input className="input" type="text" required minLength={10} autoComplete="new-password" value={f.password} onChange={e => setF({ ...f, password: e.target.value })} /></Field>
+        </div>
+        <button className="btn-primary btn-sm"><Plus className="w-4 h-4" /> Criar usuário</button>
+      </form>
+      {pwFor && (
+        <Modal title={`Nova senha para ${pwFor.name}`} onClose={() => setPwFor(null)}>
+          <form onSubmit={async e => { e.preventDefault(); await update(pwFor, { password: pw }, 'Senha redefinida.'); setPwFor(null); }} className="space-y-4">
+            <Field label="Nova senha (mín. 10 caracteres)"><input className="input" type="text" required minLength={10} autoFocus value={pw} onChange={e => setPw(e.target.value)} /></Field>
+            <div className="flex justify-end gap-2"><button type="button" className="btn-ghost" onClick={() => setPwFor(null)}>Cancelar</button><button className="btn-primary">Salvar</button></div>
+          </form>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 /* ---------- Backup e restauração ---------- */
 function BackupAdmin({ run, confirm, onRestored }: { run: RunFn; confirm: (m: string, label?: string) => Promise<boolean>; onRestored: () => void }) {
   const [summary, setSummary] = useState<null | { name: string; data: any; counts: string }>(null);
@@ -1093,6 +1165,11 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   // Etapa 2 do login (código do aplicativo autenticador) ou cadastro do aplicativo no primeiro acesso
   const [loginStep, setLoginStep] = useState<null | { kind: 'totp' | 'enroll'; challenge: string; secret?: string; qrSvg?: string }>(null);
   const [totpCode, setTotpCode] = useState('');
+  const [loginEmail, setLoginEmail] = useState('');
+  const [loginMode, setLoginMode] = useState<{ users: boolean; shared: boolean }>({ users: false, shared: true });
+  const [me, setMe] = useState<{ name: string; role: 'admin' | 'gestor' | 'consulta'; shared: boolean; users: boolean } | null>(null);
+  const [myPw, setMyPw] = useState<null | { current: string; next: string }>(null);
+  useEffect(() => { if (!authed) api<{ users: boolean; shared: boolean }>('/admin/login-mode').then(setLoginMode).catch(() => {}); }, [authed]);
 
   const [sub, setSub] = useState<Sub>('overview');
   const [editions, setEditions] = useState<Edition[]>([]);
@@ -1184,7 +1261,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
 
   const refresh = useCallback(async () => { await loadEditions(); await loadScoped(); onEditionsChanged(); }, [loadEditions, loadScoped, onEditionsChanged]);
 
-  useEffect(() => { if (authed) { loadEditions(); loadFaq(); } }, [authed]);
+  useEffect(() => { if (authed) { loadEditions(); loadFaq(); api<typeof me>('/admin/me').then(setMe).catch(() => setMe(null)); } }, [authed]);
   useEffect(() => { if (authed) { loadScoped(); setAi({ loading: false, items: [] }); } }, [authed, selectedId, viewAll]);
   useEffect(() => { if (sub !== 'magistrates' && sub !== 'units') setViewAll(false); }, [sub]);
 
@@ -1193,7 +1270,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
     setLoginError('');
     try {
       if (!loginStep) {
-        const r = await api<{ step: 'totp' | 'enroll'; challenge: string; secret?: string; qrSvg?: string }>('/admin/login', { method: 'POST', json: { password } });
+        const r = await api<{ step: 'totp' | 'enroll'; challenge: string; secret?: string; qrSvg?: string }>('/admin/login', { method: 'POST', json: { email: loginEmail.trim(), password } });
         setPassword('');
         setLoginStep({ kind: r.step, challenge: r.challenge, secret: r.secret, qrSvg: r.qrSvg });
         setTotpCode('');
@@ -1206,7 +1283,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       if (loginStep && /expirada|esgotadas/i.test(err.message)) setLoginStep(null);
     }
   };
-  const logout = () => { api('/admin/logout', { method: 'POST' }).catch(() => {}); setToken(''); setAuthed(false); };
+  const logout = () => { api('/admin/logout', { method: 'POST' }).catch(() => {}); setToken(''); setMe(null); setAuthed(false); };
 
   const q = `edition=${encodeURIComponent(selectedId)}`;
   const withEdition = (body: object) => ({ ...body, editionId: selectedId, source: 'admin' });
@@ -1220,8 +1297,13 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
         <p className="text-sm text-muted mt-1 mb-6">Acesso restrito à coordenação do mutirão.</p>
         {loginError && <div className="mb-4"><Notice tone="danger">{loginError}</Notice></div>}
         <form onSubmit={login} className="space-y-4">
+          {!loginStep && (loginMode.users || loginEmail) && (
+            <Field label={loginMode.shared ? 'E-mail (deixe em branco para usar a senha compartilhada)' : 'E-mail'}>
+              <input type="email" required={!loginMode.shared} autoFocus autoComplete="username" className="input" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} />
+            </Field>
+          )}
           {!loginStep && (
-            <Field label="Senha"><input type="password" required autoFocus className="input" value={password} onChange={e => setPassword(e.target.value)} /></Field>
+            <Field label="Senha"><input type="password" required autoFocus={!loginMode.users} autoComplete="current-password" className="input" value={password} onChange={e => setPassword(e.target.value)} /></Field>
           )}
           {loginStep?.kind === 'enroll' && (
             <div className="space-y-3">
@@ -1399,11 +1481,28 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
           <button className="btn-ghost" onClick={logout}><LogOut className="w-4 h-4" /> Sair</button>
         </div>
       </div>
+      {me && (
+        <div className="flex flex-wrap items-center justify-end gap-3 -mt-3 text-xs text-muted">
+          <span>Conectado como <strong className="text-ink">{me.name}</strong> · {({ admin: 'Administrador', gestor: 'Gestor', consulta: 'Consulta' } as const)[me.role]}</span>
+          {!me.shared && <button className="text-bronze hover:underline" onClick={() => setMyPw({ current: '', next: '' })}>Alterar minha senha</button>}
+          {me.shared && me.role === 'admin' && !me.users && <button className="text-bronze hover:underline" onClick={() => setSub('users')}>Cadastre usuários individuais (recomendado)</button>}
+        </div>
+      )}
+      {me?.role === 'consulta' && <Notice tone="ok">Perfil somente consulta: você pode ver e exportar, mas não alterar dados.</Notice>}
+      {myPw && (
+        <Modal title="Alterar minha senha" onClose={() => setMyPw(null)}>
+          <form className="space-y-4" onSubmit={async e => { e.preventDefault(); if (await run(() => api('/admin/me/password', { method: 'POST', json: myPw }), 'Senha alterada.')) setMyPw(null); }}>
+            <Field label="Senha atual"><input className="input" type="password" required autoComplete="current-password" value={myPw.current} onChange={e => setMyPw({ ...myPw, current: e.target.value })} /></Field>
+            <Field label="Nova senha (mín. 10 caracteres)"><input className="input" type="password" required minLength={10} autoComplete="new-password" value={myPw.next} onChange={e => setMyPw({ ...myPw, next: e.target.value })} /></Field>
+            <div className="flex justify-end gap-2"><button type="button" className="btn-ghost" onClick={() => setMyPw(null)}>Cancelar</button><button className="btn-primary">Salvar</button></div>
+          </form>
+        </Modal>
+      )}
 
       {readOnlyEdition && <Notice tone="danger">Esta edição está encerrada. Os dados continuam editáveis aqui, mas o portal público não aceita novas inscrições.</Notice>}
 
       <div className="flex gap-1 border-b border-line overflow-x-auto">
-        {SUBS.map(t => (
+        {SUBS.filter(t => me?.role === 'admin' || (t.id !== 'users' && t.id !== 'backup')).map(t => (
           <button key={t.id} onClick={() => setSub(t.id)}
             className={`px-4 py-2.5 text-sm whitespace-nowrap border-b-2 -mb-px transition-colors ${sub === t.id ? 'border-navy text-navy font-medium' : 'border-transparent text-muted hover:text-ink'}`}>
             {t.label}
@@ -1476,7 +1575,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
           <div className="card p-5">
             <h4 className="font-semibold text-navy mb-3">Últimas atividades</h4>
             {log.slice(0, 6).map(l => (
-              <div key={l.id} className="flex gap-3 py-1.5 text-sm"><span className="text-xs text-muted w-36 shrink-0 pt-0.5">{formatDateTime(l.timestamp)}</span><span>{l.description}</span></div>
+              <div key={l.id} className="flex gap-3 py-1.5 text-sm"><span className="text-xs text-muted w-36 shrink-0 pt-0.5">{formatDateTime(l.timestamp)}</span><span>{l.description}{l.by && <span className="text-xs text-muted"> — {l.by}</span>}</span></div>
             ))}
           </div>
         </div>
@@ -1711,6 +1810,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
 
       {/* ---------- Painel público ---------- */}
       {sub === 'standardize' && <StandardizeAdmin run={run} confirm={confirm} onChanged={refresh} />}
+      {sub === 'users' && me?.role === 'admin' && <UsersAdmin run={run} confirm={confirm} />}
       {sub === 'backup' && <BackupAdmin run={run} confirm={confirm} onRestored={refresh} />}
       {sub === 'panel' && <PanelAdmin run={run} confirm={confirm} onChanged={refresh} />}
 
@@ -1765,7 +1865,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             {logRows.map(l => (
               <tr key={l.id}>
                 <td className="td text-xs text-muted whitespace-nowrap">{formatDateTime(l.timestamp)}</td>
-                <td className="td text-xs">{l.actor}</td>
+                <td className="td text-xs">{l.actor}{l.by && <div className="text-muted">{l.by}</div>}</td>
                 <td className="td"><Badge tone="neutral">{l.category}</Badge></td>
                 <td className="td text-xs text-muted font-mono whitespace-nowrap">{l.ip ?? '—'}</td>
                 <td className="td">{l.description}</td>

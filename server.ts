@@ -132,6 +132,8 @@ interface LogEntry {
   description: string;
   /** IP de quem originou a ação (preenchido automaticamente nas requisições) */
   ip?: string;
+  /** Usuário administrativo que fez a ação */
+  by?: string;
 }
 
 // Senha administrativa: defina ADMIN_PASSWORD nos Secrets do AI Studio.
@@ -162,30 +164,56 @@ const totpAt = (secret: string, step: number) => {
   const code = (((h[o] & 0x7f) << 24) | (h[o + 1] << 16) | (h[o + 2] << 8) | h[o + 3]) % 1_000_000;
   return String(code).padStart(6, '0');
 };
-let lastTotpStep = 0; // impede reutilizar um código já aceito (replay)
+/** Último passo aceito por segredo: impede reutilizar um código já usado (replay). */
+const lastTotpStep = new Map<string, number>();
 function verifyTotp(secret: string, code: unknown): boolean {
   if (typeof code !== 'string' || !/^\d{6}$/.test(code)) return false;
   const now = Math.floor(Date.now() / 30_000);
   for (const step of [now - 1, now, now + 1]) { // tolera pequena diferença de relógio
-    if (step <= lastTotpStep) continue;
+    if (step <= (lastTotpStep.get(secret) ?? 0)) continue;
     const expected = Buffer.from(totpAt(secret, step));
-    if (crypto.timingSafeEqual(expected, Buffer.from(code))) { lastTotpStep = step; return true; }
+    if (crypto.timingSafeEqual(expected, Buffer.from(code))) { lastTotpStep.set(secret, step); return true; }
   }
   return false;
 }
+
+// ---------- Usuários administrativos individuais ----------
+type AdminRole = 'admin' | 'gestor' | 'consulta';
+const ADMIN_ROLES: AdminRole[] = ['admin', 'gestor', 'consulta'];
+interface AdminUser {
+  id: string; name: string; email: string; role: AdminRole;
+  /** scrypt$<sal>$<hash> */
+  passwordHash: string;
+  totpSecret?: string; active: boolean; createdAt: string; lastLoginAt?: string;
+}
+let admins: AdminUser[] = [];
+const hashPassword = (pw: string) => { const salt = crypto.randomBytes(16); return `scrypt$${salt.toString('hex')}$${crypto.scryptSync(pw, salt, 64).toString('hex')}`; };
+function checkPassword(pw: string, stored: string): boolean {
+  const [kind, salt, hash] = stored.split('$');
+  if (kind !== 'scrypt' || !salt || !hash) return false;
+  const got = crypto.scryptSync(pw, Buffer.from(salt, 'hex'), 64);
+  const want = Buffer.from(hash, 'hex');
+  return got.length === want.length && crypto.timingSafeEqual(got, want);
+}
+/** Senha compartilhada (ADMIN_PASSWORD) só vale enquanto não há usuários, ou como recuperação com ALLOW_SHARED_PASSWORD=true. */
+const sharedPasswordAllowed = () => !admins.some((a) => a.active && a.role === 'admin') || process.env.ALLOW_SHARED_PASSWORD === 'true';
 /** Desafios do login: a senha já foi validada; falta o código do segundo fator (ou o cadastro do aplicativo). */
-const challenges = new Map<string, { exp: number; tries: number; pendingSecret?: string }>();
+const challenges = new Map<string, { exp: number; tries: number; pendingSecret?: string; userId: string | null }>();
 
 // Sessões administrativas (token opaco, expira em 8h)
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
-const sessions = new Map<string, number>();
-const hasValidToken = (req: express.Request) => {
+interface Session { exp: number; userId: string | null; name: string; role: AdminRole }
+const sessions = new Map<string, Session>();
+function sessionOf(req: express.Request): Session | undefined {
   const token = req.header('x-admin-token');
-  const exp = token ? sessions.get(token) : undefined;
-  if (!token || !exp) return false;
-  if (exp < Date.now()) { sessions.delete(token); return false; }
-  return true;
-};
+  const s = token ? sessions.get(token) : undefined;
+  if (!token || !s) return undefined;
+  if (s.exp < Date.now()) { sessions.delete(token); return undefined; }
+  // Usuário desativado perde o acesso na hora
+  if (s.userId && !admins.some((a) => a.id === s.userId && a.active)) { sessions.delete(token); return undefined; }
+  return s;
+}
+const hasValidToken = (req: express.Request) => !!sessionOf(req);
 
 // Limite de inscrições públicas por IP a cada 10 minutos. Vários servidores do tribunal podem sair pelo
 // mesmo IP, então o valor é ajustável sem alterar o código: defina SIGNUP_MAX_PER_IP no Cloud Run.
@@ -209,7 +237,7 @@ const refund = (key: string) => { hits.get(key)?.pop(); };
 // Limpeza periódica: sessões expiradas e janelas do limitador, para a memória não crescer indefinidamente
 setInterval(() => {
   const now = Date.now();
-  for (const [t, exp] of sessions) if (exp < now) sessions.delete(t);
+  for (const [t, s] of sessions) if (s.exp < now) sessions.delete(t);
   for (const [t, c] of challenges) if (c.exp < now) challenges.delete(t);
   for (const [k, list] of hits) if (!list.some((t) => now - t < 60 * 60_000)) hits.delete(k);
 }, 10 * 60_000).unref();
@@ -352,7 +380,7 @@ let dupDismissed: string[] = [];
 let adminTotpSecret: string | null = null;
 
 /** Contexto da requisição em andamento (IP), para que todo registro de atividade carregue a origem. */
-const reqCtx = new AsyncLocalStorage<{ ip: string }>();
+const reqCtx = new AsyncLocalStorage<{ ip: string; user?: string }>();
 
 let activityLog: LogEntry[] = [
   {
@@ -375,6 +403,7 @@ function log(
   description: string,
 ) {
   const ip = reqCtx.getStore()?.ip;
+  const by = actor === 'Administração' ? reqCtx.getStore()?.user : undefined;
   activityLog.unshift({
     id: newId('log'),
     editionId,
@@ -383,11 +412,12 @@ function log(
     category,
     description,
     ...(ip ? { ip } : {}),
+    ...(by ? { by } : {}),
   });
   if (activityLog.length > 5000) activityLog.length = 5000; // corte só na memória; o Firestore mantém o histórico
   // Cópia estruturada no Cloud Logging (imutável para o aplicativo) das ações administrativas e de acesso
   if (actor === 'Administração' || category === 'Acesso') {
-    console.log(JSON.stringify({ severity: 'NOTICE', message: description, audit: { category, actor, ip: ip ?? null, editionId } }));
+    console.log(JSON.stringify({ severity: 'NOTICE', message: description, audit: { category, actor, by: by ?? null, ip: ip ?? null, editionId } }));
   }
 }
 
@@ -646,7 +676,7 @@ let lastMeta = '';
 const metaJson = () => JSON.stringify({ activeEditionId, adminTotpSecret, dupDismissed });
 
 const collectionsNow = (): Record<string, { id: string }[]> => ({
-  editions, magistrates, units, matches, log: activityLog, faq, panel: panelEntries, withdrawals, transfers,
+  editions, magistrates, units, matches, log: activityLog, faq, panel: panelEntries, withdrawals, transfers, admins,
 });
 
 async function loadState() {
@@ -665,6 +695,7 @@ async function loadState() {
       panelEntries = raw.panel ?? [];
       withdrawals = raw.withdrawals ?? [];
       transfers = raw.transfers ?? [];
+      admins = raw.admins ?? [];
     } catch { /* primeira execução: usa os dados iniciais */ }
     return;
   }
@@ -701,6 +732,7 @@ async function loadState() {
   panelEntries = loaded.panel as PanelEntry[];
   withdrawals = loaded.withdrawals as Withdrawal[];
   transfers = loaded.transfers as Transfer[];
+  admins = loaded.admins as AdminUser[];
   lastMeta = metaJson();
 }
 
@@ -709,7 +741,7 @@ async function persist() {
     fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
     fs.writeFileSync(
       DATA_FILE,
-      JSON.stringify({ editions, activeEditionId, magistrates, units, matches, activityLog, faq, adminTotpSecret, panel: panelEntries, withdrawals, transfers, dupDismissed }),
+      JSON.stringify({ editions, activeEditionId, magistrates, units, matches, activityLog, faq, adminTotpSecret, panel: panelEntries, withdrawals, transfers, dupDismissed, admins }),
     );
     return;
   }
@@ -946,8 +978,10 @@ async function startServer() {
   // Proteção das rotas: somente o necessário é público; o resto exige sessão administrativa.
   app.use('/api', (req, res, next) => {
     const ip = req.ip || 'unknown';
-    const admin = hasValidToken(req);
-    const publicRead = (req.method === 'GET' && ['/settings', '/faq'].includes(req.path)) || (req.method === 'POST' && req.path === '/status');
+    const session = sessionOf(req);
+    const admin = !!session;
+    if (session) { const store = reqCtx.getStore(); if (store) store.user = session.name; }
+    const publicRead = (req.method === 'GET' && ['/settings', '/faq', '/admin/login-mode'].includes(req.path)) || (req.method === 'POST' && req.path === '/status');
     const publicSignup = req.method === 'POST' && (req.path === '/magistrates' || req.path === '/units');
     const login = req.method === 'POST' && (req.path === '/admin/login' || req.path === '/admin/login/verify');
 
@@ -981,7 +1015,13 @@ async function startServer() {
       req.query = {};
       return next();
     }
-    if (publicRead || login || admin) {
+    if (publicRead || login) return next();
+    if (session) {
+      // Perfis: Consulta só lê; Gestor opera o mutirão; Administrador também gere usuários, backup e exclusões em lote
+      const adminOnly = /^\/(admin\/users|backup)/.test(req.path) || /\/delete-all$/.test(req.path);
+      const selfService = req.path === '/admin/me/password' || req.path === '/admin/logout' || req.path === '/admin/me';
+      if (adminOnly && session.role !== 'admin') return res.status(403).json({ error: 'Ação restrita ao perfil Administrador.' });
+      if (session.role === 'consulta' && req.method !== 'GET' && !selfService) return res.status(403).json({ error: 'Seu perfil é somente consulta.' });
       return next();
     }
     return res.status(401).json({ error: 'Acesso restrito à administração.' });
@@ -1015,34 +1055,54 @@ async function startServer() {
     if (!rateLimited(`faillog:${ip}`, 5, 10 * 60_000)) log(null, 'Sistema', 'Acesso', `Falha de autenticação do administrador: ${what}.`);
     res.locals.persist = true; // esta resposta é 4xx, mas o registro precisa ser gravado
   };
-  const openSession = (res: express.Response, how: string) => {
+  const openSession = (res: express.Response, how: string, user: AdminUser | null) => {
     const token = crypto.randomBytes(24).toString('hex');
-    sessions.set(token, Date.now() + SESSION_TTL_MS);
+    const name = user ? user.name : 'Senha compartilhada';
+    sessions.set(token, { exp: Date.now() + SESSION_TTL_MS, userId: user?.id ?? null, name, role: user?.role ?? 'admin' });
+    const store = reqCtx.getStore(); if (store) store.user = name;
+    if (user) user.lastLoginAt = new Date().toISOString();
     log(null, 'Administração', 'Acesso', `Acesso ao painel administrativo (${how}).`);
     res.json({ success: true, token });
   };
 
-  // Etapa 1: senha (definida apenas pela variável de ambiente ADMIN_PASSWORD)
+  // Tela de login: indica se já existem usuários individuais (pede e-mail) ou se vale a senha compartilhada
+  app.get('/api/admin/login-mode', (_req, res) => res.json({ users: admins.some((a) => a.active), shared: sharedPasswordAllowed() }));
+
+  // Etapa 1: e-mail + senha do usuário (ou a senha compartilhada ADMIN_PASSWORD, enquanto não houver usuários)
   app.post('/api/admin/login', async (req, res) => {
     if (rateLimited(`login:${req.ip}`, 8, 10 * 60_000)) {
       return res.status(429).json({ success: false, message: 'Muitas tentativas. Tente novamente em alguns minutos.' });
     }
-    const given = Buffer.from(String(req.body?.password ?? ''));
-    const expected = Buffer.from(adminPassword);
-    const ok = given.length === expected.length && crypto.timingSafeEqual(given, expected);
-    if (!ok) {
-      failedLogin(req, res, 'senha incorreta');
-      return res.status(401).json({ success: false, message: 'Senha administrativa incorreta.' });
+    const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+    const password = String(req.body?.password ?? '');
+    let user: AdminUser | null = null;
+    if (email) {
+      const u = admins.find((a) => a.active && a.email === email);
+      if (!u || !checkPassword(password, u.passwordHash)) {
+        failedLogin(req, res, `e-mail ou senha incorretos (${email.slice(0, 80)})`);
+        return res.status(401).json({ success: false, message: 'E-mail ou senha incorretos.' });
+      }
+      user = u;
+    } else {
+      const given = Buffer.from(password);
+      const expected = Buffer.from(adminPassword);
+      const ok = given.length === expected.length && crypto.timingSafeEqual(given, expected);
+      if (!ok || !sharedPasswordAllowed()) {
+        failedLogin(req, res, ok ? 'senha compartilhada desativada' : 'senha incorreta');
+        return res.status(401).json({ success: false, message: ok ? 'A senha compartilhada foi desativada. Entre com seu e-mail e senha.' : 'Senha administrativa incorreta.' });
+      }
     }
     const challenge = crypto.randomBytes(24).toString('hex');
-    if (adminTotpSecret) {
-      challenges.set(challenge, { exp: Date.now() + 5 * 60_000, tries: 0 });
+    const secret = user ? user.totpSecret : adminTotpSecret;
+    if (secret) {
+      challenges.set(challenge, { exp: Date.now() + 5 * 60_000, tries: 0, userId: user?.id ?? null });
       return res.json({ success: true, step: 'totp', challenge });
     }
-    // Primeiro acesso: o administrador cadastra o aplicativo autenticador (segredo + QR code)
+    // Primeiro acesso: cadastro do aplicativo autenticador (segredo + QR code)
     const pendingSecret = base32Encode(crypto.randomBytes(20));
-    challenges.set(challenge, { exp: Date.now() + 10 * 60_000, tries: 0, pendingSecret });
-    const otpauth = `otpauth://totp/${encodeURIComponent('Mutirão CGJ')}:${encodeURIComponent('Administração')}?secret=${pendingSecret}&issuer=${encodeURIComponent('Mutirão CGJ')}`;
+    challenges.set(challenge, { exp: Date.now() + 10 * 60_000, tries: 0, pendingSecret, userId: user?.id ?? null });
+    const account = user ? user.email : 'Administração';
+    const otpauth = `otpauth://totp/${encodeURIComponent('Mutirão CGJ')}:${encodeURIComponent(account)}?secret=${pendingSecret}&issuer=${encodeURIComponent('Mutirão CGJ')}`;
     const qrSvg = await QRCode.toString(otpauth, { type: 'svg', margin: 1, width: 200 });
     res.json({ success: true, step: 'enroll', challenge, secret: pendingSecret, otpauth, qrSvg });
   });
@@ -1056,23 +1116,90 @@ async function startServer() {
     if (!ch || ch.exp < Date.now()) return res.status(401).json({ success: false, message: 'Sessão de login expirada. Informe a senha novamente.' });
     if (++ch.tries > 5) { challenges.delete(String(req.body.challenge)); return res.status(401).json({ success: false, message: 'Tentativas esgotadas. Informe a senha novamente.' }); }
 
-    const secret = ch.pendingSecret ?? adminTotpSecret;
+    const user = ch.userId ? admins.find((a) => a.id === ch.userId && a.active) ?? null : null;
+    if (ch.userId && !user) return res.status(401).json({ success: false, message: 'Usuário desativado.' });
+    const secret = ch.pendingSecret ?? (user ? user.totpSecret : adminTotpSecret);
     if (!secret || !verifyTotp(secret, req.body?.code)) {
       failedLogin(req, res, 'código de verificação incorreto');
       return res.status(401).json({ success: false, message: 'Código incorreto.' });
     }
     challenges.delete(String(req.body.challenge));
     if (ch.pendingSecret) {
-      adminTotpSecret = ch.pendingSecret;
-      log(null, 'Administração', 'Acesso', 'Autenticação em dois fatores configurada.');
-      return openSession(res, 'primeiro acesso com cadastro do autenticador');
+      if (user) user.totpSecret = ch.pendingSecret; else adminTotpSecret = ch.pendingSecret;
+      const store = reqCtx.getStore(); if (store && user) store.user = user.name;
+      log(null, 'Administração', 'Acesso', `Autenticação em dois fatores configurada${user ? ` para ${user.name}` : ''}.`);
+      return openSession(res, 'primeiro acesso com cadastro do autenticador', user);
     }
-    openSession(res, 'senha e código de verificação');
+    openSession(res, user ? 'e-mail, senha e código de verificação' : 'senha compartilhada e código de verificação', user);
   });
 
   app.post('/api/admin/logout', (req, res) => {
     const token = req.header('x-admin-token');
     if (token) sessions.delete(token);
+    res.json({ success: true });
+  });
+
+  // ---------- Usuários (perfil Administrador) ----------
+  const publicUser = (a: AdminUser) => ({ id: a.id, name: a.name, email: a.email, role: a.role, active: a.active, hasTotp: !!a.totpSecret, createdAt: a.createdAt, lastLoginAt: a.lastLoginAt });
+  const ROLE_LABEL: Record<AdminRole, string> = { admin: 'Administrador', gestor: 'Gestor', consulta: 'Consulta' };
+  const activeAdmins = () => admins.filter((a) => a.active && a.role === 'admin');
+
+  app.get('/api/admin/me', (req, res) => {
+    const s = sessionOf(req)!;
+    res.json({ name: s.name, role: s.role, shared: s.userId === null, users: admins.some((a) => a.active) });
+  });
+  app.get('/api/admin/users', (_req, res) => res.json(admins.map(publicUser)));
+
+  app.post('/api/admin/users', (req, res) => {
+    const name = cleanText(req.body?.name, 120);
+    const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+    const role = req.body?.role as AdminRole;
+    const password = String(req.body?.password ?? '');
+    if (!name || !EMAIL_RE.test(email) || !ADMIN_ROLES.includes(role)) return res.status(400).json({ error: 'Informe nome, e-mail válido e perfil.' });
+    if (password.length < 10) return res.status(400).json({ error: 'A senha inicial precisa ter ao menos 10 caracteres.' });
+    if (admins.some((a) => a.email === email)) return res.status(409).json({ error: 'Já existe um usuário com este e-mail.' });
+    const u: AdminUser = { id: newId('adm'), name, email, role, passwordHash: hashPassword(password), active: true, createdAt: new Date().toISOString() };
+    admins.push(u);
+    log(null, 'Administração', 'Acesso', `Usuário administrativo criado: ${name} (${email}), perfil ${ROLE_LABEL[role]}.`);
+    res.status(201).json({ success: true, user: publicUser(u) });
+  });
+
+  app.put('/api/admin/users/:id', (req, res) => {
+    const u = admins.find((a) => a.id === req.params.id);
+    if (!u) return res.status(404).json({ error: 'Usuário não encontrado.' });
+    const b = req.body || {};
+    const changes: string[] = [];
+    const wouldLoseLastAdmin = (nextRole: AdminRole, nextActive: boolean) =>
+      u.role === 'admin' && u.active && (nextRole !== 'admin' || !nextActive) && activeAdmins().length <= 1;
+    const nextRole: AdminRole = ADMIN_ROLES.includes(b.role) ? b.role : u.role;
+    const nextActive = typeof b.active === 'boolean' ? b.active : u.active;
+    if (wouldLoseLastAdmin(nextRole, nextActive)) return res.status(409).json({ error: 'É preciso manter ao menos um Administrador ativo.' });
+    const name = b.name != null ? cleanText(b.name, 120) : u.name;
+    if (!name) return res.status(400).json({ error: 'Nome inválido.' });
+    if (name !== u.name) { changes.push(`nome para "${name}"`); u.name = name; }
+    if (nextRole !== u.role) { changes.push(`perfil ${ROLE_LABEL[u.role]} → ${ROLE_LABEL[nextRole]}`); u.role = nextRole; }
+    if (nextActive !== u.active) { changes.push(nextActive ? 'reativado' : 'desativado'); u.active = nextActive; }
+    if (b.resetTotp === true && u.totpSecret) { u.totpSecret = undefined; changes.push('autenticador redefinido (novo cadastro no próximo acesso)'); }
+    if (typeof b.password === 'string' && b.password) {
+      if (b.password.length < 10) return res.status(400).json({ error: 'A senha precisa ter ao menos 10 caracteres.' });
+      u.passwordHash = hashPassword(b.password); changes.push('senha redefinida');
+    }
+    if (changes.length) log(null, 'Administração', 'Acesso', `Usuário ${u.email} alterado: ${changes.join(', ')}.`);
+    // Mudança de perfil ou desativação vale para as sessões abertas
+    for (const s of sessions.values()) if (s.userId === u.id) { s.role = u.role; s.name = u.name; }
+    res.json({ success: true, user: publicUser(u) });
+  });
+
+  // Troca da própria senha
+  app.post('/api/admin/me/password', (req, res) => {
+    const s = sessionOf(req)!;
+    const u = s.userId ? admins.find((a) => a.id === s.userId) : undefined;
+    if (!u) return res.status(400).json({ error: 'A senha compartilhada é definida pela variável ADMIN_PASSWORD no Cloud Run.' });
+    if (!checkPassword(String(req.body?.current ?? ''), u.passwordHash)) return res.status(401).json({ error: 'Senha atual incorreta.' });
+    const next = String(req.body?.next ?? '');
+    if (next.length < 10) return res.status(400).json({ error: 'A nova senha precisa ter ao menos 10 caracteres.' });
+    u.passwordHash = hashPassword(next);
+    log(null, 'Administração', 'Acesso', `${u.name} alterou a própria senha.`);
     res.json({ success: true });
   });
 

@@ -104,6 +104,7 @@ export interface LogEntry {
   category: string;
   description: string;
   ip?: string;
+  by?: string;
 }
 
 export const PREFERENCE_AREAS = [
