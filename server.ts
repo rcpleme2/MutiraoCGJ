@@ -23,7 +23,7 @@ const ai = process.env.GEMINI_API_KEY
     })
   : null;
 
-type MagistrateStatus = 'Aguardando Conferência' | 'Aprovado' | 'Lista de Espera' | 'Atribuído' | 'Rejeitado' | 'Desistente';
+type MagistrateStatus = 'Aguardando Conferência' | 'Aprovado' | 'Lista de Espera' | 'Atribuído' | 'Rejeitado' | 'Desistente' | 'Excluído';
 
 interface Edition {
   id: string;
@@ -58,6 +58,12 @@ interface Magistrate {
   declaration?: boolean;
   rejectionReason?: string;
   rejectedAt?: string;
+  /** Exclusão (lógica) pela coordenação, com justificativa obrigatória; o motivo nunca é exibido ao público */
+  exclusionReason?: string;
+  exclusionSei?: string;
+  excludedAt?: string;
+  excludedBy?: string;
+  statusBeforeExclusion?: MagistrateStatus;
   createdAt: string;
   status: MagistrateStatus;
 }
@@ -462,7 +468,7 @@ const emailDomainOk = (email: string) => {
 };
 const EMAIL_DOMAIN_MESSAGE = `Use o e-mail institucional (${ALLOWED_EMAIL_DOMAINS.map((d) => `@${d}`).join(' ou ')}).`;
 
-const MAGISTRATE_STATUSES: MagistrateStatus[] = ['Aguardando Conferência', 'Aprovado', 'Lista de Espera', 'Atribuído', 'Rejeitado', 'Desistente'];
+const MAGISTRATE_STATUSES: MagistrateStatus[] = ['Aguardando Conferência', 'Aprovado', 'Lista de Espera', 'Atribuído', 'Rejeitado', 'Desistente', 'Excluído'];
 
 /** Texto obrigatório: precisa ser string, não vazia e dentro do limite. */
 function cleanText(v: unknown, max: number): string | null {
@@ -652,7 +658,7 @@ function editionStats(e: Edition) {
     magistrates: mags.length,
     units: us.length,
     matches: ms.length,
-    waiting: mags.filter((m) => m.status !== 'Atribuído' && m.status !== 'Rejeitado' && m.status !== 'Desistente').length,
+    waiting: mags.filter((m) => m.status !== 'Atribuído' && m.status !== 'Rejeitado' && m.status !== 'Desistente' && m.status !== 'Excluído').length,
     pendingUnits: us.filter((u) => u.selection === 'Escolhida' && u.status === 'Pendente').length,
   };
 }
@@ -1376,7 +1382,7 @@ async function startServer() {
     for (const mt of matches) {
       const mag = magistrates.find((m) => m.id === mt.magistrateId);
       const un = units.find((u) => u.id === mt.unitId);
-      if (!mag || !un || mag.status === 'Desistente' || isHeaderRow(mag.name, mt.assignedArea, un.unitName)) continue;
+      if (!mag || !un || mag.status === 'Desistente' || mag.status === 'Excluído' || isHeaderRow(mag.name, mt.assignedArea, un.unitName)) continue;
       const k = `${panelKey({ name: mag.name, area: mt.assignedArea, unit: un.unitName })}|${mt.editionId}`;
       if (!seen.has(k)) seen.set(k, { id: mt.id, editionId: mt.editionId, editionTitle: editionById(mt.editionId)?.title ?? '', magistrateId: mag.id, unitId: un.id, name: mag.name, area: mt.assignedArea, unit: un.unitName, comarca: un.comarca, separator: un.separator, workType: mt.workType, startDate: mt.startDate, note: mt.note });
     }
@@ -2206,8 +2212,8 @@ async function startServer() {
     const wanted: MagistrateStatus | undefined = MAGISTRATE_STATUSES.includes(b.status) ? b.status : undefined;
     const before = mag.status;
     if (isMatched) mag.status = 'Atribuído';
-    else if ((mag.status === 'Rejeitado' || mag.status === 'Desistente') && (!wanted || wanted === mag.status)) { /* mantém */ }
-    else if (wanted && wanted !== 'Atribuído' && wanted !== 'Rejeitado' && wanted !== 'Desistente') mag.status = wanted;
+    else if ((mag.status === 'Rejeitado' || mag.status === 'Desistente' || mag.status === 'Excluído') && (!wanted || wanted === mag.status)) { /* mantém */ }
+    else if (wanted && wanted !== 'Atribuído' && wanted !== 'Rejeitado' && wanted !== 'Desistente' && wanted !== 'Excluído') mag.status = wanted;
     else if (mag.status === 'Atribuído') mag.status = 'Lista de Espera';
     if (before === 'Rejeitado' && mag.status !== 'Rejeitado') { mag.rejectionReason = undefined; mag.rejectedAt = undefined; }
     if (mag.status !== before) changed.push(`status (${before} → ${mag.status})`);
@@ -2316,17 +2322,34 @@ async function startServer() {
     res.json({ success: true, magistrate: mag });
   });
 
-  app.delete('/api/magistrates/:id', (req, res) => {
-    const { id } = req.params;
-    const mag = magistrates.find((m) => m.id === id);
-    if (mag) {
-      log(mag.editionId, 'Administração', 'Magistrado', `Inscrição de ${mag.name} excluída.`);
-    }
-    const freedUnits = matches.filter((m) => m.magistrateId === id).map((m) => m.unitId);
-    magistrates = magistrates.filter((m) => m.id !== id);
-    matches = matches.filter((m) => m.magistrateId !== id);
-    freedUnits.forEach(refreshUnitStatus);
-    res.json({ success: true, id });
+  // Exclusão do magistrado: exige justificativa; é lógica (status "Excluído") e reversível. Vinculações são desfeitas.
+  const excludeMagistrate = (req: express.Request, res: express.Response) => {
+    const mag = magistrates.find((m) => m.id === req.params.id);
+    if (!mag) return res.status(404).json({ error: 'Magistrado não encontrado.' });
+    if (mag.status === 'Excluído') return res.status(409).json({ error: 'Este magistrado já está excluído.' });
+    const reason = freeText(req.body?.reason, 1000);
+    const sei = typeof req.body?.sei === 'string' ? cleanCell(req.body.sei).slice(0, 100) : '';
+    if (reason.length < 5) return res.status(400).json({ error: 'Informe o motivo da exclusão.' });
+    matches.filter((m) => m.magistrateId === mag.id).forEach((m) => undoMatch(m.id, 'Vinculação desfeita por exclusão do magistrado'));
+    mag.statusBeforeExclusion = mag.status === 'Atribuído' ? 'Lista de Espera' : mag.status;
+    mag.status = 'Excluído';
+    mag.exclusionReason = reason;
+    mag.exclusionSei = sei || undefined;
+    mag.excludedAt = new Date().toISOString();
+    mag.excludedBy = reqCtx.getStore()?.user;
+    log(mag.editionId, 'Administração', 'Magistrado', `Magistrado ${mag.name} EXCLUÍDO${sei ? ` (SEI ${sei})` : ''}. Motivo: ${reason}`);
+    res.json({ success: true, magistrate: mag });
+  };
+  app.post('/api/magistrates/:id/exclude', excludeMagistrate);
+  app.delete('/api/magistrates/:id', excludeMagistrate); // compatibilidade: a exclusão individual também exige motivo
+
+  app.post('/api/magistrates/:id/restore', (req, res) => {
+    const mag = magistrates.find((m) => m.id === req.params.id);
+    if (!mag || mag.status !== 'Excluído') return res.status(404).json({ error: 'Magistrado excluído não encontrado.' });
+    mag.status = mag.statusBeforeExclusion && mag.statusBeforeExclusion !== 'Excluído' ? mag.statusBeforeExclusion : 'Lista de Espera';
+    log(mag.editionId, 'Administração', 'Magistrado', `Exclusão de ${mag.name} desfeita (motivo registrado: ${mag.exclusionReason ?? '—'}). Status: ${mag.status}.`);
+    mag.exclusionReason = undefined; mag.exclusionSei = undefined; mag.excludedAt = undefined; mag.excludedBy = undefined; mag.statusBeforeExclusion = undefined;
+    res.json({ success: true, magistrate: mag });
   });
 
   // ---------- Units ----------
@@ -2488,6 +2511,9 @@ async function startServer() {
     if (mag.status === 'Rejeitado') {
       return res.status(400).json({ error: 'A inscrição deste magistrado foi rejeitada. Reconsidere-a antes de vincular.' });
     }
+    if (mag.status === 'Excluído') {
+      return res.status(400).json({ error: 'Este magistrado foi excluído do mutirão. Desfaça a exclusão antes de vincular.' });
+    }
     if (mag.status === 'Desistente') {
       return res.status(400).json({ error: 'Este magistrado desistiu da participação. Desfaça o registro de desistência antes de vincular.' });
     }
@@ -2616,7 +2642,7 @@ async function startServer() {
     const pass = (pick: (m: Magistrate) => string) => {
       for (const mag of eMags) {
         const area = pick(mag);
-        if (!area || mag.status === 'Aguardando Conferência' || mag.status === 'Rejeitado' || mag.status === 'Desistente' || assignedMagIds.has(mag.id)) continue;
+        if (!area || mag.status === 'Aguardando Conferência' || mag.status === 'Rejeitado' || mag.status === 'Desistente' || mag.status === 'Excluído' || assignedMagIds.has(mag.id)) continue;
         const target = eUnits.find((u) => linkedCount(u.id) < (u.slots || 1) && u.areas.includes(area));
         if (!target) continue;
         matches.push({
@@ -2647,7 +2673,7 @@ async function startServer() {
     const edition = resolveEdition(req);
     if (!edition) return res.json([]);
     const assigned = new Set(matches.filter((m) => m.editionId === edition.id).map((m) => m.magistrateId));
-    res.json(magistrates.filter((m) => m.editionId === edition.id && m.status !== 'Atribuído' && m.status !== 'Rejeitado' && m.status !== 'Desistente' && !assigned.has(m.id)));
+    res.json(magistrates.filter((m) => m.editionId === edition.id && m.status !== 'Atribuído' && m.status !== 'Rejeitado' && m.status !== 'Desistente' && m.status !== 'Excluído' && !assigned.has(m.id)));
   });
 
   // ---------- AI recommendations ----------
@@ -2661,7 +2687,7 @@ async function startServer() {
     try {
       const assigned = new Set(matches.filter((m) => m.editionId === edition.id).map((m) => m.magistrateId));
       const unassignedMags = magistrates.filter(
-        (m) => m.editionId === edition.id && m.status !== 'Atribuído' && m.status !== 'Rejeitado' && m.status !== 'Desistente' && !assigned.has(m.id),
+        (m) => m.editionId === edition.id && m.status !== 'Atribuído' && m.status !== 'Rejeitado' && m.status !== 'Desistente' && m.status !== 'Excluído' && !assigned.has(m.id),
       );
       const pendingUnits = units.filter((u) => u.editionId === edition.id && u.selection === 'Escolhida' && u.status !== 'Atendida');
 

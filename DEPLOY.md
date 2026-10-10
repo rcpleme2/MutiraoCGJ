@@ -157,6 +157,14 @@ Exemplo: `gcloud run services update mutirao-cgj --region southamerica-east1 --u
   *Desistência* pede o SEI e a data do pedido; se o magistrado fizer nova inscrição (comparação de nomes sem acento e sem diferença de
   caixa) e ela for deferida, a desistência fica registrada como válida apenas para o período. *Exportar relatório em PDF* traz as
   designações (total e por área) e os desistentes. Publicamente, só a *Consulta pelo nome completo* (em Consultar Status).
+- **Lista oficial de comarcas e unidades:** `src/catalogo-tjpr.ts` (163 comarcas e 710 unidades da planilha da
+  coordenação). Nos formulários escolhe-se a comarca e depois a unidade daquela comarca; "Outra" permite digitar e marca o
+  registro como "a padronizar". Para atualizar a lista, substitua o arquivo e publique.
+- **Padronizar nomes:** *Administração → Padronizar nomes* sugere a unidade oficial para os registros digitados ou
+  importados (aplicação individual ou em lote, com fusão de inscrições repetidas). A mesma tela padroniza nomes de
+  magistrados em MAIÚSCULAS e mostra possíveis duplicidades. Mesmo nome = mesma pessoa; nomes parecidos pedem confirmação.
+- **Exclusão de magistrado:** exige motivo (e, opcionalmente, o SEI). É reversível ("Excluídos", na aba Magistrados), e o
+  motivo não aparece na consulta pública.
 - **Backup:** *Administração → Backup* exporta todos os dados em um arquivo .json (contém dados pessoais: guarde com segurança, não
   inclui senha nem segredo do 2FA) e restaura a partir dele, substituindo os dados atuais (o registro de atividades é preservado).
 - **Inscrições:** os campos de escolha do magistrado (1ª e 2ª escolha e aceite de audiências) e as áreas da unidade começam

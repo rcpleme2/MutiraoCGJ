@@ -1,4 +1,4 @@
-export type MagistrateStatus = 'Aguardando Conferência' | 'Aprovado' | 'Lista de Espera' | 'Atribuído' | 'Rejeitado' | 'Desistente';
+export type MagistrateStatus = 'Aguardando Conferência' | 'Aprovado' | 'Lista de Espera' | 'Atribuído' | 'Rejeitado' | 'Desistente' | 'Excluído';
 
 export type SupportNeeded = 'Audiência' | 'Sentença' | 'Audiência e Sentença';
 export const SUPPORT_OPTIONS: SupportNeeded[] = ['Audiência', 'Sentença', 'Audiência e Sentença'];
@@ -48,6 +48,10 @@ export interface Magistrate {
   declaration?: boolean;
   rejectionReason?: string;
   rejectedAt?: string;
+  exclusionReason?: string;
+  exclusionSei?: string;
+  excludedAt?: string;
+  excludedBy?: string;
   createdAt: string;
   status: MagistrateStatus;
   /** Já desistiu antes (mesmo nome): indicação para análise do pedido de nova inscrição */

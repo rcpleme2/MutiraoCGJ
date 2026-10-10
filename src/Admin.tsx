@@ -505,6 +505,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
   const [areaFilter, setAreaFilter] = useState<string[]>([]);
   const [dropping, setDropping] = useState<PanelRow | null>(null);
   const [editingWd, setEditingWd] = useState<Withdrawal | null>(null);
+  const [excludingRow, setExcludingRow] = useState<PanelRow | null>(null);
   const [moving, setMoving] = useState<{ row: PanelRow; units: Unit[] } | null>(null);
   const [moveUnit, setMoveUnit] = useState('');
   const [moveNewName, setMoveNewName] = useState('');
@@ -624,6 +625,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
                   <td className="td text-xs text-muted">{r.editionTitle}</td>
                   <td className="td text-right whitespace-nowrap">
                     <button className="btn-secondary btn-sm mr-1" onClick={() => openMove(r)}>Alterar vara</button>
+                    <button className="btn-secondary btn-sm mr-1" onClick={() => setExcludingRow(r)}>Excluir</button>
                     <button className="btn-secondary btn-sm" onClick={() => { setDropping(r); setSei(''); setRequestDate(today()); }}>Desistência</button>
                     <button className="btn-danger" title="Desfazer vinculação" aria-label="Excluir" onClick={() => removeRow(r)}><Trash2 className="w-4 h-4" /></button>
                   </td>
@@ -748,6 +750,12 @@ function PanelAdmin({ run, confirm, onChanged }: {
         </Modal>
       )}
 
+      {excludingRow && (
+        <ExcludeModal name={excludingRow.name} onClose={() => setExcludingRow(null)} onSubmit={async (reason, sei) => {
+          if (await run(() => api(`/magistrates/${excludingRow.magistrateId}/exclude`, { method: 'POST', json: { reason, sei } }), 'Magistrado excluído.')) { setExcludingRow(null); await load(); onChanged(); }
+        }} />
+      )}
+
       {editingWd && (
         <Modal title="Editar desistência" onClose={() => setEditingWd(null)}>
           <form onSubmit={submitEditWd} className="space-y-4">
@@ -784,6 +792,30 @@ function PanelAdmin({ run, confirm, onChanged }: {
         </Modal>
       )}
     </div>
+  );
+}
+
+/* ---------- Exclusão de magistrado (com justificativa obrigatória) ---------- */
+function ExcludeModal({ name, onClose, onSubmit }: { name: string; onClose: () => void; onSubmit: (reason: string, sei: string) => Promise<void> }) {
+  const [reason, setReason] = useState('');
+  const [sei, setSei] = useState('');
+  const [busy, setBusy] = useState(false);
+  return (
+    <Modal title="Excluir magistrado" onClose={onClose}>
+      <form className="space-y-4" onSubmit={async e => { e.preventDefault(); setBusy(true); await onSubmit(reason.trim(), sei.trim()); setBusy(false); }}>
+        <p className="text-sm text-muted"><strong className="text-ink">{name}</strong> sairá das listas e do painel de vinculações (as vinculações são desfeitas). A exclusão fica registrada e pode ser desfeita. O motivo não aparece na consulta pública.</p>
+        <Field label="Motivo da exclusão (obrigatório)">
+          <textarea className="input" rows={3} required minLength={5} maxLength={1000} autoFocus value={reason} onChange={e => setReason(e.target.value)} />
+        </Field>
+        <Field label="Processo SEI (opcional)">
+          <input className="input" maxLength={100} value={sei} onChange={e => setSei(e.target.value)} placeholder="0000000-00.2026.8.16.6000" />
+        </Field>
+        <div className="flex justify-end gap-2">
+          <button type="button" className="btn-ghost" onClick={onClose}>Cancelar</button>
+          <button className="btn-primary !bg-danger" disabled={busy || reason.trim().length < 5}>Excluir</button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 
@@ -1210,6 +1242,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const [loginMode, setLoginMode] = useState<{ users: boolean; shared: boolean }>({ users: false, shared: true });
   const [me, setMe] = useState<{ name: string; role: 'admin' | 'gestor' | 'consulta'; shared: boolean; users: boolean } | null>(null);
   const [myPw, setMyPw] = useState<null | { current: string; next: string }>(null);
+  const [excluding, setExcluding] = useState<Magistrate | null>(null);
   const [backupWarn, setBackupWarn] = useState('');
   useEffect(() => {
     if (me?.role !== 'admin') return;
@@ -1382,6 +1415,14 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   }
 
   /* ---------- Ações ---------- */
+  const excludeMag = async (reason: string, sei: string) => {
+    if (!excluding) return;
+    if (await run(() => api(`/magistrates/${excluding.id}/exclude`, { method: 'POST', json: { reason, sei } }), 'Magistrado excluído.')) { setExcluding(null); refresh(); }
+  };
+  const restoreMag = async (m: Magistrate) => {
+    if (!(await confirm(`Desfazer a exclusão de ${m.name}? A inscrição volta ao status anterior (vinculações desfeitas não são restauradas).`, 'Desfazer exclusão'))) return;
+    await run(() => api(`/magistrates/${m.id}/restore`, { method: 'POST' }), 'Exclusão desfeita.'); refresh();
+  };
   const del = async (kind: 'magistrates' | 'units' | 'matches', id: string, what: string) => {
     if (!(await confirm(`Excluir ${what}? Esta ação ficará registrada.`, 'Excluir'))) return;
     await run(() => api(`/${kind}/${id}`, { method: 'DELETE' }), 'Registro excluído.');
@@ -1501,7 +1542,8 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
     refresh();
   };
 
-  const sortedMagistrates = [...magistrates].sort(byDate<Magistrate>(sortDir.magistrates));
+  const sortedMagistrates = magistrates.filter(m => m.status !== 'Excluído').sort(byDate<Magistrate>(sortDir.magistrates));
+  const excludedMags = magistrates.filter(m => m.status === 'Excluído').sort((a, b) => (b.excludedAt ?? '').localeCompare(a.excludedAt ?? ''));
   const sortedUnits = [...units].sort((a, b) => {
     if (unitSort.key === 'date') return byDate<Unit>(unitSort.dir)(a, b);
     const cmp = unitSort.key === 'name'
@@ -1713,12 +1755,29 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
                   {(m.status === 'Aguardando Conferência' || m.status === 'Rejeitado') && <button className="btn-secondary btn-sm" onClick={() => approve(m.id)}><Check className="w-3.5 h-3.5" /> {m.status === 'Rejeitado' ? 'Reconsiderar' : 'Aprovar'}</button>}
                   {m.status !== 'Rejeitado' && <button className="btn-secondary btn-sm !text-danger" onClick={() => { setRejecting({ kind: 'magistrates', id: m.id, name: m.name, linked: m.status === 'Atribuído' }); setRejectReason(''); setModal('reject'); }}><X className="w-3.5 h-3.5" /> Rejeitar</button>}
                   <button className="btn-ghost btn-sm" title="Editar" onClick={() => { setEditingMag(m); setModal('mag-edit'); }}><Pencil className="w-4 h-4" /></button>
-                  <button className="btn-danger" title="Excluir" onClick={() => del('magistrates', m.id, `a inscrição de ${m.name}`)}><Trash2 className="w-4 h-4" /></button>
+                  <button className="btn-danger" title="Excluir (com justificativa)" onClick={() => setExcluding(m)}><Trash2 className="w-4 h-4" /></button>
                  </div>
                 </td>
               </tr>
             ))}
           </Table>
+          {excludedMags.length > 0 && (
+            <div className="mt-8 space-y-2">
+              <h4 className="font-semibold text-navy">Excluídos <span className="text-muted font-normal">({excludedMags.length})</span></h4>
+              <Table head={['Magistrado(a)', 'Motivo', 'SEI', 'Exclusão', '']}>
+                {excludedMags.map(m => (
+                  <tr key={m.id}>
+                    <td className="td"><div className="font-medium">{m.name}</div>{viewAll && <div className="text-[11px] text-bronze">{m.editionTitle}</div>}</td>
+                    <td className="td text-sm whitespace-pre-wrap">{m.exclusionReason}</td>
+                    <td className="td font-mono text-xs">{m.exclusionSei || '—'}</td>
+                    <td className="td text-xs text-muted whitespace-nowrap">{m.excludedAt ? formatDateTime(m.excludedAt) : '—'}{m.excludedBy && <div>{m.excludedBy}</div>}</td>
+                    <td className="td text-right"><button className="btn-secondary btn-sm" onClick={() => restoreMag(m)}><RotateCcw className="w-3.5 h-3.5" /> Desfazer</button></td>
+                  </tr>
+                ))}
+              </Table>
+            </div>
+          )}
+          {excluding && <ExcludeModal name={excluding.name} onClose={() => setExcluding(null)} onSubmit={excludeMag} />}
         </div>
       )}
 
