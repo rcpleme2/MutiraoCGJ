@@ -41,6 +41,8 @@ interface Magistrate {
   id: string;
   editionId: string;
   name: string;
+  /** Nome como foi digitado, quando difere da grafia padrão (MAIÚSCULAS, sem tratamento) */
+  nameAsTyped?: string;
   email: string;
   currentLocation: string;
   /** Lotação escolhida no catálogo oficial (ausente = digitada em "Outra" ou registro antigo) */
@@ -468,9 +470,10 @@ function resolveCatalogPlace(
 }
 
 /** `strict` (inscrição pública): o aceite de audiências é obrigatório e precisa vir preenchido. A 2ª escolha é opcional. */
-function parseMagistrate(b: any, base?: Magistrate, strict = false, lenient = false): Parsed<Pick<Magistrate, 'name' | 'email' | 'currentLocation' | 'locationCatalogId' | 'locationComarca' | 'firstPreference' | 'secondPreference' | 'acceptsHearings'>> {
+function parseMagistrate(b: any, base?: Magistrate, strict = false, lenient = false): Parsed<Pick<Magistrate, 'name' | 'nameAsTyped' | 'email' | 'currentLocation' | 'locationCatalogId' | 'locationComarca' | 'firstPreference' | 'secondPreference' | 'acceptsHearings'>> {
   const pick = (k: keyof Magistrate) => (b?.[k] == null && base ? base[k] : b?.[k]);
-  const name = cleanText(pick('name'), 200);
+  const rawName = cleanText(pick('name'), 200);
+  const name = rawName ? canonicalPersonName(rawName) : null;
   const email = cleanText(pick('email'), 200) ?? '';
   // Lotação: unidade do catálogo oficial (o texto vem dele) ou comarca da lista + nome digitado em "Outra"
   const loc = resolveCatalogPlace(b, base ? { catalogId: base.locationCatalogId, comarca: base.locationComarca, name: base.currentLocation } : undefined,
@@ -492,7 +495,7 @@ function parseMagistrate(b: any, base?: Magistrate, strict = false, lenient = fa
   if (second && second === first) return { error: 'A 2ª escolha não pode ser igual à 1ª escolha.' };
   const hearings = pick('acceptsHearings');
   if (strict && typeof hearings !== 'boolean') return { error: 'Informe se aceita realizar audiências.' };
-  return { value: { name, email, currentLocation, locationCatalogId: loc.value.catalogId, locationComarca: loc.value.comarca || undefined, firstPreference: first, secondPreference: second, acceptsHearings: hearings === true } };
+  return { value: { name, ...(b?.name != null && rawName && rawName !== name ? { nameAsTyped: rawName } : {}), email, currentLocation, locationCatalogId: loc.value.catalogId, locationComarca: loc.value.comarca || undefined, firstPreference: first, secondPreference: second, acceptsHearings: hearings === true } };
 }
 
 function parseUnit(b: any, base?: Unit, lenient = false): Parsed<Pick<Unit, 'unitName' | 'judgeName' | 'email' | 'comarca' | 'separator' | 'catalogId' | 'areas' | 'supportNeeded' | 'description' | 'slots'>> {
@@ -797,6 +800,13 @@ function ensureInitialEdition(): Edition {
 
 /** Chave de comparação de nomes de pessoas: sem acentos, sem diferença de caixa/pontuação e sem tratamentos (Dr., Dra., Juiz...). */
 const PERSON_TITLES = new Set(['dr', 'dra', 'juiz', 'juiza', 'des', 'desa', 'desembargador', 'desembargadora', 'exmo', 'exma', 'sr', 'sra']);
+/** Grafia padrão do nome do magistrado: sem tratamento inicial (Dr., Dra., Juiz...), espaços simples e em MAIÚSCULAS. */
+function canonicalPersonName(t: string): string {
+  const words = t.replace(/\s+/g, ' ').trim().split(' ');
+  const bare = (w: string) => w.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z]/g, '');
+  while (words.length > 1 && PERSON_TITLES.has(bare(words[0]))) words.shift();
+  return words.join(' ').toLocaleUpperCase('pt-BR');
+}
 const personKey = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z\s]/g, ' ')
   .split(/\s+/).filter((w) => w && !PERSON_TITLES.has(w)).join(' ');
 
@@ -849,7 +859,7 @@ function createInitialLink(r: { name: string; area: string; unit: string }) {
   const now = new Date().toISOString();
   const unit = ensureInitialUnit(r.unit, r.area);
   const mag: Magistrate = {
-    id: newId('mag'), editionId: ed.id, name: r.name, email: '', currentLocation: '', firstPreference: r.area, secondPreference: '',
+    id: newId('mag'), editionId: ed.id, name: canonicalPersonName(r.name), email: '', currentLocation: '', firstPreference: r.area, secondPreference: '',
     acceptsHearings: false, createdAt: now, status: 'Atribuído',
   };
   magistrates.push(mag);
@@ -1323,6 +1333,23 @@ async function startServer() {
    * Unidades que ficarem repetidas na mesma edição são fundidas (vinculações, vagas, áreas e justificativas passam para uma só).
    * `note` (opcional) vira observação das designações dessas unidades.
    */
+  /** Nomes de magistrados (e cópias em desistências e alterações) fora da grafia padrão em MAIÚSCULAS. */
+  const namesToFix = () => [
+    ...magistrates.filter((m) => m.name !== canonicalPersonName(m.name)).map((m) => ({ kind: 'magistrado', from: m.name, to: canonicalPersonName(m.name), apply: () => { if (!m.nameAsTyped) m.nameAsTyped = m.name; m.name = canonicalPersonName(m.name); } })),
+    ...withdrawals.filter((w) => w.name !== canonicalPersonName(w.name)).map((w) => ({ kind: 'desistência', from: w.name, to: canonicalPersonName(w.name), apply: () => { w.name = canonicalPersonName(w.name); } })),
+    ...transfers.filter((t) => t.name !== canonicalPersonName(t.name)).map((t) => ({ kind: 'alteração', from: t.name, to: canonicalPersonName(t.name), apply: () => { t.name = canonicalPersonName(t.name); } })),
+  ];
+  app.get('/api/standardize/names', (_req, res) => {
+    const list = namesToFix();
+    res.json({ count: list.length, sample: list.slice(0, 15).map(({ kind, from, to }) => ({ kind, from, to })) });
+  });
+  app.post('/api/standardize/names', (_req, res) => {
+    const list = namesToFix();
+    list.forEach((x) => x.apply());
+    if (list.length) log(null, 'Administração', 'Magistrado', `Nomes de magistrados padronizados em MAIÚSCULAS: ${list.length} registro(s).`);
+    res.json({ success: true, count: list.length });
+  });
+
   app.post('/api/standardize/apply', (req, res) => {
     const items: { kind?: unknown; ids?: unknown; catalogId?: unknown; note?: unknown }[] = Array.isArray(req.body?.items) ? req.body.items : [req.body];
     if (items.length === 0 || items.length > 2000) return res.status(400).json({ error: 'Nada a aplicar.' });
@@ -1820,7 +1847,7 @@ async function startServer() {
       secondPreference: '2ª preferência', acceptsHearings: 'aceita audiências',
     };
     const changed = (Object.keys(next) as (keyof typeof next)[])
-      .filter((k) => next[k] !== mag[k])
+      .filter((k) => labels[k] && next[k] !== mag[k])
       .map((k) => labels[k]);
     Object.assign(mag, next);
 

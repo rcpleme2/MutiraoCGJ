@@ -848,7 +848,16 @@ function StdRow({ g, kind, onApply }: { g: StdGroup; kind: 'unit' | 'location'; 
 
 function StandardizeAdmin({ run, confirm, onChanged }: { run: RunFn; confirm: (m: string, label?: string) => Promise<boolean>; onChanged: () => void }) {
   const [data, setData] = useState<{ units: StdGroup[]; locations: StdGroup[] } | null>(null);
-  const load = useCallback(async () => { const r = await run(() => api<{ units: StdGroup[]; locations: StdGroup[] }>('/standardize')); if (r) setData(r); }, [run]);
+  const [names, setNames] = useState<{ count: number; sample: { kind: string; from: string; to: string }[] } | null>(null);
+  const load = useCallback(async () => {
+    const r = await run(() => Promise.all([api<{ units: StdGroup[]; locations: StdGroup[] }>('/standardize'), api<{ count: number; sample: { kind: string; from: string; to: string }[] }>('/standardize/names')]));
+    if (r) { setData(r[0]); setNames(r[1]); }
+  }, [run]);
+  const fixNames = async () => {
+    if (!names || !(await confirm(`Padronizar ${names.count} nome(s) em MAIÚSCULAS, sem tratamentos como "Dr." ou "Dra."? O nome original de cada magistrado fica guardado.`, 'Padronizar nomes'))) return;
+    const r = await run(() => api('/standardize/names', { method: 'POST' }), 'Nomes padronizados.');
+    if (r) { await load(); onChanged(); }
+  };
   useEffect(() => { load(); }, []);
   const apply = async (kind: 'unit' | 'location', g: StdGroup, catalogId: string, note: string) => {
     const r = await run(() => api('/standardize/apply', { method: 'POST', json: { kind, ids: g.ids, catalogId, note } }), 'Nome padronizado.');
@@ -879,6 +888,18 @@ function StandardizeAdmin({ run, confirm, onChanged }: { run: RunFn; confirm: (m
         Registros com unidade ou lotação fora da lista oficial do TJPR (digitados em "Outra", importados de planilha ou anteriores à lista).
         Ao aplicar, o nome oficial substitui o digitado e inscrições repetidas da mesma unidade numa edição são fundidas. Faça um backup antes de aplicações em lote.
       </p>
+      <div className="card p-5 flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h4 className="font-semibold text-navy">Nomes de magistrados em MAIÚSCULAS</h4>
+          {names && names.count > 0 ? (
+            <>
+              <p className="text-sm text-muted mt-1">{names.count} registro(s) fora da grafia padrão. Exemplos:</p>
+              <ul className="text-xs mt-2 space-y-0.5">{names.sample.slice(0, 6).map((n, i) => <li key={i}><span className="text-muted">{n.from}</span> → <strong className="text-ink">{n.to}</strong></li>)}</ul>
+            </>
+          ) : <p className="text-sm text-muted mt-1">Todos os nomes já estão padronizados. Novas inscrições já entram em MAIÚSCULAS.</p>}
+        </div>
+        {names && names.count > 0 && <button className="btn-primary btn-sm" onClick={fixNames}><Check className="w-4 h-4" /> Padronizar {names.count} nome(s)</button>}
+      </div>
       {section('Unidades', 'unit', data.units, 'Todas as unidades estão padronizadas.')}
       {section('Lotações de magistrados', 'location', data.locations, 'Todas as lotações estão padronizadas.')}
     </div>

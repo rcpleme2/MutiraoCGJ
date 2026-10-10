@@ -36,6 +36,7 @@ export interface Magistrate {
   id: string;
   editionId: string;
   name: string;
+  nameAsTyped?: string;
   email: string;
   currentLocation: string;
   locationCatalogId?: string;
