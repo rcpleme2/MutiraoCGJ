@@ -6,6 +6,7 @@ import XLSX from 'xlsx';
 import crypto from 'crypto';
 import fs from 'fs';
 import { Firestore } from '@google-cloud/firestore';
+import { Storage } from '@google-cloud/storage';
 import QRCode from 'qrcode';
 import PDFDocument from 'pdfkit';
 import { AsyncLocalStorage } from 'async_hooks';
@@ -375,6 +376,8 @@ interface Transfer { id: string; editionId: string; magistrateId: string; name: 
 let transfers: Transfer[] = [];
 /** Pares de nomes parecidos que a administração indicou NÃO serem a mesma pessoa (chave "nomeA|nomeB") */
 let dupDismissed: string[] = [];
+/** Resultado do último backup automático (exibido na aba Backup e no painel) */
+let lastAutoBackup: { at: string; ok: boolean; name?: string; size?: number; error?: string } | null = null;
 
 /** Autenticação em dois fatores (TOTP) do administrador; o segredo é gravado junto do estado. */
 let adminTotpSecret: string | null = null;
@@ -673,7 +676,7 @@ const lastSaved = new Map<string, Map<string, string>>();
 let persistedLogIds = new Set<string>();
 let lastMeta = '';
 
-const metaJson = () => JSON.stringify({ activeEditionId, adminTotpSecret, dupDismissed });
+const metaJson = () => JSON.stringify({ activeEditionId, adminTotpSecret, dupDismissed, lastAutoBackup });
 
 const collectionsNow = (): Record<string, { id: string }[]> => ({
   editions, magistrates, units, matches, log: activityLog, faq, panel: panelEntries, withdrawals, transfers, admins,
@@ -692,6 +695,7 @@ async function loadState() {
       faq = raw.faq ?? faq;
       adminTotpSecret = raw.adminTotpSecret ?? null;
       dupDismissed = Array.isArray(raw.dupDismissed) ? raw.dupDismissed : [];
+      lastAutoBackup = raw.lastAutoBackup ?? null;
       panelEntries = raw.panel ?? [];
       withdrawals = raw.withdrawals ?? [];
       transfers = raw.transfers ?? [];
@@ -729,6 +733,7 @@ async function loadState() {
   activeEditionId = meta?.activeEditionId ?? editions[0].id;
   adminTotpSecret = meta?.adminTotpSecret ?? null;
   dupDismissed = Array.isArray(meta?.dupDismissed) ? meta.dupDismissed : [];
+  lastAutoBackup = meta?.lastAutoBackup ?? null;
   panelEntries = loaded.panel as PanelEntry[];
   withdrawals = loaded.withdrawals as Withdrawal[];
   transfers = loaded.transfers as Transfer[];
@@ -741,7 +746,7 @@ async function persist() {
     fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
     fs.writeFileSync(
       DATA_FILE,
-      JSON.stringify({ editions, activeEditionId, magistrates, units, matches, activityLog, faq, adminTotpSecret, panel: panelEntries, withdrawals, transfers, dupDismissed, admins }),
+      JSON.stringify({ editions, activeEditionId, magistrates, units, matches, activityLog, faq, adminTotpSecret, panel: panelEntries, withdrawals, transfers, dupDismissed, admins, lastAutoBackup }),
     );
     return;
   }
@@ -1016,6 +1021,11 @@ async function startServer() {
       return next();
     }
     if (publicRead || login) return next();
+    // Chamada do Cloud Scheduler: autenticada pelo token próprio, conferido na rota
+    if (req.method === 'POST' && req.path === '/backup/auto') {
+      if (rateLimited(`autobackup:${ip}`, 10, 60 * 60_000)) return res.status(429).json({ error: 'Muitas chamadas.' });
+      return next();
+    }
     if (session) {
       // Perfis: Consulta só lê; Gestor opera o mutirão; Administrador também gere usuários, backup e exclusões em lote
       const adminOnly = /^\/(admin\/users|backup)/.test(req.path) || /\/delete-all$/.test(req.path);
@@ -1934,10 +1944,85 @@ async function startServer() {
     log(null, 'Administração', 'Exportação', 'Backup completo dos dados exportado.');
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename=backup-mutirao-${stamp}.json`);
-    res.send(JSON.stringify({
-      app: BACKUP_APP, version: 1, exportedAt: new Date().toISOString(), activeEditionId,
-      editions, magistrates, units, matches, faq, withdrawals, transfers, log: activityLog,
-    }));
+    res.send(backupJson());
+  });
+
+  /** Conteúdo do backup (sem usuários, senhas nem segredos do 2FA). */
+  const backupJson = () => JSON.stringify({
+    app: BACKUP_APP, version: 1, exportedAt: new Date().toISOString(), activeEditionId,
+    editions, magistrates, units, matches, faq, withdrawals, transfers, log: activityLog,
+  });
+
+  // ---------- Backup automático diário ----------
+  // O Cloud Scheduler chama POST /api/backup/auto 1x/dia com o cabeçalho x-backup-token (= BACKUP_CRON_TOKEN).
+  // A cópia vai para o bucket BACKUP_BUCKET (Cloud Storage). Para testes locais, BACKUP_DIR grava numa pasta.
+  const BACKUP_BUCKET = process.env.BACKUP_BUCKET || '';
+  const BACKUP_DIR = process.env.BACKUP_DIR || '';
+  const CRON_TOKEN = process.env.BACKUP_CRON_TOKEN || '';
+  const gcs = BACKUP_BUCKET ? new Storage().bucket(BACKUP_BUCKET) : null;
+  const autoConfigured = () => !!CRON_TOKEN && !!(gcs || BACKUP_DIR);
+  const backupStore = {
+    async save(name: string, body: string) {
+      if (gcs) return void (await gcs.file(name).save(body, { contentType: 'application/json; charset=utf-8', resumable: false }));
+      fs.mkdirSync(path.join(BACKUP_DIR, 'backups'), { recursive: true }); fs.writeFileSync(path.join(BACKUP_DIR, name), body);
+    },
+    async list(): Promise<{ name: string; size: number; updated: string }[]> {
+      if (gcs) {
+        const [files] = await gcs.getFiles({ prefix: 'backups/' });
+        return files.map((f) => ({ name: f.name, size: Number(f.metadata.size ?? 0), updated: String(f.metadata.updated ?? '') }));
+      }
+      const dir = path.join(BACKUP_DIR, 'backups');
+      if (!fs.existsSync(dir)) return [];
+      return fs.readdirSync(dir).map((n) => { const st = fs.statSync(path.join(dir, n)); return { name: `backups/${n}`, size: st.size, updated: st.mtime.toISOString() }; });
+    },
+    async read(name: string): Promise<string> {
+      if (gcs) return (await gcs.file(name).download())[0].toString('utf-8');
+      return fs.readFileSync(path.join(BACKUP_DIR, name), 'utf-8');
+    },
+  };
+  const validBackupName = (n: unknown): n is string => typeof n === 'string' && /^backups\/backup-[0-9_-]+\.json$/.test(n);
+
+  app.post('/api/backup/auto', async (req, res) => {
+    const given = Buffer.from(String(req.header('x-backup-token') ?? ''));
+    const expected = Buffer.from(CRON_TOKEN);
+    if (!CRON_TOKEN || given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) {
+      return res.status(401).json({ error: 'Não autorizado.' });
+    }
+    if (!autoConfigured()) return res.status(503).json({ error: 'Backup automático não configurado (BACKUP_BUCKET).' });
+    const stamp = new Date().toLocaleString('sv-SE', { timeZone: 'America/Sao_Paulo' }).replace(' ', '_').replace(/:/g, '-').slice(0, 16);
+    const name = `backups/backup-${stamp}.json`;
+    try {
+      const body = backupJson();
+      await backupStore.save(name, body);
+      lastAutoBackup = { at: new Date().toISOString(), ok: true, name, size: Buffer.byteLength(body) };
+      log(null, 'Sistema', 'Exportação', `Backup automático gravado (${name}, ${Math.round(Buffer.byteLength(body) / 1024)} KB).`);
+      res.json({ success: true, name });
+    } catch (err: any) {
+      lastAutoBackup = { at: new Date().toISOString(), ok: false, error: String(err?.message ?? err).slice(0, 300) };
+      log(null, 'Sistema', 'Exportação', `FALHA no backup automático: ${lastAutoBackup.error}`);
+      res.locals.persist = true;
+      res.status(500).json({ error: 'Falha ao gravar o backup.' });
+    }
+  });
+
+  app.get('/api/backup/auto/status', (_req, res) => res.json({ configured: autoConfigured(), destination: BACKUP_BUCKET ? `gs://${BACKUP_BUCKET}` : BACKUP_DIR || null, last: lastAutoBackup }));
+  app.get('/api/backup/auto/list', async (_req, res) => {
+    if (!autoConfigured()) return res.json([]);
+    try {
+      const list = (await backupStore.list()).filter((f) => validBackupName(f.name)).sort((a, b) => b.name.localeCompare(a.name)).slice(0, 90);
+      res.json(list);
+    } catch (err: any) { res.status(502).json({ error: `Não foi possível listar os backups: ${String(err?.message ?? err).slice(0, 200)}` }); }
+  });
+  app.get('/api/backup/auto/file', async (req, res) => {
+    const name = req.query.name;
+    if (!validBackupName(name)) return res.status(400).json({ error: 'Arquivo inválido.' });
+    try {
+      const body = await backupStore.read(name);
+      log(null, 'Administração', 'Exportação', `Backup automático baixado (${name}).`);
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename=${name.slice('backups/'.length)}`);
+      res.send(body);
+    } catch { res.status(404).json({ error: 'Backup não encontrado.' }); }
   });
 
   // Restaura um backup: SUBSTITUI edições, magistrados, unidades, vinculações, desistências e perguntas frequentes pelos do arquivo.

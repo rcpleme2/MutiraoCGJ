@@ -99,6 +99,22 @@ após publicar.
 Perdeu o celular? Defina `RESET_ADMIN_2FA=true` (`gcloud run services update ... --update-env-vars=RESET_ADMIN_2FA=true`),
 entre novamente (será pedido novo cadastro) e **remova a variável** em seguida.
 
+### Usuários individuais (recomendado)
+
+Depois do primeiro acesso, vá em *Administração → Usuários* e cadastre cada gestor com nome, e-mail, perfil e senha inicial.
+Cada pessoa cadastra o próprio autenticador no primeiro acesso, e o Registro passa a mostrar quem fez cada ação.
+
+| Perfil | Pode |
+|---|---|
+| Administrador | tudo, inclusive usuários, backup/restauração e exclusões em lote |
+| Gestor | operação do mutirão |
+| Consulta | somente leitura e exportações |
+
+**Cadastre-se primeiro como Administrador.** A partir do primeiro Administrador ativo, a senha compartilhada (`ADMIN_PASSWORD`)
+deixa de funcionar. Para usá-la numa emergência (ex.: todos os administradores sem acesso), defina
+`ALLOW_SHARED_PASSWORD=true`, entre, corrija os usuários e **remova a variável**. Autenticador perdido de um usuário:
+*Usuários → Redefinir 2FA*.
+
 ## 6. Conferir que o Firestore não está aberto ao público
 
 As *regras de segurança* do Firestore não afetam este sistema (ele acessa o banco com a conta de serviço), mas um banco em
@@ -127,6 +143,9 @@ curl -s "https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(d
 | `SIGNUP_MAX_GLOBAL_PER_HOUR` | Inscrições concluídas por hora, no total | `600` |
 | `RESET_ADMIN_2FA` | `true` redefine o autenticador (remova depois) | — |
 | `SEED_DEMO` | `true` carrega dados fictícios na primeira execução | — |
+| `ALLOW_SHARED_PASSWORD` | `true` reativa a senha compartilhada mesmo com usuários cadastrados (emergência; remova depois) | — |
+| `BACKUP_BUCKET` | Bucket do Cloud Storage para o backup automático diário | — |
+| `BACKUP_CRON_TOKEN` | Token que o Cloud Scheduler envia para disparar o backup (use Secret Manager) | — |
 
 Exemplo: `gcloud run services update mutirao-cgj --region southamerica-east1 --update-env-vars=SIGNUP_MAX_PER_IP=100`.
 
@@ -149,6 +168,36 @@ Exemplo: `gcloud run services update mutirao-cgj --region southamerica-east1 --u
 - **Registro de atividades:** nunca é apagado do Firestore (a tela mostra as 5.000 mais recentes). Ações administrativas,
   acessos e falhas de autenticação também vão ao *Cloud Logging* (`gcloud logging read 'jsonPayload.audit.category="Acesso"'`).
 - **Cache:** respostas da API não são armazenadas pelo navegador.
+
+## Backup automático diário (gratuito)
+
+Uma cópia por dia vai para um bucket do Cloud Storage, guardada por 60 dias. O bucket fica numa região dos EUA, que tem cota
+gratuita de 5 GB. O Cloud Scheduler permite 3 tarefas grátis por conta. Os comandos abaixo são executados **uma vez** no
+Cloud Shell, com `PROJECT_ID` e `SA` definidos como na seção 2.
+
+```bash
+BUCKET="${PROJECT_ID}-mutirao-backups"
+gcloud storage buckets create gs://$BUCKET --location=us-central1 --uniform-bucket-level-access
+echo '{"rule":[{"action":{"type":"Delete"},"condition":{"age":60}}]}' > /tmp/lifecycle.json
+gcloud storage buckets update gs://$BUCKET --lifecycle-file=/tmp/lifecycle.json
+gcloud storage buckets add-iam-policy-binding gs://$BUCKET --member="serviceAccount:$SA" --role="roles/storage.objectAdmin"
+
+TOKEN=$(openssl rand -hex 32)
+printf "%s" "$TOKEN" | gcloud secrets create BACKUP_CRON_TOKEN --data-file=-
+gcloud secrets add-iam-policy-binding BACKUP_CRON_TOKEN --member="serviceAccount:$SA" --role="roles/secretmanager.secretAccessor"
+gcloud run services update mutirao-cgj --region southamerica-east1 \
+  --update-env-vars=BACKUP_BUCKET=$BUCKET --update-secrets=BACKUP_CRON_TOKEN=BACKUP_CRON_TOKEN:latest
+
+URL=$(gcloud run services describe mutirao-cgj --region southamerica-east1 --format='value(status.url)')
+gcloud services enable cloudscheduler.googleapis.com
+gcloud scheduler jobs create http mutirao-backup-diario --location=southamerica-east1 \
+  --schedule="0 3 * * *" --time-zone="America/Sao_Paulo" \
+  --uri="$URL/api/backup/auto" --http-method=POST --headers="x-backup-token=$TOKEN"
+gcloud scheduler jobs run mutirao-backup-diario --location=southamerica-east1   # teste imediato
+```
+
+Depois do teste, confira a cópia em *Administração → Backup → Backup automático diário*. Por ali também se baixa ou
+restaura qualquer cópia. Se o backup falhar ou atrasar mais de 36 horas, o painel mostra um aviso.
 
 ## Rodar localmente
 ```bash
