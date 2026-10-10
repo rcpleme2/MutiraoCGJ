@@ -9,6 +9,7 @@ import { Firestore } from '@google-cloud/firestore';
 import QRCode from 'qrcode';
 import PDFDocument from 'pdfkit';
 import { AsyncLocalStorage } from 'async_hooks';
+import { catalogById, canonicalComarca, fullUnitName, CATALOG_SEPARATOR } from './src/catalogo-tjpr';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -41,6 +42,10 @@ interface Magistrate {
   name: string;
   email: string;
   currentLocation: string;
+  /** Lotação escolhida no catálogo oficial (ausente = digitada em "Outra" ou registro antigo) */
+  locationCatalogId?: string;
+  /** Comarca da lotação (sempre da lista oficial quando informada) */
+  locationComarca?: string;
   firstPreference: string;
   secondPreference: string;
   acceptsHearings: boolean;
@@ -68,6 +73,8 @@ interface Unit {
   comarca: string;
   /** Liga o nome da unidade à comarca na exibição (ex.: "de", "da", "do") */
   separator: string;
+  /** Unidade do catálogo oficial (ausente = nome digitado em "Outra" ou registro antigo: "a padronizar") */
+  catalogId?: string;
   areas: string[];
   supportNeeded: 'Audiência' | 'Sentença' | 'Audiência e Sentença';
   description: string;
@@ -428,12 +435,45 @@ const freeText = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().
 
 type Parsed<T> = { error: string } | { value: T };
 
+/**
+ * Local (unidade ou lotação) informado num formulário: se vier o id do catálogo oficial, nome, comarca e separador
+ * saem do catálogo; senão ("Outra"), a comarca precisa ser da lista e o nome digitado é gravado em MAIÚSCULAS.
+ * `lenient` (edição "Vinculações iniciais"): aceita comarca fora da lista ou em branco.
+ */
+function resolveCatalogPlace(
+  b: any,
+  base: { catalogId?: string; comarca?: string; name: string; separator?: string } | undefined,
+  keys: { catalogKey: string; comarcaKey: string; nameKey: string; separatorKey?: string },
+  lenient: boolean,
+): { error: string } | { value: { catalogId?: string; comarca: string; name: string; separator: string } } {
+  const has = (k: string) => b && b[k] != null;
+  // Campos ausentes no corpo (edição parcial) mantêm o que já estava gravado
+  if (base && !has(keys.catalogKey) && !has(keys.comarcaKey) && !has(keys.nameKey)) {
+    return { value: { catalogId: base.catalogId, comarca: base.comarca ?? '', name: base.name, separator: base.separator || CATALOG_SEPARATOR } };
+  }
+  const cat = catalogById(has(keys.catalogKey) ? b[keys.catalogKey] : undefined);
+  if (cat) return { value: { catalogId: cat.id, comarca: cat.comarca, name: cat.unitName, separator: cat.separator } };
+  const rawComarca = has(keys.comarcaKey) ? b[keys.comarcaKey] : base?.comarca;
+  const rawName = has(keys.nameKey) ? b[keys.nameKey] : base?.name;
+  const comarcaText = cleanText(rawComarca, 150) ?? '';
+  const comarca = canonicalComarca(comarcaText) ?? (lenient ? comarcaText : '');
+  if (!lenient && !comarca) return { error: 'Escolha a comarca na lista.' };
+  const name = (cleanText(rawName, 300) ?? '').toLocaleUpperCase('pt-BR');
+  if (!lenient && !name) return { error: 'Escolha a unidade na lista ou, em "Outra", digite o nome da unidade.' };
+  const sepRaw = keys.separatorKey && has(keys.separatorKey) ? cleanText(b[keys.separatorKey], 20) : base?.separator;
+  return { value: { catalogId: undefined, comarca, name, separator: (sepRaw || CATALOG_SEPARATOR).toLocaleUpperCase('pt-BR') } };
+}
+
 /** `strict` (inscrição pública): o aceite de audiências é obrigatório e precisa vir preenchido. A 2ª escolha é opcional. */
-function parseMagistrate(b: any, base?: Magistrate, strict = false, lenient = false): Parsed<Pick<Magistrate, 'name' | 'email' | 'currentLocation' | 'firstPreference' | 'secondPreference' | 'acceptsHearings'>> {
+function parseMagistrate(b: any, base?: Magistrate, strict = false, lenient = false): Parsed<Pick<Magistrate, 'name' | 'email' | 'currentLocation' | 'locationCatalogId' | 'locationComarca' | 'firstPreference' | 'secondPreference' | 'acceptsHearings'>> {
   const pick = (k: keyof Magistrate) => (b?.[k] == null && base ? base[k] : b?.[k]);
   const name = cleanText(pick('name'), 200);
   const email = cleanText(pick('email'), 200) ?? '';
-  const currentLocation = cleanText(pick('currentLocation'), 300) ?? '';
+  // Lotação: unidade do catálogo oficial (o texto vem dele) ou comarca da lista + nome digitado em "Outra"
+  const loc = resolveCatalogPlace(b, base ? { catalogId: base.locationCatalogId, comarca: base.locationComarca, name: base.currentLocation } : undefined,
+    { catalogKey: 'locationCatalogId', comarcaKey: 'locationComarca', nameKey: 'currentLocation' }, lenient);
+  if ('error' in loc) return loc;
+  const currentLocation = loc.value.catalogId || loc.value.comarca ? fullUnitName({ unitName: loc.value.name, comarca: loc.value.comarca, separator: loc.value.separator }) : loc.value.name;
   // Edição "Vinculações iniciais": só o nome é obrigatório; e-mail, lotação e áreas podem ficar em branco ou em texto livre
   if (!name || (!lenient && (!email || !currentLocation))) {
     return { error: 'Preencha nome, e-mail e lotação com texto válido (nome até 200, lotação até 300 caracteres).' };
@@ -449,16 +489,19 @@ function parseMagistrate(b: any, base?: Magistrate, strict = false, lenient = fa
   if (second && second === first) return { error: 'A 2ª escolha não pode ser igual à 1ª escolha.' };
   const hearings = pick('acceptsHearings');
   if (strict && typeof hearings !== 'boolean') return { error: 'Informe se aceita realizar audiências.' };
-  return { value: { name, email, currentLocation, firstPreference: first, secondPreference: second, acceptsHearings: hearings === true } };
+  return { value: { name, email, currentLocation, locationCatalogId: loc.value.catalogId, locationComarca: loc.value.comarca || undefined, firstPreference: first, secondPreference: second, acceptsHearings: hearings === true } };
 }
 
-function parseUnit(b: any, base?: Unit, lenient = false): Parsed<Pick<Unit, 'unitName' | 'judgeName' | 'email' | 'comarca' | 'separator' | 'areas' | 'supportNeeded' | 'description' | 'slots'>> {
+function parseUnit(b: any, base?: Unit, lenient = false): Parsed<Pick<Unit, 'unitName' | 'judgeName' | 'email' | 'comarca' | 'separator' | 'catalogId' | 'areas' | 'supportNeeded' | 'description' | 'slots'>> {
   const pick = (k: keyof Unit) => (b?.[k] == null && base ? base[k] : b?.[k]);
-  const unitName = cleanText(pick('unitName'), 300);
+  // Unidade: do catálogo oficial (nome, comarca e separador vêm dele) ou comarca da lista + nome digitado em "Outra"
+  const place = resolveCatalogPlace(b, base ? { catalogId: base.catalogId, comarca: base.comarca, name: base.unitName, separator: base.separator } : undefined,
+    { catalogKey: 'catalogId', comarcaKey: 'comarca', nameKey: 'unitName', separatorKey: 'separator' }, lenient);
+  if ('error' in place) return place;
+  const { catalogId, comarca, separator } = place.value;
+  const unitName = place.value.name || null;
   const judgeName = cleanText(pick('judgeName'), 200) ?? '';
   const email = cleanText(pick('email'), 200) ?? '';
-  const comarca = cleanText(pick('comarca'), 150) ?? '';
-  const separator = cleanText(pick('separator'), 20) || 'de';
   if (!unitName || (!lenient && (!judgeName || !email || !comarca))) {
     return { error: 'Preencha comarca, unidade, responsável e e-mail com texto válido.' };
   }
@@ -478,7 +521,7 @@ function parseUnit(b: any, base?: Unit, lenient = false): Parsed<Pick<Unit, 'uni
   if (typeof slots !== 'number' || !Number.isInteger(slots) || slots < 1 || slots > MAX_SLOTS) return { error: `O número de magistrados a alocar deve ser um inteiro de 1 a ${MAX_SLOTS}.` };
   const description = pick('description') ?? '';
   if (typeof description !== 'string' || description.length > 2000) return { error: 'A justificativa pode ter no máximo 2000 caracteres.' };
-  return { value: { unitName, judgeName, email, comarca, separator, areas: [...new Set(areas as string[])], supportNeeded: support as WorkType, description: description.trim(), slots } };
+  return { value: { unitName, judgeName, email, comarca, separator, catalogId, areas: [...new Set(areas as string[])], supportNeeded: support as WorkType, description: description.trim(), slots } };
 }
 
 /** Dados antigos ou corrompidos (ex.: gravados antes da validação) são convertidos para tipos seguros. */
@@ -1189,7 +1232,7 @@ async function startServer() {
     refreshUnitStatus(match.unitId);
   }
 
-  const unitLabel = (r: { unit: string; comarca?: string }) => (r.comarca ? `${r.unit} (${r.comarca})` : r.unit);
+  const unitLabel = (r: { unit: string; comarca?: string; separator?: string }) => fullUnitName({ unitName: r.unit, comarca: r.comarca, separator: r.separator });
 
   /** Lê texto copiado do Excel (colunas separadas por tabulação; também aceita ';'). Aspas de células são respeitadas. */
   function parseSheetText(text: string): string[][] {
@@ -1220,14 +1263,17 @@ async function startServer() {
     const out: Record<string, { comarca: string[]; unit: string[] }> = {};
     for (const u of units) {
       if (editionById(u.editionId)?.isInitial) continue;
-      const c = norm(u.comarca), n = norm(u.unitName);
+      // Comarca comparada pela lista oficial; vara pelo id do catálogo (texto só para o que ainda não foi padronizado)
+      const comarcaOf = (x?: Unit) => norm(canonicalComarca(x?.comarca) ?? x?.comarca ?? '');
+      const c = comarcaOf(u), n = norm(u.unitName);
       const comarca = new Set<string>(), unit = new Set<string>();
       for (const r of rows) {
         if (r.unitId === u.id) continue;
         const ru = unitOf.get(r.unitId);
-        const rc = norm(ru?.comarca ?? '');
+        const rc = comarcaOf(ru);
         if (c && rc === c) comarca.add(r.name);
-        if (norm(r.unit) === n && (!c || !rc || rc === c)) unit.add(r.name);
+        const sameUnit = u.catalogId && ru?.catalogId ? ru.catalogId === u.catalogId : norm(r.unit) === n && (!c || !rc || rc === c);
+        if (sameUnit) unit.add(r.name);
       }
       if (comarca.size || unit.size) out[u.id] = { comarca: [...comarca], unit: [...unit] };
     }
@@ -1642,7 +1688,7 @@ async function startServer() {
     if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
     const parsed = parseMagistrate(req.body, undefined, req.body?.source !== 'admin', source === 'admin' && edition.isInitial === true);
     if ('error' in parsed) return res.status(400).json({ error: parsed.error });
-    const { name, email, currentLocation, firstPreference, secondPreference, acceptsHearings } = parsed.value;
+    const { name, email } = parsed.value;
     if (source !== 'admin') {
       const reg = registrationState(edition);
       if (reg !== 'open') return res.status(403).json({ error: registrationMessage(edition, reg) });
@@ -1657,12 +1703,7 @@ async function startServer() {
     const newMag: Magistrate = {
       id: newId('mag'),
       editionId: edition.id,
-      name,
-      email,
-      currentLocation,
-      firstPreference,
-      secondPreference,
-      acceptsHearings,
+      ...parsed.value,
       registeredIp: source === 'admin' ? undefined : clientIp(req),
       declaration: source === 'admin' ? undefined : true,
       createdAt: new Date().toISOString(),
@@ -1687,7 +1728,7 @@ async function startServer() {
     }
 
     const labels: Record<string, string> = {
-      name: 'nome', email: 'e-mail', currentLocation: 'lotação', firstPreference: '1ª preferência',
+      name: 'nome', email: 'e-mail', currentLocation: 'lotação', locationCatalogId: 'lotação (catálogo)', locationComarca: 'comarca da lotação', firstPreference: '1ª preferência',
       secondPreference: '2ª preferência', acceptsHearings: 'aceita audiências',
     };
     const changed = (Object.keys(next) as (keyof typeof next)[])
@@ -1837,7 +1878,6 @@ async function startServer() {
     if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
     const parsed = parseUnit(req.body, undefined, source === 'admin' && edition.isInitial === true);
     if ('error' in parsed) return res.status(400).json({ error: parsed.error });
-    const { unitName, judgeName, email, comarca, separator, areas, supportNeeded, description, slots } = parsed.value;
     if (source !== 'admin') {
       const reg = registrationState(edition);
       if (reg !== 'open') return res.status(403).json({ error: registrationMessage(edition, reg) });
@@ -1846,15 +1886,7 @@ async function startServer() {
     const newUnit: Unit = {
       id: newId('unit'),
       editionId: edition.id,
-      unitName,
-      judgeName,
-      email,
-      comarca,
-      separator,
-      areas,
-      supportNeeded,
-      description,
-      slots,
+      ...parsed.value,
       registeredIp: source === 'admin' ? undefined : clientIp(req),
       createdAt: new Date().toISOString(),
       status: 'Pendente',
@@ -1923,7 +1955,7 @@ async function startServer() {
     const next = parsed.value;
 
     const labels: Record<string, string> = {
-      unitName: 'unidade', judgeName: 'responsável', email: 'e-mail', comarca: 'comarca', separator: 'separador',
+      unitName: 'unidade', judgeName: 'responsável', email: 'e-mail', comarca: 'comarca', separator: 'separador', catalogId: 'unidade do catálogo',
       areas: 'áreas', supportNeeded: 'auxílio necessário', description: 'justificativa', slots: 'magistrados a alocar',
     };
     if (next.slots < linkedCount(unit.id)) {
@@ -2087,7 +2119,7 @@ async function startServer() {
     refreshUnitStatus(nextUnit.id);
     if (isTransfer) {
       match.startDate = effectiveDate;
-      const label = (u?: Unit) => (u ? (u.comarca ? `${u.unitName} (${u.comarca})` : u.unitName) : 'unidade removida');
+      const label = (u?: Unit) => (u ? fullUnitName(u) : 'unidade removida');
       transfers.push({ id: newId('tr'), editionId: match.editionId, magistrateId: nextMag.id, name: nextMag.name, area: oldArea, fromUnit: label(oldUnit), toUnit: label(nextUnit),
         fromWorkType: oldWorkType, toWorkType: match.workType, effectiveDate, createdAt: new Date().toISOString() });
     }

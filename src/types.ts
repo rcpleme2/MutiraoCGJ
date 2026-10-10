@@ -38,6 +38,8 @@ export interface Magistrate {
   name: string;
   email: string;
   currentLocation: string;
+  locationCatalogId?: string;
+  locationComarca?: string;
   firstPreference: string;
   secondPreference: string;
   acceptsHearings: boolean;
@@ -62,6 +64,8 @@ export interface Unit {
   comarca: string;
   /** Liga o nome da unidade à comarca (padrão "de") */
   separator?: string;
+  /** Unidade do catálogo oficial; ausente = "a padronizar" */
+  catalogId?: string;
   areas: string[];
   supportNeeded: SupportNeeded;
   description: string;

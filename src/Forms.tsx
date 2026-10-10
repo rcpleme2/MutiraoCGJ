@@ -2,6 +2,85 @@ import React, { useState } from 'react';
 import { Check } from 'lucide-react';
 import { Field } from './ui';
 import { Magistrate, Unit, PREFERENCE_AREAS, SUPPORT_OPTIONS, SupportNeeded } from './types';
+import { COMARCAS, CATALOG_SEPARATOR, canonicalComarca, catalogById, fullUnitName, unitsOfComarca } from './catalogo-tjpr';
+
+/* ---------- Comarca → unidade (catálogo oficial), com a opção "Outra" ---------- */
+const OTHER = '__outra';
+interface Place { comarca: string; unitSel: string; other: string; separator: string }
+
+const foldName = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/\s+/g, ' ').trim();
+
+/** Estado inicial a partir do que está gravado: unidade do catálogo, ou comarca + nome livre ("Outra"). */
+function initialPlace(catalogId?: string, comarca?: string, name?: string, separator?: string): Place {
+  const cat = catalogById(catalogId);
+  if (cat) return { comarca: cat.comarca, unitSel: cat.id, other: '', separator: cat.separator };
+  const c = canonicalComarca(comarca) ?? (comarca || '');
+  const n = (name || '').trim();
+  if (!n) return { comarca: c, unitSel: '', other: '', separator: separator || CATALOG_SEPARATOR };
+  // Registro antigo cujo nome coincide com o catálogo: já vem selecionado
+  const hit = canonicalComarca(c) ? unitsOfComarca(c).find(u => foldName(u.unitName) === foldName(n) || foldName(u.label) === foldName(n)) : undefined;
+  if (hit) return { comarca: hit.comarca, unitSel: hit.id, other: '', separator: hit.separator };
+  return { comarca: c, unitSel: OTHER, other: n, separator: separator || CATALOG_SEPARATOR };
+}
+
+/** Converte a escolha em campos para a API (o servidor completa nome, comarca e separador pelo catálogo). */
+const placePayload = (p: Place) => p.unitSel && p.unitSel !== OTHER
+  ? { catalogId: p.unitSel, comarca: p.comarca, name: '' }
+  : { catalogId: '', comarca: p.comarca, name: p.other };
+
+const placeLabel = (p: Place) => {
+  const cat = catalogById(p.unitSel);
+  if (cat) return cat.label;
+  return p.unitSel === OTHER && p.other.trim() ? fullUnitName({ unitName: p.other.trim().toLocaleUpperCase('pt-BR'), comarca: p.comarca, separator: p.separator }) : '';
+};
+
+function CatalogPicker({ value, onChange, comarcaLabel, unitLabel, relaxed, withSeparator }: {
+  value: Place; onChange: (p: Place) => void; comarcaLabel: string; unitLabel: string;
+  /** edição "Vinculações iniciais": comarca pode ficar em branco ou fora da lista */
+  relaxed?: boolean;
+  /** administração: permite ajustar o separador de uma unidade digitada em "Outra" */
+  withSeparator?: boolean;
+}) {
+  const known = !!canonicalComarca(value.comarca);
+  const list = known ? unitsOfComarca(value.comarca) : [];
+  const preview = placeLabel(value);
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] gap-4">
+        <Field label={comarcaLabel}>
+          <select required={!relaxed} className="input" value={value.comarca}
+            onChange={e => onChange({ ...value, comarca: e.target.value, unitSel: '', other: value.unitSel === OTHER ? value.other : '' })}>
+            <option value="" disabled={!relaxed}>{relaxed ? '(sem comarca)' : 'Selecione a comarca…'}</option>
+            {value.comarca && !known && <option value={value.comarca}>{value.comarca} (fora da lista)</option>}
+            {COMARCAS.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </Field>
+        <Field label={unitLabel}>
+          <select required={!relaxed} className="input" value={value.unitSel} disabled={!value.comarca && !relaxed}
+            onChange={e => onChange({ ...value, unitSel: e.target.value })}>
+            <option value="" disabled>{value.comarca || relaxed ? 'Selecione a unidade…' : 'Escolha antes a comarca'}</option>
+            {list.map(u => <option key={u.id} value={u.id}>{u.unitName}</option>)}
+            <option value={OTHER}>Outra (digitar o nome)</option>
+          </select>
+        </Field>
+      </div>
+      {value.unitSel === OTHER && (
+        <div className={`grid grid-cols-1 gap-4 ${withSeparator ? 'sm:grid-cols-[minmax(0,1fr)_7rem]' : ''}`}>
+          <Field label="Nome da unidade (não encontrada na lista)">
+            <input required={!relaxed} className="input" maxLength={300} value={value.other} placeholder="Ex.: 3ª VARA CÍVEL"
+              onChange={e => onChange({ ...value, other: e.target.value })} />
+          </Field>
+          {withSeparator && (
+            <Field label="Separador">
+              <input className="input" maxLength={20} value={value.separator} onChange={e => onChange({ ...value, separator: e.target.value })} placeholder={CATALOG_SEPARATOR} />
+            </Field>
+          )}
+        </div>
+      )}
+      {preview && <p className="text-xs text-muted -mt-1">Exibição: <strong className="text-ink">{preview}</strong>{value.unitSel === OTHER && <span className="text-warn"> · será conferida pela coordenação</span>}</p>}
+    </div>
+  );
+}
 
 const Segmented = ({ options, value, onChange }: { options: { value: string; label: string }[]; value: string; onChange: (v: string) => void }) => (
   <div className={`grid grid-cols-1 gap-2 ${options.length === 3 ? "sm:grid-cols-3" : "sm:grid-cols-2"}`} role="radiogroup">
@@ -53,6 +132,7 @@ export function MagistrateForm({
     firstPreference: initial.firstPreference, secondPreference: initial.secondPreference,
     acceptsHearings: initial.acceptsHearings ? 'sim' : 'nao', status: initial.status as string,
   } : empty);
+  const [loc, setLoc] = useState<Place>(() => initialPlace(initial?.locationCatalogId, initial?.locationComarca, initial?.currentLocation));
   const [declared, setDeclared] = useState(false);
   const [website, setWebsite] = useState('');
   const [localError, setLocalError] = useState('');
@@ -70,8 +150,9 @@ export function MagistrateForm({
           return;
         }
         setLocalError('');
-        const ok = await onSubmit({ ...f, acceptsHearings: f.acceptsHearings === 'sim', ...(withDeclaration ? { declaration: declared, website } : {}) });
-        if (ok && !initial) { setF(empty); setDeclared(false); }
+        const lp = placePayload(loc);
+        const ok = await onSubmit({ ...f, locationCatalogId: lp.catalogId, locationComarca: lp.comarca, currentLocation: lp.name, acceptsHearings: f.acceptsHearings === 'sim', ...(withDeclaration ? { declaration: declared, website } : {}) });
+        if (ok && !initial) { setF(empty); setLoc(initialPlace()); setDeclared(false); }
       }}
     >
       <fieldset disabled={disabled} className="space-y-5 min-w-0">
@@ -81,9 +162,7 @@ export function MagistrateForm({
       <Field label="E-mail institucional">
         <input required={!relaxed} type="email" placeholder="nome@tjpr.jus.br" className="input" value={f.email} onChange={set('email')} />
       </Field>
-      <Field label="Lotação atual (vara / comarca)">
-        <input required={!relaxed} className="input" value={f.currentLocation} onChange={set('currentLocation')} />
-      </Field>
+      <CatalogPicker value={loc} onChange={setLoc} comarcaLabel="Comarca de lotação" unitLabel="Unidade de lotação atual" relaxed={relaxed} />
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <Field label="1ª escolha (área)">
           <select required={!relaxed} className="input" value={f.firstPreference}
@@ -183,6 +262,7 @@ export function UnitForm({
     description: '',
     slots: 1,
   };
+  const [place, setPlace] = useState<Place>(() => initialPlace(initial?.catalogId, initial?.comarca, initial?.unitName, initial?.separator));
   const [f, setF] = useState(initial ? {
     unitName: initial.unitName, judgeName: initial.judgeName, email: initial.email, comarca: initial.comarca, separator: initial.separator || 'de',
     areas: initial.areas, supportNeeded: initial.supportNeeded, description: initial.description,
@@ -205,20 +285,13 @@ export function UnitForm({
         e.preventDefault();
         if (f.areas.length === 0) { setAreasError('Marque ao menos uma área a ser atendida.'); return; }
         const { slots, ...rest } = f;
-        if ((await onSubmit({ ...rest, ...(withSlots ? { slots } : {}), ...(withHoneypot ? { website } : {}) })) && !initial) setF(empty);
+        const pp = placePayload(place);
+        const placeFields = { catalogId: pp.catalogId, comarca: pp.comarca, unitName: pp.name, separator: place.separator };
+        if ((await onSubmit({ ...rest, ...placeFields, ...(withSlots ? { slots } : {}), ...(withHoneypot ? { website } : {}) })) && !initial) { setF(empty); setPlace(initialPlace()); }
       }}
     >
       <fieldset disabled={disabled} className="space-y-5 min-w-0">
-      <Field label="Unidade judicial">
-        <input required className="input" value={f.unitName} onChange={text('unitName')} />
-      </Field>
-      <Field label="Separador (liga a unidade à comarca)">
-        <input required maxLength={20} className="input" value={f.separator} onChange={text('separator')} placeholder="de" />
-      </Field>
-      <Field label="Comarca">
-        <input required={!relaxed} className="input" value={f.comarca} onChange={text('comarca')} />
-      </Field>
-      <p className="text-xs text-muted -mt-3">Exibição: <strong className="text-ink">{[f.unitName || 'Unidade', f.comarca && (f.separator.trim() || 'de'), f.comarca].filter(Boolean).join(' ')}</strong></p>
+      <CatalogPicker value={place} onChange={setPlace} comarcaLabel="Comarca" unitLabel="Unidade judicial" relaxed={relaxed} withSeparator={withSlots} />
       <Field label="Juiz(a) titular / responsável">
         <input required={!relaxed} className="input" value={f.judgeName} onChange={text('judgeName')} />
       </Field>

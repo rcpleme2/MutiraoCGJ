@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Lock, Unlock, Plus, Trash2, Check, Pencil, Download, Sparkles, LogOut, Radio, Archive, RotateCcw, ChevronDown, ChevronRight, X, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 import { api, download, getToken, setToken } from './api';
 import { Edition, FaqItem, LogEntry, Magistrate, Match, PanelRow, Transfer, Unit, Withdrawal, WorkType, WORK_TYPES } from './types';
+import { fullUnitName } from './catalogo-tjpr';
 import { Badge, EmptyRow, Field, Modal, Notice, formatDate, formatDateTime, magistrateTone, useFeedback } from './ui';
 import { MagistrateForm, UnitForm } from './Forms';
 
@@ -50,9 +51,8 @@ function DateCell({ iso }: { iso: string }) {
 const byDate = <T extends { createdAt: string; id: string }>(dir: SortDir) => (a: T, b: T) =>
   (dir === 'asc' ? 1 : -1) * (a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
 
-/** "Nome da unidade" + separador + "comarca" (ex.: Juizado Especial Cível de São João). */
-const unitLabel = (u: { unitName: string; comarca?: string; separator?: string }) =>
-  [u.unitName, u.comarca && (u.separator?.trim() || 'de'), u.comarca].filter(Boolean).join(' ');
+/** "Nome da unidade" + separador + "comarca" (ex.: 1ª VARA CÍVEL DE CURITIBA), sem repetir a comarca. */
+const unitLabel = (u: { unitName: string; comarca?: string; separator?: string }) => fullUnitName(u);
 
 type UnitSortKey = 'date' | 'name' | 'selection';
 const SELECTION_ORDER: Record<string, number> = { 'Em análise': 0, 'Escolhida': 1, 'Rejeitada': 2 };
@@ -1293,7 +1293,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
               <tr key={m.id}>
                 <td className="td"><div className="font-medium">{m.name}</div>{viewAll && <div className="text-[11px] text-bronze">{m.editionTitle}</div>}<div className="text-xs text-muted">{m.email}</div>{m.registeredIp && <div className="text-[11px] text-muted/80">IP {m.registeredIp}</div>}{m.declaration && <div className="text-[11px] text-ok mt-0.5">Declaração de regularidade aceita</div>}{m.priorWithdrawal && <div className="text-[11px] text-warn mt-0.5">Já desistiu antes (SEI {m.priorWithdrawal.sei || 'não informado'}{m.priorWithdrawal.requestDate ? `, pedido em ${m.priorWithdrawal.requestDate.split('-').reverse().join('/')}` : ''}). Se deferida esta inscrição, a desistência passa a valer só para o período anterior.</div>}</td>
                 <td className="td"><DateCell iso={m.createdAt} /></td>
-                <td className="td text-muted">{m.currentLocation}</td>
+                <td className="td text-muted">{m.currentLocation}{m.currentLocation && !m.locationCatalogId && <span className="text-[11px] text-warn block">◦ A padronizar</span>}</td>
                 <td className="td text-xs"><div className="text-bronze font-medium">1ª: {m.firstPreference}</div><div className="text-muted">2ª: {m.secondPreference || '—'}</div></td>
                 <td className="td"><Badge tone={m.acceptsHearings ? 'ok' : 'neutral'}>{m.acceptsHearings ? 'Aceita' : 'Não aceita'}</Badge></td>
                 <td className="td">
@@ -1350,7 +1350,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
                     <td className="td">
                       <button className="flex items-start gap-1.5 text-left" onClick={() => setOpenUnitId(open ? '' : u.id)} aria-expanded={open} title="Ver justificativa e vincular magistrado">
                         {open ? <ChevronDown className="w-4 h-4 mt-0.5 shrink-0 text-bronze" /> : <ChevronRight className="w-4 h-4 mt-0.5 shrink-0 text-muted" />}
-                        <span><span className="font-medium block">{unitLabel(u)}</span>{presence[u.id] && <PresenceNote p={presence[u.id]} />}{viewAll && <span className="text-[11px] text-bronze block">{u.editionTitle}</span>}<span className="text-xs text-muted block">Resp.: {u.judgeName}</span><span className="text-xs text-muted block">{u.email}</span>{u.registeredIp && <span className="text-[11px] text-muted/80 block">IP {u.registeredIp}</span>}</span>
+                        <span><span className="font-medium block">{unitLabel(u)}</span>{!u.catalogId && <span className="text-[11px] text-warn block">◦ A padronizar (fora da lista oficial)</span>}{presence[u.id] && <PresenceNote p={presence[u.id]} />}{viewAll && <span className="text-[11px] text-bronze block">{u.editionTitle}</span>}<span className="text-xs text-muted block">Resp.: {u.judgeName}</span><span className="text-xs text-muted block">{u.email}</span>{u.registeredIp && <span className="text-[11px] text-muted/80 block">IP {u.registeredIp}</span>}</span>
                       </button>
                     </td>
                     <td className="td"><DateCell iso={u.createdAt} /></td>
