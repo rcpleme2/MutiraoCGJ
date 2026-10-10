@@ -10,6 +10,7 @@ import QRCode from 'qrcode';
 import PDFDocument from 'pdfkit';
 import { AsyncLocalStorage } from 'async_hooks';
 import { catalogById, canonicalComarca, fullUnitName, CATALOG_SEPARATOR } from './src/catalogo-tjpr';
+import { resolveCatalog, suggestCatalog, tokens as nameTokens } from './src/catalogo-match';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -102,6 +103,8 @@ interface Match {
   exceptionReason?: string;
   /** A partir de quando o magistrado atua nesta unidade (informado ao trocar de unidade), AAAA-MM-DD */
   startDate?: string;
+  /** Observação da designação (ex.: segunda vara citada na planilha original, "acervo cível") */
+  note?: string;
   status: 'Vinculado' | 'Concluído';
   createdAt: string;
 }
@@ -824,10 +827,15 @@ function isHeaderRow(name: string, area: string, unit: string) {
 /** Unidade da edição inicial pelo nome (cria se não existir; campos desconhecidos em branco). */
 function ensureInitialUnit(unitName: string, area: string): Unit {
   const ed = ensureInitialEdition();
-  let unit = units.find((u) => u.editionId === ed.id && normName(u.unitName) === normName(unitName));
+  // Nome que corresponde sem ambiguidade a uma unidade do catálogo oficial já entra padronizado
+  const cat = resolveCatalog(unitName);
+  let unit = cat
+    ? units.find((u) => u.editionId === ed.id && u.catalogId === cat.id)
+    : units.find((u) => u.editionId === ed.id && !u.catalogId && normName(u.unitName) === normName(unitName));
   if (!unit) {
     unit = {
-      id: newId('unit'), editionId: ed.id, unitName, judgeName: '', email: '', comarca: '', separator: 'de', areas: area ? [area] : [],
+      id: newId('unit'), editionId: ed.id, unitName: cat ? cat.unitName : unitName.toLocaleUpperCase('pt-BR'), judgeName: '', email: '',
+      comarca: cat ? cat.comarca : '', separator: cat ? cat.separator : CATALOG_SEPARATOR, catalogId: cat?.id, areas: area ? [area] : [],
       supportNeeded: 'Audiência e Sentença', description: '', createdAt: new Date().toISOString(), status: 'Pendente', selection: 'Escolhida', slots: 1,
     };
     units.push(unit);
@@ -846,7 +854,10 @@ function createInitialLink(r: { name: string; area: string; unit: string }) {
   };
   magistrates.push(mag);
   unit.slots = Math.max(unit.slots || 1, linkedCount(unit.id) + 1);
-  matches.push({ id: newId('match'), editionId: ed.id, magistrateId: mag.id, unitId: unit.id, assignedArea: r.area, workType: 'Sentença', status: 'Vinculado', createdAt: now });
+  // Texto da planilha com informações além da unidade oficial (ex.: "(acervo cível), Vara Estadual...") fica como observação
+  const official = new Set(nameTokens(fullUnitName(unit)));
+  const extra = unit.catalogId && nameTokens(r.unit).some((w) => !official.has(w));
+  matches.push({ id: newId('match'), editionId: ed.id, magistrateId: mag.id, unitId: unit.id, assignedArea: r.area, workType: 'Sentença', status: 'Vinculado', createdAt: now, ...(extra ? { note: r.unit } : {}) });
   refreshUnitStatus(unit.id);
 }
 
@@ -1206,7 +1217,7 @@ async function startServer() {
   const cleanCell = (t: string) => t.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
 
   /** Uma designação vigente: vinculação real de qualquer edição. Vale até que seja registrada a desistência. */
-  interface PanelRow { id: string; editionId: string; editionTitle: string; magistrateId: string; unitId: string; name: string; area: string; unit: string; comarca?: string; separator?: string; workType?: string; startDate?: string }
+  interface PanelRow { id: string; editionId: string; editionTitle: string; magistrateId: string; unitId: string; name: string; area: string; unit: string; comarca?: string; separator?: string; workType?: string; startDate?: string; note?: string }
 
   /** Tabela única com as designações vigentes de TODAS as edições (as de edições anteriores continuam valendo até a desistência). */
   function panelRows(): PanelRow[] {
@@ -1216,7 +1227,7 @@ async function startServer() {
       const un = units.find((u) => u.id === mt.unitId);
       if (!mag || !un || mag.status === 'Desistente' || isHeaderRow(mag.name, mt.assignedArea, un.unitName)) continue;
       const k = `${panelKey({ name: mag.name, area: mt.assignedArea, unit: un.unitName })}|${mt.editionId}`;
-      if (!seen.has(k)) seen.set(k, { id: mt.id, editionId: mt.editionId, editionTitle: editionById(mt.editionId)?.title ?? '', magistrateId: mag.id, unitId: un.id, name: mag.name, area: mt.assignedArea, unit: un.unitName, comarca: un.comarca, separator: un.separator, workType: mt.workType, startDate: mt.startDate });
+      if (!seen.has(k)) seen.set(k, { id: mt.id, editionId: mt.editionId, editionTitle: editionById(mt.editionId)?.title ?? '', magistrateId: mag.id, unitId: un.id, name: mag.name, area: mt.assignedArea, unit: un.unitName, comarca: un.comarca, separator: un.separator, workType: mt.workType, startDate: mt.startDate, note: mt.note });
     }
     return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR') || a.unit.localeCompare(b.unit, 'pt-BR'));
   }
@@ -1278,6 +1289,83 @@ async function startServer() {
       if (comarca.size || unit.size) out[u.id] = { comarca: [...comarca], unit: [...unit] };
     }
     res.json(out);
+  });
+
+  // ---------- Padronização de nomes (conciliação com o catálogo oficial) ----------
+  /** Unidades (todas as edições) e lotações de magistrados fora do catálogo, agrupadas pelo texto, com sugestões. */
+  app.get('/api/standardize', (_req, res) => {
+    const groupBy = <T,>(items: T[], key: (x: T) => string) => {
+      const m = new Map<string, T[]>(); for (const x of items) { const k = key(x); m.set(k, [...(m.get(k) ?? []), x]); } return m;
+    };
+    const unitGroups = [...groupBy(units.filter((u) => !u.catalogId && u.unitName), (u) => `${norm(u.unitName)}|${norm(canonicalComarca(u.comarca) ?? u.comarca)}`).values()].map((list) => {
+      const u = list[0];
+      const label = fullUnitName(u);
+      return {
+        key: list.map((x) => x.id).join(','), label, comarca: canonicalComarca(u.comarca) ?? u.comarca, ids: list.map((x) => x.id),
+        editions: [...new Set(list.map((x) => editionById(x.editionId)?.title ?? ''))],
+        links: list.reduce((n, x) => n + linkedCount(x.id), 0),
+        suggestions: suggestCatalog(label, canonicalComarca(u.comarca)),
+      };
+    });
+    const locGroups = [...groupBy(magistrates.filter((m) => !m.locationCatalogId && m.currentLocation ), (m) => `${norm(m.currentLocation)}|${norm(m.locationComarca ?? '')}`).values()].map((list) => {
+      const m = list[0];
+      return {
+        key: list.map((x) => x.id).join(','), label: m.currentLocation, comarca: m.locationComarca ?? '', ids: list.map((x) => x.id),
+        names: list.map((x) => x.name), suggestions: suggestCatalog(m.currentLocation, canonicalComarca(m.locationComarca)),
+      };
+    });
+    const byLinks = (a: { links: number; label: string }, b: { links: number; label: string }) => b.links - a.links || a.label.localeCompare(b.label, 'pt-BR');
+    res.json({ units: unitGroups.sort(byLinks), locations: locGroups.sort((a, b) => a.label.localeCompare(b.label, 'pt-BR')) });
+  });
+
+  /**
+   * Aplica a padronização: liga os registros à unidade do catálogo (o nome oficial substitui o digitado).
+   * Unidades que ficarem repetidas na mesma edição são fundidas (vinculações, vagas, áreas e justificativas passam para uma só).
+   * `note` (opcional) vira observação das designações dessas unidades.
+   */
+  app.post('/api/standardize/apply', (req, res) => {
+    const items: { kind?: unknown; ids?: unknown; catalogId?: unknown; note?: unknown }[] = Array.isArray(req.body?.items) ? req.body.items : [req.body];
+    if (items.length === 0 || items.length > 2000) return res.status(400).json({ error: 'Nada a aplicar.' });
+    let unitsDone = 0, locsDone = 0, merged = 0;
+    for (const it of items) {
+      const cat = catalogById(it.catalogId);
+      const ids = Array.isArray(it.ids) ? it.ids.filter((x): x is string => typeof x === 'string') : [];
+      if (!cat || !ids.length || (it.kind !== 'unit' && it.kind !== 'location')) return res.status(400).json({ error: 'Escolha uma unidade da lista oficial.' });
+      const note = typeof it.note === 'string' ? freeText(it.note, 300) : '';
+      if (it.kind === 'location') {
+        for (const m of magistrates.filter((x) => ids.includes(x.id))) {
+          const before = m.currentLocation;
+          m.locationCatalogId = cat.id; m.locationComarca = cat.comarca; m.currentLocation = cat.label; locsDone++;
+          log(m.editionId, 'Administração', 'Magistrado', `Lotação de ${m.name} padronizada: "${before}" → "${cat.label}".`);
+        }
+        continue;
+      }
+      for (const u of units.filter((x) => ids.includes(x.id))) {
+        const before = fullUnitName(u);
+        u.catalogId = cat.id; u.unitName = cat.unitName; u.comarca = cat.comarca; u.separator = cat.separator; unitsDone++;
+        if (note) matches.filter((m) => m.unitId === u.id).forEach((m) => { m.note = note; });
+        log(u.editionId, 'Administração', 'Unidade', `Unidade padronizada: "${before}" → "${cat.label}"${note ? ` (observação: ${note})` : ''}.`);
+      }
+      // Fusão: na mesma edição fica uma unidade por item do catálogo (a mais antiga)
+      const editionsTouched = new Set(units.filter((x) => ids.includes(x.id)).map((x) => x.editionId));
+      for (const edId of editionsTouched) {
+        const same = units.filter((x) => x.editionId === edId && x.catalogId === cat.id).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+        const keeper = same[0];
+        for (const dup of same.slice(1)) {
+          matches.filter((m) => m.unitId === dup.id).forEach((m) => { m.unitId = keeper.id; });
+          const sum = (keeper.slots || 1) + (dup.slots || 1);
+          keeper.slots = Math.max(linkedCount(keeper.id), editionById(edId)?.isInitial ? sum : Math.min(sum, MAX_SLOTS));
+          keeper.areas = [...new Set([...keeper.areas, ...dup.areas])];
+          if (dup.description && dup.description !== keeper.description) keeper.description = [keeper.description, dup.description].filter(Boolean).join('\n---\n').slice(0, 2000);
+          if (keeper.selection !== 'Escolhida' && dup.selection === 'Escolhida') keeper.selection = 'Escolhida';
+          units = units.filter((x) => x.id !== dup.id);
+          merged++;
+          log(edId, 'Administração', 'Unidade', `Inscrições repetidas da unidade "${cat.label}" fundidas em uma só.`);
+        }
+        if (keeper) refreshUnitStatus(keeper.id);
+      }
+    }
+    res.json({ success: true, units: unitsDone, locations: locsDone, merged });
   });
 
   app.get('/api/panel/admin', (_req, res) => {
@@ -1405,7 +1493,7 @@ async function startServer() {
     const dayBefore = (ymd: string) => { const d = new Date(`${ymd}T00:00:00Z`); d.setUTCDate(d.getUTCDate() - 1); return d.toISOString().slice(0, 10); };
     const day = (iso: string) => new Date(iso).toLocaleDateString('pt-BR', { timeZone: tz });
     const acting = (w?: string) => (w === 'Audiência' ? 'Audiências' : w === 'Sentença' ? 'Sentença' : w === 'Audiência e Sentença' ? 'Audiência e sentença' : '—');
-    const unitCell = (r: { unit: string; comarca?: string; startDate?: string }) => unitLabel(r) + (r.startDate ? `\na partir de ${dmy(r.startDate)}` : '');
+    const unitCell = (r: { unit: string; comarca?: string; separator?: string; startDate?: string; note?: string }) => unitLabel(r) + (r.note ? `\nObs.: ${r.note}` : '') + (r.startDate ? `\na partir de ${dmy(r.startDate)}` : '');
     // A fonte padrão do PDF cobre o alfabeto latino; troca o que estiver fora dele para não gerar lixo.
     const t = (x: string) => x.replace(/[^\n -~ -ÿ–—‘’“”…•]/g, '?');
 

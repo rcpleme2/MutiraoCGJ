@@ -117,6 +117,6 @@ export interface FaqItem {
   updatedAt?: string;
 }
 
-export interface PanelRow { id: string; editionId: string; editionTitle: string; magistrateId: string; unitId: string; startDate?: string; name: string; area: string; unit: string; comarca?: string; separator?: string; workType?: string }
+export interface PanelRow { id: string; editionId: string; editionTitle: string; magistrateId: string; unitId: string; startDate?: string; note?: string; name: string; area: string; unit: string; comarca?: string; separator?: string; workType?: string }
 export interface Withdrawal { id: string; editionId: string; name: string; area: string; unit: string; sei: string; requestDate?: string; endedAt?: string; createdAt: string }
 export interface Transfer { id: string; editionId: string; magistrateId: string; name: string; area: string; fromUnit: string; toUnit: string; fromWorkType: string; toWorkType: string; effectiveDate: string; createdAt: string }

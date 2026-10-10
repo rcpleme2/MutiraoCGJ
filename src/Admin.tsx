@@ -2,11 +2,11 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Lock, Unlock, Plus, Trash2, Check, Pencil, Download, Sparkles, LogOut, Radio, Archive, RotateCcw, ChevronDown, ChevronRight, X, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 import { api, download, getToken, setToken } from './api';
 import { Edition, FaqItem, LogEntry, Magistrate, Match, PanelRow, Transfer, Unit, Withdrawal, WorkType, WORK_TYPES } from './types';
-import { fullUnitName } from './catalogo-tjpr';
+import { COMARCAS, canonicalComarca, catalogById, fullUnitName, unitsOfComarca } from './catalogo-tjpr';
 import { Badge, EmptyRow, Field, Modal, Notice, formatDate, formatDateTime, magistrateTone, useFeedback } from './ui';
 import { MagistrateForm, UnitForm } from './Forms';
 
-type Sub = 'overview' | 'editions' | 'magistrates' | 'units' | 'matches' | 'waiting' | 'panel' | 'faq' | 'log' | 'backup';
+type Sub = 'overview' | 'editions' | 'magistrates' | 'units' | 'matches' | 'waiting' | 'panel' | 'faq' | 'log' | 'backup' | 'standardize';
 
 const SUBS: { id: Sub; label: string }[] = [
   { id: 'overview', label: 'Painel' },
@@ -16,6 +16,7 @@ const SUBS: { id: Sub; label: string }[] = [
   { id: 'matches', label: 'Vinculações' },
   { id: 'waiting', label: 'Lista de espera' },
   { id: 'panel', label: 'Painel de vinculações' },
+  { id: 'standardize', label: 'Padronizar nomes' },
   { id: 'faq', label: 'Perguntas frequentes' },
   { id: 'log', label: 'Registro' },
   { id: 'backup', label: 'Backup' },
@@ -617,7 +618,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
                 <tr key={r.id}>
                   <td className="td font-medium">{r.name}</td>
                   <td className="td text-muted">{r.area}</td>
-                  <td className="td">{r.unit}{r.comarca && <div className="text-xs text-muted">{r.comarca}</div>}{r.startDate && <div className="text-xs text-bronze">a partir de {r.startDate.split('-').reverse().join('/')}</div>}</td>
+                  <td className="td">{r.unit}{r.comarca && <div className="text-xs text-muted">{r.comarca}</div>}{r.note && <div className="text-xs text-muted">Obs.: {r.note}</div>}{r.startDate && <div className="text-xs text-bronze">a partir de {r.startDate.split('-').reverse().join('/')}</div>}</td>
                   <td className="td text-xs">{r.workType === 'Audiência' ? 'Audiências' : r.workType === 'Sentença' ? 'Sentença' : r.workType}</td>
                   <td className="td text-xs text-muted">{r.editionTitle}</td>
                   <td className="td text-right whitespace-nowrap">
@@ -781,6 +782,105 @@ function PanelAdmin({ run, confirm, onChanged }: {
           </form>
         </Modal>
       )}
+    </div>
+  );
+}
+
+/* ---------- Padronizar nomes: conciliação com o catálogo oficial de comarcas e unidades ---------- */
+interface Suggestion { id: string; label: string; comarca: string; score: number }
+interface StdGroup { key: string; label: string; comarca: string; ids: string[]; editions?: string[]; links?: number; names?: string[]; suggestions: Suggestion[] }
+const confident = (g: StdGroup) => g.suggestions[0]?.score >= 0.85 && !(g.suggestions[1] && g.suggestions[1].score > g.suggestions[0].score - 0.1);
+const confTone = (s: number) => (s >= 0.85 ? 'ok' : s >= 0.6 ? 'warn' : 'neutral') as 'ok' | 'warn' | 'neutral';
+
+function StdRow({ g, kind, onApply }: { g: StdGroup; kind: 'unit' | 'location'; onApply: (catalogId: string, note: string) => Promise<void> }) {
+  // Só vem marcada a sugestão que se destaca das demais (empates ficam para a escolha da coordenação)
+  const top = g.suggestions[0], second = g.suggestions[1];
+  const [sel, setSel] = useState(top && top.score >= 0.6 && !(second && second.score >= top.score - 0.05) ? top.id : '');
+  const [other, setOther] = useState(false);
+  const [comarca, setComarca] = useState(canonicalComarca(g.comarca) ?? '');
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const chosen = catalogById(sel);
+  return (
+    <tr className="align-top">
+      <td className="td">
+        <div className="font-medium">{g.label}</div>
+        <div className="text-xs text-muted mt-0.5">
+          {kind === 'unit' ? <>{g.ids.length > 1 ? `${g.ids.length} inscrições · ` : ''}{g.links ? `${g.links} vinculação(ões) · ` : ''}{(g.editions ?? []).join(', ')}</> : (g.names ?? []).join(', ')}
+        </div>
+      </td>
+      <td className="td min-w-[18rem]">
+        {!other ? (
+          <div className="space-y-1.5">
+            {g.suggestions.length === 0 && <p className="text-xs text-muted">Sem sugestão.</p>}
+            {g.suggestions.map(s => (
+              <label key={s.id} className="flex items-start gap-2 text-sm cursor-pointer">
+                <input type="radio" className="mt-1" name={`std-${g.key}`} checked={sel === s.id} onChange={() => setSel(s.id)} />
+                <span>{s.label} <Badge tone={confTone(s.score)}>{Math.round(s.score * 100)}%</Badge></span>
+              </label>
+            ))}
+            <button type="button" className="text-xs text-bronze hover:underline" onClick={() => { setOther(true); setSel(''); }}>Escolher outra unidade da lista…</button>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <select className="input !py-2 text-sm" value={comarca} onChange={e => { setComarca(e.target.value); setSel(''); }} aria-label="Comarca">
+              <option value="" disabled>Comarca…</option>
+              {COMARCAS.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <select className="input !py-2 text-sm" value={sel} disabled={!comarca} onChange={e => setSel(e.target.value)} aria-label="Unidade">
+              <option value="" disabled>Unidade…</option>
+              {unitsOfComarca(comarca).map(u => <option key={u.id} value={u.id}>{u.unitName}</option>)}
+            </select>
+            <button type="button" className="text-xs text-bronze hover:underline" onClick={() => { setOther(false); setSel(g.suggestions[0]?.id ?? ''); }}>Voltar às sugestões</button>
+          </div>
+        )}
+        {kind === 'unit' && (
+          <input className="input !py-2 text-sm mt-2" maxLength={300} value={note} onChange={e => setNote(e.target.value)} placeholder="Observação da designação (opcional)" aria-label="Observação" />
+        )}
+      </td>
+      <td className="td text-right">
+        <button className="btn-primary btn-sm" disabled={!chosen || busy} onClick={async () => { setBusy(true); await onApply(sel, note); setBusy(false); }}
+          title={chosen ? `Passa a ser: ${chosen.label}` : 'Escolha a unidade oficial'}><Check className="w-4 h-4" /> Aplicar</button>
+      </td>
+    </tr>
+  );
+}
+
+function StandardizeAdmin({ run, confirm, onChanged }: { run: RunFn; confirm: (m: string, label?: string) => Promise<boolean>; onChanged: () => void }) {
+  const [data, setData] = useState<{ units: StdGroup[]; locations: StdGroup[] } | null>(null);
+  const load = useCallback(async () => { const r = await run(() => api<{ units: StdGroup[]; locations: StdGroup[] }>('/standardize')); if (r) setData(r); }, [run]);
+  useEffect(() => { load(); }, []);
+  const apply = async (kind: 'unit' | 'location', g: StdGroup, catalogId: string, note: string) => {
+    const r = await run(() => api('/standardize/apply', { method: 'POST', json: { kind, ids: g.ids, catalogId, note } }), 'Nome padronizado.');
+    if (r) { await load(); onChanged(); }
+  };
+  if (!data) return <div className="card p-8 text-sm text-muted">Carregando…</div>;
+  const auto = [...data.units.filter(confident).map(g => ({ kind: 'unit' as const, g })), ...data.locations.filter(confident).map(g => ({ kind: 'location' as const, g }))];
+  const applyAll = async () => {
+    if (!(await confirm(`Aplicar as ${auto.length} sugestões de alta confiança? Recomenda-se exportar um backup antes (aba Backup). Unidades repetidas na mesma edição serão fundidas.`, 'Aplicar todas'))) return;
+    const r = await run(() => api<{ units: number; locations: number; merged: number }>('/standardize/apply', { method: 'POST', json: { items: auto.map(a => ({ kind: a.kind, ids: a.g.ids, catalogId: a.g.suggestions[0].id })) } }));
+    if (r) { await load(); onChanged(); }
+  };
+  const section = (title: string, kind: 'unit' | 'location', list: StdGroup[], empty: string) => (
+    <div className="space-y-2">
+      <h4 className="font-semibold text-navy">{title} <span className="text-muted font-normal">({list.length})</span></h4>
+      <Table head={[kind === 'unit' ? 'Como está' : 'Lotação informada', 'Unidade oficial', '']}>
+        {list.length === 0 && <EmptyRow cols={3}>{empty}</EmptyRow>}
+        {list.map(g => <StdRow key={g.key} g={g} kind={kind} onApply={(id, note) => apply(kind, g, id, note)} />)}
+      </Table>
+    </div>
+  );
+  return (
+    <div className="space-y-6">
+      <Toolbar title="Padronizar nomes">
+        {auto.length > 0 && <button className="btn-primary btn-sm" onClick={applyAll}><Check className="w-4 h-4" /> Aplicar sugestões de alta confiança ({auto.length})</button>}
+      </Toolbar>
+      <p className="text-sm text-muted -mt-2">
+        Registros com unidade ou lotação fora da lista oficial do TJPR (digitados em "Outra", importados de planilha ou anteriores à lista).
+        Ao aplicar, o nome oficial substitui o digitado e inscrições repetidas da mesma unidade numa edição são fundidas. Faça um backup antes de aplicações em lote.
+      </p>
+      {section('Unidades', 'unit', data.units, 'Todas as unidades estão padronizadas.')}
+      {section('Lotações de magistrados', 'location', data.locations, 'Todas as lotações estão padronizadas.')}
     </div>
   );
 }
@@ -1455,6 +1555,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       )}
 
       {/* ---------- Painel público ---------- */}
+      {sub === 'standardize' && <StandardizeAdmin run={run} confirm={confirm} onChanged={refresh} />}
       {sub === 'backup' && <BackupAdmin run={run} confirm={confirm} onRestored={refresh} />}
       {sub === 'panel' && <PanelAdmin run={run} confirm={confirm} onChanged={refresh} />}
 
