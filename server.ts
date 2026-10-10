@@ -1481,6 +1481,56 @@ async function startServer() {
     res.json({ success: true, units: unitsDone, locations: locsDone, merged });
   });
 
+  // ---------- Painel oferta × demanda ----------
+  app.get('/api/dashboard', (req, res) => {
+    const all = req.query.edition === 'all';
+    const edition = all ? undefined : resolveEdition(req);
+    if (!all && !edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+    const inScope = (x: { editionId: string }) => all || x.editionId === edition!.id;
+    const us = units.filter(inScope), ms = magistrates.filter(inScope), mts = matches.filter(inScope);
+    const chosen = us.filter((u) => u.selection === 'Escolhida');
+    const linkedMag = new Set(matches.map((m) => m.magistrateId));
+    const available = ms.filter((m) => (m.status === 'Aprovado' || m.status === 'Lista de Espera') && !linkedMag.has(m.id));
+    const areaSet = new Set<string>(PREFERENCE_AREAS);
+    chosen.forEach((u) => u.areas.forEach((a) => areaSet.add(a)));
+    const byArea = [...areaSet].map((area) => {
+      const want = chosen.filter((u) => u.areas.includes(area));
+      const openSlots = want.reduce((n, u) => n + Math.max(0, (u.slots || 1) - linkedCount(u.id)), 0);
+      const first = available.filter((m) => m.firstPreference === area).length;
+      const second = available.filter((m) => m.secondPreference === area).length;
+      return { area, units: want.length, openSlots, filled: mts.filter((m) => m.assignedArea === area).length, first, second, balance: first + second - openSlots };
+    }).filter((r) => r.units || r.filled || r.first || r.second);
+    const comarcas = new Map<string, { comarca: string; pending: number; partial: number; attended: number }>();
+    for (const u of chosen) {
+      const c = canonicalComarca(u.comarca) ?? (u.comarca || '(sem comarca)');
+      const row = comarcas.get(c) ?? { comarca: c, pending: 0, partial: 0, attended: 0 };
+      if (u.status === 'Pendente') row.pending++; else if (u.status === 'Atendida') row.attended++; else row.partial++;
+      comarcas.set(c, row);
+    }
+    // Alertas
+    const ownPlace = mts.flatMap((mt) => {
+      const mag = magistrates.find((m) => m.id === mt.magistrateId), un = units.find((u) => u.id === mt.unitId);
+      if (!mag || !un) return [];
+      const sameUnit = !!mag.locationCatalogId && mag.locationCatalogId === un.catalogId;
+      const magComarca = canonicalComarca(mag.locationComarca), unComarca = canonicalComarca(un.comarca);
+      const sameComarca = !!magComarca && magComarca === unComarca;
+      return sameUnit || sameComarca ? [{ name: mag.name, unit: fullUnitName(un), kind: sameUnit ? 'na própria vara' : 'na própria comarca' }] : [];
+    });
+    const DAY = 86_400_000;
+    const waitingLong = available.filter((m) => Date.now() - Date.parse(m.createdAt) > 15 * DAY)
+      .map((m) => ({ name: m.name, days: Math.floor((Date.now() - Date.parse(m.createdAt)) / DAY), area: m.firstPreference }))
+      .sort((a, b) => b.days - a.days);
+    const unitsWithout = chosen.filter((u) => linkedCount(u.id) === 0).map((u) => ({ unit: fullUnitName(u), areas: u.areas.join(', '), since: u.createdAt }));
+    res.json({
+      totals: { units: us.length, chosen: chosen.length, openSlots: chosen.reduce((n, u) => n + Math.max(0, (u.slots || 1) - linkedCount(u.id)), 0), available: available.length, matches: mts.length },
+      byArea, byComarca: [...comarcas.values()].sort((a, b) => b.pending - a.pending || a.comarca.localeCompare(b.comarca, 'pt-BR')),
+      alerts: {
+        ownPlace, waitingLong, unitsWithout,
+        toStandardize: { units: us.filter((u) => !u.catalogId).length, locations: ms.filter((m) => m.currentLocation && !m.locationCatalogId).length },
+      },
+    });
+  });
+
   app.get('/api/panel/admin', (_req, res) => {
     res.json({
       rows: panelRows(),
@@ -2209,7 +2259,7 @@ async function startServer() {
   const describeMatch = (mt: Match) => {
     const mag = magistrates.find((m) => m.id === mt.magistrateId);
     const un = units.find((u) => u.id === mt.unitId);
-    return `${mag?.name || 'Magistrado'} → ${un?.unitName || 'Unidade'} (${mt.assignedArea}; ${mt.workType})`;
+    return `${mag?.name || 'Magistrado'} → ${un ? fullUnitName(un) : 'Unidade'} (${mt.assignedArea}; ${mt.workType})`;
   };
 
   app.post('/api/matches', (req, res) => {

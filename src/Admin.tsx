@@ -786,6 +786,99 @@ function PanelAdmin({ run, confirm, onChanged }: {
   );
 }
 
+/* ---------- Painel oferta × demanda ---------- */
+interface Dashboard {
+  totals: { units: number; chosen: number; openSlots: number; available: number; matches: number };
+  byArea: { area: string; units: number; openSlots: number; filled: number; first: number; second: number; balance: number }[];
+  byComarca: { comarca: string; pending: number; partial: number; attended: number }[];
+  alerts: {
+    ownPlace: { name: string; unit: string; kind: string }[];
+    waitingLong: { name: string; days: number; area: string }[];
+    unitsWithout: { unit: string; areas: string; since: string }[];
+    toStandardize: { units: number; locations: number };
+  };
+}
+
+function SupplyDemand({ editionId, refreshKey, onGo }: { editionId: string; refreshKey: number; onGo: (s: Sub) => void }) {
+  const [scope, setScope] = useState<'edition' | 'all'>('edition');
+  const [d, setD] = useState<Dashboard | null>(null);
+  const [allComarcas, setAllComarcas] = useState(false);
+  useEffect(() => {
+    api<Dashboard>(`/dashboard?edition=${scope === 'all' ? 'all' : encodeURIComponent(editionId)}`).then(setD).catch(() => setD(null));
+  }, [scope, editionId, refreshKey]);
+  if (!d) return null;
+  const a = d.alerts;
+  const alertCard = (title: string, n: number, tone: 'danger' | 'warn' | 'neutral', children: React.ReactNode) => (
+    <details className={`card p-4 ${n ? '' : 'opacity-70'}`}>
+      <summary className="cursor-pointer flex items-center justify-between gap-3 text-sm font-medium text-navy">
+        <span>{title}</span><Badge tone={n ? tone : 'neutral'}>{n}</Badge>
+      </summary>
+      <div className="mt-3 text-sm max-h-64 overflow-auto">{n ? children : <p className="text-muted">Nada a apontar.</p>}</div>
+    </details>
+  );
+  const comarcaRows = allComarcas ? d.byComarca : d.byComarca.slice(0, 10);
+  return (
+    <div className="card p-5 space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h4 className="font-semibold text-navy">Oferta × demanda</h4>
+        <div className="flex gap-1.5" role="group" aria-label="Abrangência">
+          {(['edition', 'all'] as const).map(s => (
+            <button key={s} type="button" aria-pressed={scope === s} onClick={() => setScope(s)}
+              className={`px-2.5 py-1 rounded-full border text-xs ${scope === s ? 'bg-navy text-white border-navy' : 'border-line text-muted hover:text-ink'}`}>{s === 'edition' ? 'Edição em gestão' : 'Todas as edições'}</button>
+          ))}
+        </div>
+      </div>
+      <p className="text-xs text-muted -mt-2">
+        {d.totals.chosen} unidades escolhidas · <strong className="text-ink">{d.totals.openSlots} vagas abertas</strong> · <strong className="text-ink">{d.totals.available} magistrados aprovados sem designação</strong> · {d.totals.matches} vinculações.
+      </p>
+      <div className="overflow-x-auto border border-line rounded-md">
+        <table className="w-full text-sm">
+          <thead><tr><th className="th">Área</th><th className="th text-right">Unidades que pedem</th><th className="th text-right">Vagas abertas</th><th className="th text-right">Vinculados</th><th className="th text-right">Disponíveis (1ª / 2ª)</th><th className="th text-right">Saldo</th></tr></thead>
+          <tbody className="divide-y divide-line">
+            {d.byArea.length === 0 && <EmptyRow cols={6}>Sem dados.</EmptyRow>}
+            {d.byArea.map(r => (
+              <tr key={r.area}>
+                <td className="td font-medium">{r.area}</td>
+                <td className="td text-right">{r.units}</td>
+                <td className="td text-right">{r.openSlots}</td>
+                <td className="td text-right">{r.filled}</td>
+                <td className="td text-right">{r.first} / {r.second}</td>
+                <td className={`td text-right font-semibold ${r.balance < 0 ? 'text-danger' : r.balance > 0 ? 'text-ok' : 'text-muted'}`}>{r.balance > 0 ? `+${r.balance}` : r.balance}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <p className="px-4 py-2 text-[11px] text-muted border-t border-line">Saldo = magistrados disponíveis (1ª e 2ª preferência) − vagas abertas. Negativo indica falta de voluntários na área. Unidades com mais de uma área contam em cada uma.</p>
+      </div>
+      <div className="grid lg:grid-cols-2 gap-4">
+        <div className="overflow-x-auto border border-line rounded-md">
+          <table className="w-full text-sm">
+            <thead><tr><th className="th">Comarca</th><th className="th text-right">Sem magistrado</th><th className="th text-right">Parcial</th><th className="th text-right">Atendidas</th></tr></thead>
+            <tbody className="divide-y divide-line">
+              {comarcaRows.length === 0 && <EmptyRow cols={4}>Nenhuma unidade escolhida.</EmptyRow>}
+              {comarcaRows.map(r => (
+                <tr key={r.comarca}><td className="td">{r.comarca}</td><td className={`td text-right ${r.pending ? 'text-danger font-semibold' : 'text-muted'}`}>{r.pending}</td><td className="td text-right">{r.partial}</td><td className="td text-right text-ok">{r.attended}</td></tr>
+              ))}
+            </tbody>
+          </table>
+          {d.byComarca.length > 10 && <button className="w-full py-2 text-xs text-bronze hover:underline border-t border-line" onClick={() => setAllComarcas(!allComarcas)}>{allComarcas ? 'Mostrar só as 10 primeiras' : `Mostrar todas as ${d.byComarca.length} comarcas`}</button>}
+        </div>
+        <div className="space-y-2">
+          {alertCard('Designados na própria vara/comarca de lotação', a.ownPlace.length, 'danger',
+            <ul className="space-y-1">{a.ownPlace.map((x, i) => <li key={i}><strong>{x.name}</strong> → {x.unit} <span className="text-danger text-xs">({x.kind})</span></li>)}</ul>)}
+          {alertCard('Unidades escolhidas sem magistrado', a.unitsWithout.length, 'warn',
+            <ul className="space-y-1">{a.unitsWithout.map((x, i) => <li key={i}>{x.unit} <span className="text-xs text-muted">· {x.areas}</span></li>)}</ul>)}
+          {alertCard('Aprovados sem designação há mais de 15 dias', a.waitingLong.length, 'warn',
+            <ul className="space-y-1">{a.waitingLong.map((x, i) => <li key={i}><strong>{x.name}</strong> <span className="text-xs text-muted">· {x.area} · {x.days} dias</span></li>)}</ul>)}
+          {alertCard('Registros a padronizar (fora da lista oficial)', a.toStandardize.units + a.toStandardize.locations, 'neutral',
+            <div className="space-y-2"><p>{a.toStandardize.units} unidade(s) e {a.toStandardize.locations} lotação(ões) de magistrados.</p>
+              <button className="btn-secondary btn-sm" onClick={() => onGo('standardize')}>Abrir "Padronizar nomes"</button></div>)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ---------- Padronizar nomes: conciliação com o catálogo oficial de comarcas e unidades ---------- */
 interface Suggestion { id: string; label: string; comarca: string; score: number }
 interface StdGroup { key: string; label: string; comarca: string; ids: string[]; editions?: string[]; links?: number; names?: string[]; suggestions: Suggestion[] }
@@ -1352,6 +1445,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
               </div>
             </div>
           </div>
+          <SupplyDemand editionId={selectedId} refreshKey={matches.length + units.length + magistrates.length} onGo={setSub} />
           <AttendedUnits refreshKey={matches.length + units.length} />
           {ai.items.length > 0 && (
             <div className="card p-5">
