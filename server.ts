@@ -345,6 +345,8 @@ let withdrawals: Withdrawal[] = [];
 /** Alteração de vinculação (troca de unidade): a vinculação antiga vale até o dia anterior à data informada; a nova, a partir dela. */
 interface Transfer { id: string; editionId: string; magistrateId: string; name: string; area: string; fromUnit: string; toUnit: string; fromWorkType: string; toWorkType: string; effectiveDate: string; createdAt: string }
 let transfers: Transfer[] = [];
+/** Pares de nomes parecidos que a administração indicou NÃO serem a mesma pessoa (chave "nomeA|nomeB") */
+let dupDismissed: string[] = [];
 
 /** Autenticação em dois fatores (TOTP) do administrador; o segredo é gravado junto do estado. */
 let adminTotpSecret: string | null = null;
@@ -641,7 +643,7 @@ const lastSaved = new Map<string, Map<string, string>>();
 let persistedLogIds = new Set<string>();
 let lastMeta = '';
 
-const metaJson = () => JSON.stringify({ activeEditionId, adminTotpSecret });
+const metaJson = () => JSON.stringify({ activeEditionId, adminTotpSecret, dupDismissed });
 
 const collectionsNow = (): Record<string, { id: string }[]> => ({
   editions, magistrates, units, matches, log: activityLog, faq, panel: panelEntries, withdrawals, transfers,
@@ -659,6 +661,7 @@ async function loadState() {
       activityLog = raw.activityLog ?? activityLog;
       faq = raw.faq ?? faq;
       adminTotpSecret = raw.adminTotpSecret ?? null;
+      dupDismissed = Array.isArray(raw.dupDismissed) ? raw.dupDismissed : [];
       panelEntries = raw.panel ?? [];
       withdrawals = raw.withdrawals ?? [];
       transfers = raw.transfers ?? [];
@@ -694,6 +697,7 @@ async function loadState() {
   faq = loaded.faq as FaqItem[];
   activeEditionId = meta?.activeEditionId ?? editions[0].id;
   adminTotpSecret = meta?.adminTotpSecret ?? null;
+  dupDismissed = Array.isArray(meta?.dupDismissed) ? meta.dupDismissed : [];
   panelEntries = loaded.panel as PanelEntry[];
   withdrawals = loaded.withdrawals as Withdrawal[];
   transfers = loaded.transfers as Transfer[];
@@ -705,7 +709,7 @@ async function persist() {
     fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
     fs.writeFileSync(
       DATA_FILE,
-      JSON.stringify({ editions, activeEditionId, magistrates, units, matches, activityLog, faq, adminTotpSecret, panel: panelEntries, withdrawals, transfers }),
+      JSON.stringify({ editions, activeEditionId, magistrates, units, matches, activityLog, faq, adminTotpSecret, panel: panelEntries, withdrawals, transfers, dupDismissed }),
     );
     return;
   }
@@ -1350,6 +1354,103 @@ async function startServer() {
     res.json({ success: true, count: list.length });
   });
 
+  /** Na edição, deixa uma só inscrição por unidade do catálogo (a mais antiga): vinculações, vagas, áreas e justificativas passam para ela. */
+  function mergeCatalogDuplicates(edId: string, catalogId: string): number {
+    const same = units.filter((x) => x.editionId === edId && x.catalogId === catalogId).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const keeper = same[0];
+    if (!keeper) return 0;
+    for (const dup of same.slice(1)) {
+      matches.filter((m) => m.unitId === dup.id).forEach((m) => { m.unitId = keeper.id; });
+      const sum = (keeper.slots || 1) + (dup.slots || 1);
+      keeper.slots = Math.max(linkedCount(keeper.id), editionById(edId)?.isInitial ? sum : Math.min(sum, MAX_SLOTS));
+      keeper.areas = [...new Set([...keeper.areas, ...dup.areas])];
+      if (dup.description && dup.description !== keeper.description) keeper.description = [keeper.description, dup.description].filter(Boolean).join('\n---\n').slice(0, 2000);
+      if (keeper.selection !== 'Escolhida' && dup.selection === 'Escolhida') keeper.selection = 'Escolhida';
+      units = units.filter((x) => x.id !== dup.id);
+      log(edId, 'Administração', 'Unidade', `Inscrições repetidas da unidade "${fullUnitName(keeper)}" fundidas em uma só.`);
+    }
+    refreshUnitStatus(keeper.id);
+    return same.length - 1;
+  }
+
+  // ---------- Duplicidades: a mesma pessoa é identificada pelo nome (sem acento, caixa, pontuação ou tratamento) ----------
+  const NAME_STOP = new Set(['de', 'da', 'do', 'das', 'dos', 'e']);
+  const nameWords = (k: string) => k.split(' ').filter((w) => w && !NAME_STOP.has(w));
+  function editDistance(a: string, b: string): number {
+    if (Math.abs(a.length - b.length) > 3) return 99;
+    const prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+    for (let i = 1; i <= a.length; i++) {
+      let diag = prev[0]; prev[0] = i;
+      for (let j = 1; j <= b.length; j++) { const tmp = prev[j]; prev[j] = Math.min(prev[j] + 1, prev[j - 1] + 1, diag + (a[i - 1] === b[j - 1] ? 0 : 1)); diag = tmp; }
+    }
+    return prev[b.length];
+  }
+  /** Pares de nomes diferentes que provavelmente são a mesma pessoa (abreviação, nome do meio omitido ou erro de digitação). */
+  function similarNamePairs() {
+    const byKey = new Map<string, Magistrate[]>();
+    for (const m of magistrates) { const k = personKey(m.name); if (k) byKey.set(k, [...(byKey.get(k) ?? []), m]); }
+    const keys = [...byKey.keys()];
+    const out: { a: string; b: string; reason: string }[] = [];
+    const dismissed = new Set(dupDismissed);
+    for (let i = 0; i < keys.length; i++) for (let j = i + 1; j < keys.length; j++) {
+      const [a, b] = [keys[i], keys[j]];
+      const wa = nameWords(a), wb = nameWords(b);
+      if (wa.length < 2 || wb.length < 2) continue;
+      const sameEnds = wa[0] === wb[0] && wa[wa.length - 1] === wb[wb.length - 1];
+      let reason = '';
+      if (sameEnds) {
+        const [small, big] = wa.length <= wb.length ? [wa, wb] : [wb, wa];
+        // "JOÃO SILVA" ⊂ "JOÃO CARLOS DA SILVA"; abreviações ("J." ↔ "JOÃO") também valem
+        if (small.every((w) => big.some((x) => x === w || (w.length === 1 && x.startsWith(w)) || (x.length === 1 && w.startsWith(x))))) reason = 'nome abreviado ou com parte omitida';
+      }
+      if (!reason && (wa[0] === wb[0] || wa[wa.length - 1] === wb[wb.length - 1]) && a.length > 10 && editDistance(a, b) <= 2) reason = 'grafia quase igual (possível erro de digitação)';
+      if (reason && !dismissed.has([a, b].sort().join('|'))) out.push({ a, b, reason });
+    }
+    const describe = (k: string) => ({ key: k, name: byKey.get(k)![0].name, records: byKey.get(k)!.map((m) => ({ id: m.id, edition: editionById(m.editionId)?.title ?? '', status: m.status, email: m.email })) });
+    return out.map((p) => ({ a: describe(p.a), b: describe(p.b), reason: p.reason }));
+  }
+  app.get('/api/duplicates', (_req, res) => res.json(similarNamePairs()));
+
+  /** "É a mesma pessoa": todos os registros passam a usar a grafia escolhida; e-mail e lotação que faltem são completados. */
+  app.post('/api/duplicates/merge', (req, res) => {
+    const keys: string[] = Array.isArray(req.body?.keys) ? req.body.keys.filter((k: unknown) => typeof k === 'string') : [];
+    const chosen = typeof req.body?.name === 'string' ? canonicalPersonName(cleanCell(req.body.name)) : '';
+    if (keys.length < 2 || !chosen) return res.status(400).json({ error: 'Indique os nomes e a grafia a adotar.' });
+    const group = magistrates.filter((m) => keys.includes(personKey(m.name)));
+    if (group.length === 0) return res.status(404).json({ error: 'Registros não encontrados.' });
+    const donor = [...group].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const email = donor.find((m) => m.email)?.email ?? '';
+    const loc = donor.find((m) => m.locationCatalogId) ?? donor.find((m) => m.currentLocation);
+    const oldNames = [...new Set(group.map((m) => m.name))];
+    for (const m of group) {
+      if (m.name !== chosen && !m.nameAsTyped) m.nameAsTyped = m.name;
+      m.name = chosen;
+      if (!m.email && email) m.email = email;
+      if (!m.currentLocation && loc) { m.currentLocation = loc.currentLocation; m.locationCatalogId = loc.locationCatalogId; m.locationComarca = loc.locationComarca; }
+    }
+    withdrawals.filter((w) => keys.includes(personKey(w.name))).forEach((w) => { w.name = chosen; });
+    transfers.filter((t) => keys.includes(personKey(t.name))).forEach((t) => { t.name = chosen; });
+    log(null, 'Administração', 'Magistrado', `Mesma pessoa: ${oldNames.map((n) => `"${n}"`).join(', ')} unificados como "${chosen}" (${group.length} registro(s)).`);
+    res.json({ success: true, count: group.length });
+  });
+
+  app.post('/api/duplicates/dismiss', (req, res) => {
+    const keys: string[] = Array.isArray(req.body?.keys) ? req.body.keys.filter((k: unknown) => typeof k === 'string') : [];
+    if (keys.length !== 2) return res.status(400).json({ error: 'Par inválido.' });
+    const k = [...keys].sort().join('|');
+    if (!dupDismissed.includes(k)) dupDismissed.push(k);
+    log(null, 'Administração', 'Magistrado', `Nomes parecidos marcados como pessoas diferentes: ${keys.join(' × ')}.`);
+    res.json({ success: true });
+  });
+
+  /** Funde inscrições repetidas da mesma unidade oficial numa edição. */
+  app.post('/api/units/merge', (req, res) => {
+    const unit = units.find((u) => u.id === req.body?.id);
+    if (!unit || !unit.catalogId) return res.status(400).json({ error: 'Unidade não encontrada ou fora da lista oficial.' });
+    const n = mergeCatalogDuplicates(unit.editionId, unit.catalogId);
+    res.json({ success: true, merged: n });
+  });
+
   app.post('/api/standardize/apply', (req, res) => {
     const items: { kind?: unknown; ids?: unknown; catalogId?: unknown; note?: unknown }[] = Array.isArray(req.body?.items) ? req.body.items : [req.body];
     if (items.length === 0 || items.length > 2000) return res.status(400).json({ error: 'Nada a aplicar.' });
@@ -1375,22 +1476,7 @@ async function startServer() {
       }
       // Fusão: na mesma edição fica uma unidade por item do catálogo (a mais antiga)
       const editionsTouched = new Set(units.filter((x) => ids.includes(x.id)).map((x) => x.editionId));
-      for (const edId of editionsTouched) {
-        const same = units.filter((x) => x.editionId === edId && x.catalogId === cat.id).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-        const keeper = same[0];
-        for (const dup of same.slice(1)) {
-          matches.filter((m) => m.unitId === dup.id).forEach((m) => { m.unitId = keeper.id; });
-          const sum = (keeper.slots || 1) + (dup.slots || 1);
-          keeper.slots = Math.max(linkedCount(keeper.id), editionById(edId)?.isInitial ? sum : Math.min(sum, MAX_SLOTS));
-          keeper.areas = [...new Set([...keeper.areas, ...dup.areas])];
-          if (dup.description && dup.description !== keeper.description) keeper.description = [keeper.description, dup.description].filter(Boolean).join('\n---\n').slice(0, 2000);
-          if (keeper.selection !== 'Escolhida' && dup.selection === 'Escolhida') keeper.selection = 'Escolhida';
-          units = units.filter((x) => x.id !== dup.id);
-          merged++;
-          log(edId, 'Administração', 'Unidade', `Inscrições repetidas da unidade "${cat.label}" fundidas em uma só.`);
-        }
-        if (keeper) refreshUnitStatus(keeper.id);
-      }
+      for (const edId of editionsTouched) merged += mergeCatalogDuplicates(edId, cat.id);
     }
     res.json({ success: true, units: unitsDone, locations: locsDone, merged });
   });
@@ -1468,7 +1554,7 @@ async function startServer() {
     if (sei && (sei.length < 3 || sei.length > 100)) return res.status(400).json({ error: 'Número do processo SEI inválido.' });
     if (requestDate && !validYmd(requestDate)) return res.status(400).json({ error: 'Data do pedido de desistência inválida.' });
 
-    const rows = panelRows().filter((r) => norm(r.name) === norm(name));
+    const rows = panelRows().filter((r) => personKey(r.name) === personKey(name)); // mesma pessoa = mesmo nome
     if (rows.length === 0) return res.status(404).json({ error: 'Este magistrado não consta no painel de vinculações.' });
     const uniq = (xs: string[]) => [...new Set(xs)].join(' / ');
     const record: Withdrawal = {
@@ -1730,7 +1816,9 @@ async function startServer() {
     res.json(list.map((m0) => {
       const m = req.query.edition === 'all' ? { ...m0, editionTitle: editionById(m0.editionId)?.title ?? '' } : m0;
       const w = withdrawals.find((x) => !x.endedAt && personKey(x.name) === personKey(m.name) && !(x.magistrateIds ?? []).includes(m.id) && m.createdAt > x.createdAt);
-      return w ? { ...m, priorWithdrawal: { sei: w.sei, requestDate: w.requestDate } } : m;
+      // Mesma pessoa (mesmo nome) inscrita mais de uma vez na mesma edição — exceto na edição inicial, onde cada designação é um registro
+      const twins = editionById(m.editionId)?.isInitial ? 0 : magistrates.filter((x) => x.editionId === m.editionId && x.id !== m.id && personKey(x.name) === personKey(m.name)).length;
+      return { ...m, ...(w ? { priorWithdrawal: { sei: w.sei, requestDate: w.requestDate } } : {}), ...(twins ? { duplicateCount: twins + 1 } : {}) };
     }));
   });
 
@@ -1984,7 +2072,11 @@ async function startServer() {
     // edition=all: unidades de todas as edições (com o título da edição)
     if (req.query.edition === 'all') return res.json(units.map((u) => ({ ...u, editionTitle: editionById(u.editionId)?.title ?? '' })));
     const edition = resolveEdition(req);
-    res.json(edition ? units.filter((u) => u.editionId === edition.id) : []);
+    const list = edition ? units.filter((u) => u.editionId === edition.id) : [];
+    // Mesma unidade oficial inscrita mais de uma vez na edição
+    const count = new Map<string, number>();
+    list.forEach((u) => { if (u.catalogId) count.set(u.catalogId, (count.get(u.catalogId) ?? 0) + 1); });
+    res.json(list.map((u) => (u.catalogId && (count.get(u.catalogId) ?? 0) > 1 ? { ...u, duplicateCount: count.get(u.catalogId) } : u)));
   });
 
   app.post('/api/units', (req, res) => {

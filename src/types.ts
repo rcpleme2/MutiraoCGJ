@@ -52,6 +52,8 @@ export interface Magistrate {
   status: MagistrateStatus;
   /** Já desistiu antes (mesmo nome): indicação para análise do pedido de nova inscrição */
   priorWithdrawal?: { sei: string; requestDate?: string };
+  /** Inscrições com o mesmo nome nesta edição (mesma pessoa) */
+  duplicateCount?: number;
   editionTitle?: string;
   match?: (Match & { unit?: Unit | null }) | null;
 }
@@ -67,6 +69,8 @@ export interface Unit {
   separator?: string;
   /** Unidade do catálogo oficial; ausente = "a padronizar" */
   catalogId?: string;
+  /** Inscrições da mesma unidade oficial nesta edição */
+  duplicateCount?: number;
   areas: string[];
   supportNeeded: SupportNeeded;
   description: string;

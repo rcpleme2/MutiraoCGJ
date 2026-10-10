@@ -846,12 +846,39 @@ function StdRow({ g, kind, onApply }: { g: StdGroup; kind: 'unit' | 'location'; 
   );
 }
 
+interface DupSide { key: string; name: string; records: { id: string; edition: string; status: string; email: string }[] }
+interface DupPair { a: DupSide; b: DupSide; reason: string }
+function DupRow({ d, run, onDone }: { d: DupPair; run: RunFn; onDone: () => Promise<void> }) {
+  const longer = d.a.name.length >= d.b.name.length ? d.a.name : d.b.name;
+  const [name, setName] = useState(longer);
+  const side = (x: DupSide) => (
+    <div><strong className="text-ink">{x.name}</strong><div className="text-xs text-muted">{x.records.map(r => `${r.edition} (${r.status})`).join('; ')}</div></div>
+  );
+  return (
+    <tr className="align-top">
+      <td className="td space-y-2">{side(d.a)}{side(d.b)}<div className="text-[11px] text-bronze">{d.reason}</div></td>
+      <td className="td min-w-[16rem] space-y-1.5">
+        {[d.a.name, d.b.name].map(n => (
+          <label key={n} className="flex items-center gap-2 text-sm cursor-pointer"><input type="radio" checked={name === n} onChange={() => setName(n)} /> {n}</label>
+        ))}
+        <input className="input !py-2 text-sm" value={name} onChange={e => setName(e.target.value)} aria-label="Grafia a adotar" />
+      </td>
+      <td className="td text-right whitespace-nowrap space-y-1.5">
+        <button className="btn-primary btn-sm w-full" disabled={!name.trim()} onClick={async () => { if (await run(() => api('/duplicates/merge', { method: 'POST', json: { keys: [d.a.key, d.b.key], name } }), 'Registros unificados.')) await onDone(); }}>É a mesma pessoa</button>
+        <button className="btn-secondary btn-sm w-full" onClick={async () => { if (await run(() => api('/duplicates/dismiss', { method: 'POST', json: { keys: [d.a.key, d.b.key] } }))) await onDone(); }}>Não é</button>
+      </td>
+    </tr>
+  );
+}
+
 function StandardizeAdmin({ run, confirm, onChanged }: { run: RunFn; confirm: (m: string, label?: string) => Promise<boolean>; onChanged: () => void }) {
   const [data, setData] = useState<{ units: StdGroup[]; locations: StdGroup[] } | null>(null);
+  const [dups, setDups] = useState<DupPair[]>([]);
   const [names, setNames] = useState<{ count: number; sample: { kind: string; from: string; to: string }[] } | null>(null);
   const load = useCallback(async () => {
     const r = await run(() => Promise.all([api<{ units: StdGroup[]; locations: StdGroup[] }>('/standardize'), api<{ count: number; sample: { kind: string; from: string; to: string }[] }>('/standardize/names')]));
     if (r) { setData(r[0]); setNames(r[1]); }
+    const d = await run(() => api<DupPair[]>('/duplicates')); if (d) setDups(d);
   }, [run]);
   const fixNames = async () => {
     if (!names || !(await confirm(`Padronizar ${names.count} nome(s) em MAIÚSCULAS, sem tratamentos como "Dr." ou "Dra."? O nome original de cada magistrado fica guardado.`, 'Padronizar nomes'))) return;
@@ -899,6 +926,14 @@ function StandardizeAdmin({ run, confirm, onChanged }: { run: RunFn; confirm: (m
           ) : <p className="text-sm text-muted mt-1">Todos os nomes já estão padronizados. Novas inscrições já entram em MAIÚSCULAS.</p>}
         </div>
         {names && names.count > 0 && <button className="btn-primary btn-sm" onClick={fixNames}><Check className="w-4 h-4" /> Padronizar {names.count} nome(s)</button>}
+      </div>
+      <div className="space-y-2">
+        <h4 className="font-semibold text-navy">Possíveis duplicidades de magistrados <span className="text-muted font-normal">({dups.length})</span></h4>
+        <p className="text-sm text-muted">Nomes iguais (sem diferença de acento, caixa ou tratamento) já são tratados como a mesma pessoa. Aqui aparecem nomes <strong className="text-ink">parecidos</strong>, que precisam da sua confirmação.</p>
+        <Table head={['Nomes', 'Grafia a adotar', '']}>
+          {dups.length === 0 && <EmptyRow cols={3}>Nenhuma duplicidade provável.</EmptyRow>}
+          {dups.map(d => <DupRow key={d.a.key + d.b.key} d={d} run={run} onDone={async () => { await load(); onChanged(); }} />)}
+        </Table>
       </div>
       {section('Unidades', 'unit', data.units, 'Todas as unidades estão padronizadas.')}
       {section('Lotações de magistrados', 'location', data.locations, 'Todas as lotações estão padronizadas.')}
@@ -1214,6 +1249,10 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
     const r = await run(() => api(`/units/${unit.id}`, { method: 'PUT', json: { slots: n } }), `Magistrados a alocar: ${n}.`);
     if (r) refresh();
   };
+  const mergeUnit = async (u: Unit) => {
+    if (!(await confirm(`Fundir as ${u.duplicateCount} inscrições de "${unitLabel(u)}" desta edição em uma só? Vinculações, vagas, áreas e justificativas passam para a inscrição mais antiga.`, 'Fundir'))) return;
+    await run(() => api('/units/merge', { method: 'POST', json: { id: u.id } }), 'Inscrições fundidas.'); refresh();
+  };
   const chooseUnit = async (id: string) => { await run(() => api(`/units/${id}/choose`, { method: 'POST' }), 'Unidade escolhida para o mutirão.'); refresh(); };
 
   /** Cria ou altera uma vinculação (magistrado, área e atuação: audiência e/ou sentença) */
@@ -1412,7 +1451,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             {magistrates.length === 0 && <EmptyRow cols={7}>Nenhuma inscrição nesta edição.</EmptyRow>}
             {sortedMagistrates.map(m => (
               <tr key={m.id}>
-                <td className="td"><div className="font-medium">{m.name}</div>{viewAll && <div className="text-[11px] text-bronze">{m.editionTitle}</div>}<div className="text-xs text-muted">{m.email}</div>{m.registeredIp && <div className="text-[11px] text-muted/80">IP {m.registeredIp}</div>}{m.declaration && <div className="text-[11px] text-ok mt-0.5">Declaração de regularidade aceita</div>}{m.priorWithdrawal && <div className="text-[11px] text-warn mt-0.5">Já desistiu antes (SEI {m.priorWithdrawal.sei || 'não informado'}{m.priorWithdrawal.requestDate ? `, pedido em ${m.priorWithdrawal.requestDate.split('-').reverse().join('/')}` : ''}). Se deferida esta inscrição, a desistência passa a valer só para o período anterior.</div>}</td>
+                <td className="td"><div className="font-medium">{m.name}</div>{viewAll && <div className="text-[11px] text-bronze">{m.editionTitle}</div>}<div className="text-xs text-muted">{m.email}</div>{m.registeredIp && <div className="text-[11px] text-muted/80">IP {m.registeredIp}</div>}{m.declaration && <div className="text-[11px] text-ok mt-0.5">Declaração de regularidade aceita</div>}{m.duplicateCount && <div className="text-[11px] text-danger mt-0.5">◦ Mesmo nome inscrito {m.duplicateCount} vezes nesta edição</div>}{m.priorWithdrawal && <div className="text-[11px] text-warn mt-0.5">Já desistiu antes (SEI {m.priorWithdrawal.sei || 'não informado'}{m.priorWithdrawal.requestDate ? `, pedido em ${m.priorWithdrawal.requestDate.split('-').reverse().join('/')}` : ''}). Se deferida esta inscrição, a desistência passa a valer só para o período anterior.</div>}</td>
                 <td className="td"><DateCell iso={m.createdAt} /></td>
                 <td className="td text-muted">{m.currentLocation}{m.currentLocation && !m.locationCatalogId && <span className="text-[11px] text-warn block">◦ A padronizar</span>}</td>
                 <td className="td text-xs"><div className="text-bronze font-medium">1ª: {m.firstPreference}</div><div className="text-muted">2ª: {m.secondPreference || '—'}</div></td>
@@ -1471,7 +1510,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
                     <td className="td">
                       <button className="flex items-start gap-1.5 text-left" onClick={() => setOpenUnitId(open ? '' : u.id)} aria-expanded={open} title="Ver justificativa e vincular magistrado">
                         {open ? <ChevronDown className="w-4 h-4 mt-0.5 shrink-0 text-bronze" /> : <ChevronRight className="w-4 h-4 mt-0.5 shrink-0 text-muted" />}
-                        <span><span className="font-medium block">{unitLabel(u)}</span>{!u.catalogId && <span className="text-[11px] text-warn block">◦ A padronizar (fora da lista oficial)</span>}{presence[u.id] && <PresenceNote p={presence[u.id]} />}{viewAll && <span className="text-[11px] text-bronze block">{u.editionTitle}</span>}<span className="text-xs text-muted block">Resp.: {u.judgeName}</span><span className="text-xs text-muted block">{u.email}</span>{u.registeredIp && <span className="text-[11px] text-muted/80 block">IP {u.registeredIp}</span>}</span>
+                        <span><span className="font-medium block">{unitLabel(u)}</span>{!u.catalogId && <span className="text-[11px] text-warn block">◦ A padronizar (fora da lista oficial)</span>}{u.duplicateCount && <span className="text-[11px] text-danger block">◦ Unidade inscrita {u.duplicateCount} vezes nesta edição</span>}{presence[u.id] && <PresenceNote p={presence[u.id]} />}{viewAll && <span className="text-[11px] text-bronze block">{u.editionTitle}</span>}<span className="text-xs text-muted block">Resp.: {u.judgeName}</span><span className="text-xs text-muted block">{u.email}</span>{u.registeredIp && <span className="text-[11px] text-muted/80 block">IP {u.registeredIp}</span>}</span>
                       </button>
                     </td>
                     <td className="td"><DateCell iso={u.createdAt} /></td>
@@ -1486,6 +1525,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
                     <td className="td">{u.selection === 'Escolhida' ? <Badge tone={u.status === 'Atendida' ? 'ok' : 'warn'}>{u.status}</Badge> : <span className="text-xs text-muted">—</span>}</td>
                     <td className="td">
                      <div className="flex flex-wrap justify-end gap-1.5">
+                      {u.duplicateCount && <button className="btn-secondary btn-sm" onClick={() => mergeUnit(u)}>Fundir repetidas</button>}
                       {u.selection !== 'Escolhida' && <button className="btn-secondary btn-sm" onClick={() => chooseUnit(u.id)}><Check className="w-3.5 h-3.5" /> Escolher</button>}
                       {u.selection !== 'Rejeitada' && <button className="btn-secondary btn-sm !text-danger" onClick={() => { setRejecting({ kind: 'units', id: u.id, name: u.unitName, linked: u.status === 'Atendida' }); setRejectReason(''); setModal('reject'); }}><X className="w-3.5 h-3.5" /> Rejeitar</button>}
                       <button className="btn-ghost btn-sm" title="Justificativa e vinculação" onClick={() => setOpenUnitId(open ? '' : u.id)}>{open ? 'Fechar' : 'Detalhes'}</button>
