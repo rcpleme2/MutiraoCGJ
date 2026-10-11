@@ -27,17 +27,6 @@ const toLocalInput = (iso: string) => iso.slice(0, 16);
 
 type SortDir = 'asc' | 'desc';
 
-/** Cabeçalho de coluna clicável que alterna entre mais recentes e mais antigas primeiro. */
-function SortHeader({ label, dir, onToggle }: { label: string; dir: SortDir; onToggle: () => void }) {
-  const Icon = dir === 'desc' ? ArrowDown : ArrowUp;
-  return (
-    <button type="button" onClick={onToggle} className="inline-flex items-center gap-1 uppercase tracking-wider hover:text-ink"
-      title={dir === 'desc' ? 'Mais recentes primeiro (clique para inverter)' : 'Mais antigas primeiro (clique para inverter)'}
-      aria-label={`${label}: ${dir === 'desc' ? 'mais recentes primeiro' : 'mais antigas primeiro'}. Clique para inverter`}>
-      {label} <Icon className="w-3.5 h-3.5 text-bronze" />
-    </button>
-  );
-}
 
 /** Data e hora da inscrição em duas linhas (a hora com segundos ajuda a desempatar). */
 function DateCell({ iso }: { iso: string }) {
@@ -50,13 +39,10 @@ function DateCell({ iso }: { iso: string }) {
   );
 }
 
-const byDate = <T extends { createdAt: string; id: string }>(dir: SortDir) => (a: T, b: T) =>
-  (dir === 'asc' ? 1 : -1) * (a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
 
 /** "Nome da unidade" + separador + "comarca" (ex.: 1ª VARA CÍVEL DE CURITIBA), sem repetir a comarca. */
 const unitLabel = (u: { unitName: string; comarca?: string; separator?: string }) => fullUnitName(u);
 
-type UnitSortKey = 'date' | 'name' | 'selection';
 const SELECTION_ORDER: Record<string, number> = { 'Em análise': 0, 'Escolhida': 1, 'Rejeitada': 2 };
 const collator = new Intl.Collator('pt-BR', { sensitivity: 'base', numeric: true });
 
@@ -71,14 +57,19 @@ function ColSort({ label, active, dir, onToggle }: { label: string; active: bool
   );
 }
 
-/** Aviso discreto: já há magistrado atuando na comarca e/ou na vara no painel geral de vinculações. */
-function PresenceNote({ p }: { p: { comarca: string[]; unit: string[] } }) {
-  const parts = [p.unit.length ? 'vara' : '', p.comarca.length ? 'comarca' : ''].filter(Boolean);
-  const names = [...new Set([...p.unit, ...p.comarca])];
+/** Aviso discreto: já há magistrado atuando na mesma unidade e/ou em outras unidades da mesma comarca (painel geral de vinculações). */
+type Presence = { comarca: string; inComarca: { name: string; unit: string }[]; inUnit: { name: string; unit: string }[] };
+function PresenceNote({ p }: { p: Presence }) {
+  const list = (xs: { name: string; unit: string }[]) => xs.map(x => `${x.name} — ${x.unit}`).join('\n');
   return (
-    <span className="text-[11px] text-bronze block" title={`Painel geral de vinculações: ${names.join(', ')}`}>
-      ◦ Já há atuação {parts.length === 2 ? 'na vara e na comarca' : parts[0] === 'vara' ? 'nesta vara' : 'nesta comarca'} ({names.length})
-    </span>
+    <>
+      {p.inUnit.length > 0 && (
+        <span className="text-[11px] text-danger block" title={list(p.inUnit)}>◦ Já há atuação nesta unidade: {p.inUnit.map(x => x.name).join(', ')}</span>
+      )}
+      {p.inComarca.length > 0 && (
+        <span className="text-[11px] text-bronze block" title={list(p.inComarca)}>◦ Já há atuação na comarca de {p.comarca}: {p.inComarca.length} {p.inComarca.length === 1 ? 'magistrado' : 'magistrados'} em {[...new Set(p.inComarca.map(x => x.unit))].length === 1 ? p.inComarca[0].unit : `${new Set(p.inComarca.map(x => x.unit)).size} unidades`}</span>
+      )}
+    </>
   );
 }
 
@@ -101,20 +92,13 @@ function AttendedUnits({ refreshKey }: { refreshKey: number }) {
     return [...m.values()].sort((a, b) => collator.compare(a.label, b.label));
   };
   const renderTable = (list: PanelRow[]) => (
-    <Table head={['Unidade / Comarca', 'Magistrados vinculados', 'Edição']}>
-      {list.length === 0 && <EmptyRow cols={3}>Nenhuma unidade atendida.</EmptyRow>}
-      {groupUnits(list).map(g => (
-        <tr key={g.label + g.edition}>
-          <td className="td font-medium">{g.label}</td>
-          <td className="td">
-            <ul className="space-y-0.5">
-              {g.rows.map(r => <li key={r.id} className="text-sm">{r.name}{!area && !split && <span className="text-xs text-bronze"> · {r.area}</span>}</li>)}
-            </ul>
-          </td>
-          <td className="td text-xs text-muted">{[...new Set(g.rows.map(r => r.editionTitle))].join(', ')}</td>
-        </tr>
-      ))}
-    </Table>
+    <SmartTable id="atendidas" picker={false} rows={groupUnits(list)} rowKey={g => g.label + g.edition} empty="Nenhuma unidade atendida." defaultSort={{ key: 'unit', dir: 'asc' }} cols={[
+      { id: 'unit', label: 'Unidade / Comarca', sort: g => g.label, tdClass: 'font-medium', render: g => g.label },
+      { id: 'mags', label: 'Magistrados vinculados', sort: g => g.rows.length, render: g => (
+        <ul className="space-y-0.5">{g.rows.map(r => <li key={r.id} className="text-sm">{r.name}{!area && !split && <span className="text-xs text-bronze"> · {r.area}</span>}</li>)}</ul>
+      ) },
+      { id: 'edition', label: 'Edição', sort: g => g.edition, tdClass: 'text-xs text-muted', render: g => [...new Set(g.rows.map(r => r.editionTitle))].join(', ') },
+    ]} />
   );
   return (
     <div className="card p-5 space-y-4">
@@ -133,6 +117,83 @@ function AttendedUnits({ refreshKey }: { refreshKey: number }) {
           <div key={a}><h5 className="text-sm font-semibold text-bronze mb-2">{a}</h5>{renderTable(shown.filter(r => r.area.trim() === a))}</div>
         )))
         : renderTable(shown)}
+    </div>
+  );
+}
+
+/* ---------- Tabela com ordenação pelos cabeçalhos e escolha de colunas (preferências guardadas no navegador) ---------- */
+interface Col<T> {
+  id: string;
+  label: string;
+  render: (x: T) => React.ReactNode;
+  /** valor usado na ordenação (sem ele, a coluna não ordena) */
+  sort?: (x: T) => string | number;
+  /** pode ser ocultada pelo usuário; `hidden` = começa oculta */
+  optional?: boolean;
+  hidden?: boolean;
+  align?: 'right';
+  tdClass?: string;
+}
+const readPref = <V,>(key: string, fallback: V): V => { try { const v = localStorage.getItem(key); return v ? { ...fallback as any, ...JSON.parse(v) } : fallback; } catch { return fallback; } };
+const writePref = (key: string, v: unknown) => { try { localStorage.setItem(key, JSON.stringify(v)); } catch { /* armazenamento indisponível */ } };
+
+function SmartTable<T>({ id, cols, rows, rowKey, empty, defaultSort, rowClass, after, picker = true, bare = false }: {
+  id: string; cols: Col<T>[]; rows: T[]; rowKey: (x: T) => string; empty: React.ReactNode;
+  defaultSort?: { key: string; dir: SortDir }; rowClass?: (x: T) => string;
+  /** linha extra logo abaixo de cada linha (ex.: detalhes expandidos), recebe o número de colunas visíveis */
+  after?: (x: T, colSpan: number) => React.ReactNode;
+  picker?: boolean;
+  /** sem moldura própria (para usar dentro de outro cartão) */
+  bare?: boolean;
+}) {
+  const [sort, setSort] = useState<{ key: string; dir: SortDir }>(() => readPref(`mutirao-sort-${id}`, defaultSort ?? { key: '', dir: 'asc' }));
+  const [hidden, setHidden] = useState<Record<string, boolean>>(() => readPref(`mutirao-cols-${id}`, Object.fromEntries(cols.filter(c => c.hidden).map(c => [c.id, true]))));
+  const visible = cols.filter(c => !(c.optional && hidden[c.id]));
+  const toggleSort = (key: string) => setSort(prev => { const next = { key, dir: prev.key === key && prev.dir === 'asc' ? 'desc' as SortDir : 'asc' as SortDir }; writePref(`mutirao-sort-${id}`, next); return next; });
+  const toggleCol = (cid: string) => setHidden(prev => { const next = { ...prev, [cid]: !prev[cid] }; writePref(`mutirao-cols-${id}`, next); return next; });
+  const sortCol = cols.find(c => c.id === sort.key && c.sort);
+  const sorted = sortCol ? [...rows].sort((a, b) => {
+    const va = sortCol.sort!(a), vb = sortCol.sort!(b);
+    const cmp = typeof va === 'number' && typeof vb === 'number' ? va - vb : collator.compare(String(va ?? ''), String(vb ?? ''));
+    return sort.dir === 'asc' ? cmp : -cmp;
+  }) : rows;
+  const optional = cols.filter(c => c.optional);
+  return (
+    <div className={bare ? '' : 'space-y-2'}>
+      {picker && optional.length > 0 && (
+        <div className={`flex justify-end ${bare ? 'px-3 pt-2' : ''}`}>
+          <details className="relative">
+            <summary className="list-none cursor-pointer btn-ghost btn-sm text-xs">Colunas ({visible.length}/{cols.length})</summary>
+            <div className="absolute right-0 z-20 mt-1 w-56 card shadow-lg p-3 space-y-1.5">
+              {optional.map(c => (
+                <label key={c.id} className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input type="checkbox" checked={!hidden[c.id]} onChange={() => toggleCol(c.id)} /> {c.label}
+                </label>
+              ))}
+            </div>
+          </details>
+        </div>
+      )}
+      <div className={bare ? '' : 'card overflow-hidden'}>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead><tr>{visible.map(c => (
+              <th key={c.id} className={`th ${c.align === 'right' ? 'text-right' : ''}`} aria-sort={sort.key === c.id ? (sort.dir === 'asc' ? 'ascending' : 'descending') : undefined}>
+                {c.sort ? <ColSort label={c.label} active={sort.key === c.id} dir={sort.dir} onToggle={() => toggleSort(c.id)} /> : c.label}
+              </th>
+            ))}</tr></thead>
+            <tbody className="divide-y divide-line">
+              {sorted.length === 0 && <EmptyRow cols={visible.length}>{empty}</EmptyRow>}
+              {sorted.map(x => (
+                <React.Fragment key={rowKey(x)}>
+                  <tr className={rowClass?.(x) ?? ''}>{visible.map(c => <td key={c.id} className={`td ${c.align === 'right' ? 'text-right' : ''} ${c.tdClass ?? ''}`}>{c.render(x)}</td>)}</tr>
+                  {after?.(x, visible.length)}
+                </React.Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }
@@ -611,74 +672,54 @@ function PanelAdmin({ run, confirm, onChanged }: {
             </div>
           </div>
         )}
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead><tr><th className="th">Magistrado(a)</th><th className="th">Área de atuação</th><th className="th">Unidade</th><th className="th">Atuação</th><th className="th">Edição</th><th className="th w-64"></th></tr></thead>
-            <tbody className="divide-y divide-line">
-              {rows.length === 0 && <tr><td colSpan={6} className="px-4 py-10 text-center text-muted">{data.rows.length === 0 ? 'Nenhuma vinculação vigente.' : 'Nenhum resultado para o filtro escolhido.'}</td></tr>}
-              {rows.map(r => (
-                <tr key={r.id}>
-                  <td className="td font-medium">{r.name}</td>
-                  <td className="td text-muted">{r.area}</td>
-                  <td className="td">{r.unit}{r.comarca && <div className="text-xs text-muted">{r.comarca}</div>}{r.note && <div className="text-xs text-muted">Obs.: {r.note}</div>}{r.startDate && <div className="text-xs text-bronze">a partir de {r.startDate.split('-').reverse().join('/')}</div>}</td>
-                  <td className="td text-xs">{r.workType === 'Audiência' ? 'Audiências' : r.workType === 'Sentença' ? 'Sentença' : r.workType}</td>
-                  <td className="td text-xs text-muted">{r.editionTitle}</td>
-                  <td className="td text-right whitespace-nowrap">
-                    <button className="btn-secondary btn-sm mr-1" onClick={() => openMove(r)}>Alterar vara</button>
-                    <button className="btn-secondary btn-sm mr-1" onClick={() => setExcludingRow(r)}>Excluir</button>
-                    <button className="btn-secondary btn-sm" onClick={() => { setDropping(r); setSei(''); setRequestDate(today()); }}>Desistência</button>
-                    <button className="btn-danger" title="Desfazer vinculação" aria-label="Excluir" onClick={() => removeRow(r)}><Trash2 className="w-4 h-4" /></button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <SmartTable bare id="painel" rows={rows} rowKey={r => r.id} defaultSort={{ key: 'name', dir: 'asc' }}
+          empty={data.rows.length === 0 ? 'Nenhuma vinculação vigente.' : 'Nenhum resultado para o filtro escolhido.'} cols={[
+            { id: 'name', label: 'Magistrado(a)', sort: r => r.name, tdClass: 'font-medium', render: r => r.name },
+            { id: 'area', label: 'Área de atuação', optional: true, sort: r => r.area, tdClass: 'text-muted', render: r => r.area },
+            { id: 'unit', label: 'Unidade', sort: r => fullUnitName({ unitName: r.unit, comarca: r.comarca, separator: r.separator }), render: r => <>
+              {fullUnitName({ unitName: r.unit, comarca: r.comarca, separator: r.separator })}
+              {r.note && <div className="text-xs text-muted">Obs.: {r.note}</div>}
+              {r.startDate && <div className="text-xs text-bronze">a partir de {r.startDate.split('-').reverse().join('/')}</div>}
+            </> },
+            { id: 'comarca', label: 'Comarca', optional: true, hidden: true, sort: r => r.comarca ?? '', tdClass: 'text-xs', render: r => r.comarca || '—' },
+            { id: 'work', label: 'Atuação', optional: true, sort: r => r.workType ?? '', tdClass: 'text-xs', render: r => (r.workType === 'Audiência' ? 'Audiências' : r.workType === 'Sentença' ? 'Sentença' : r.workType) },
+            { id: 'edition', label: 'Edição', optional: true, sort: r => r.editionTitle, tdClass: 'text-xs text-muted', render: r => r.editionTitle },
+            { id: 'actions', label: '', align: 'right', render: r => (
+              <div className="flex flex-wrap justify-end gap-1">
+                <button className="btn-secondary btn-sm" onClick={() => openMove(r)}>Alterar vara</button>
+                <button className="btn-secondary btn-sm" onClick={() => setExcludingRow(r)}>Excluir</button>
+                <button className="btn-secondary btn-sm" onClick={() => { setDropping(r); setSei(''); setRequestDate(today()); }}>Desistência</button>
+                <button className="btn-danger" title="Desfazer vinculação" aria-label="Desfazer vinculação" onClick={() => removeRow(r)}><Trash2 className="w-4 h-4" /></button>
+              </div>
+            ) },
+          ]} />
         {rows.length > 0 && <p className="px-4 py-2.5 text-xs text-muted border-t border-line">{rows.length} de {data.rows.length} designações</p>}
       </div>
 
       {data.transfers.length > 0 && (
         <div className="card overflow-hidden">
           <div className="p-4 border-b border-line"><h4 className="font-semibold text-navy">Alterações de vinculação <span className="text-muted font-normal">({data.transfers.length})</span></h4></div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead><tr><th className="th">Magistrado(a)</th><th className="th">Vinculação anterior</th><th className="th">Nova vinculação</th></tr></thead>
-              <tbody className="divide-y divide-line">
-                {data.transfers.map(t => {
-                  const d = new Date(`${t.effectiveDate}T00:00:00Z`); d.setUTCDate(d.getUTCDate() - 1);
-                  const dmy = (ymd: string) => ymd.split('-').reverse().join('/');
-                  return (
-                    <tr key={t.id}>
-                      <td className="td font-medium">{t.name}</td>
-                      <td className="td">{t.fromUnit}<div className="text-xs text-muted">até {dmy(d.toISOString().slice(0, 10))}</div></td>
-                      <td className="td">{t.toUnit}<div className="text-xs text-bronze">a partir de {dmy(t.effectiveDate)}</div></td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <SmartTable bare picker={false} id="alteracoes" rows={data.transfers} rowKey={t => t.id} empty="" defaultSort={{ key: 'date', dir: 'desc' }} cols={[
+            { id: 'name', label: 'Magistrado(a)', sort: t => t.name, tdClass: 'font-medium', render: t => t.name },
+            { id: 'from', label: 'Vinculação anterior', sort: t => t.fromUnit, render: t => { const d = new Date(`${t.effectiveDate}T00:00:00Z`); d.setUTCDate(d.getUTCDate() - 1); return <>{t.fromUnit}<div className="text-xs text-muted">até {d.toISOString().slice(0, 10).split('-').reverse().join('/')}</div></>; } },
+            { id: 'to', label: 'Nova vinculação', sort: t => t.toUnit, render: t => <>{t.toUnit}<div className="text-xs text-bronze">a partir de {t.effectiveDate.split('-').reverse().join('/')}</div></> },
+            { id: 'date', label: 'Vigência', sort: t => t.effectiveDate, tdClass: 'text-xs text-muted whitespace-nowrap', render: t => t.effectiveDate.split('-').reverse().join('/') },
+          ]} />
         </div>
       )}
 
       <div className="card overflow-hidden">
         <div className="p-4 border-b border-line"><h4 className="font-semibold text-navy">Desistentes <span className="text-muted font-normal">({data.withdrawals.length})</span></h4></div>
         {data.withdrawals.length === 0 ? <p className="p-8 text-center text-sm text-muted">Nenhuma desistência registrada.</p> : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead><tr><th className="th">Magistrado(a)</th><th className="th">Área</th><th className="th">Unidade</th><th className="th">SEI</th><th className="th">Pedido em</th><th className="th">Situação</th><th className="th w-56"></th></tr></thead>
-              <tbody className="divide-y divide-line">
-                {data.withdrawals.map(w => (
-                  <tr key={w.id}>
-                    <td className="td font-medium">{w.name}</td><td className="td text-muted">{w.area}</td><td className="td">{w.unit}</td>
-                    <td className="td font-mono text-xs">{w.sei || <span className="text-warn font-sans">A informar</span>}</td><td className="td text-muted whitespace-nowrap">{w.requestDate ? w.requestDate.split('-').reverse().join('/') : <span className="text-warn">A informar</span>}</td>
-                    <td className="td text-xs">{w.endedAt ? <span className="text-warn">Apenas no período, até {formatDate(w.endedAt)}<br />(nova inscrição deferida)</span> : <span className="text-muted">Em vigor</span>}</td>
-                    <td className="td text-right whitespace-nowrap"><button className="btn-secondary btn-sm mr-1" onClick={() => setEditingWd({ ...w })}><Pencil className="w-3.5 h-3.5" /> Editar</button><button className="btn-secondary btn-sm" onClick={() => undoWithdrawal(w)}><RotateCcw className="w-3.5 h-3.5" /> Desfazer</button></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <SmartTable bare picker={false} id="desistentes" rows={data.withdrawals} rowKey={w => w.id} empty="" defaultSort={{ key: 'name', dir: 'asc' }} cols={[
+            { id: 'name', label: 'Magistrado(a)', sort: w => w.name, tdClass: 'font-medium', render: w => w.name },
+            { id: 'area', label: 'Área', sort: w => w.area, tdClass: 'text-muted', render: w => w.area },
+            { id: 'unit', label: 'Unidade', sort: w => w.unit, render: w => w.unit },
+            { id: 'sei', label: 'SEI', sort: w => w.sei, tdClass: 'font-mono text-xs', render: w => w.sei || <span className="text-warn font-sans">A informar</span> },
+            { id: 'date', label: 'Pedido em', sort: w => w.requestDate ?? '', tdClass: 'text-muted whitespace-nowrap', render: w => (w.requestDate ? w.requestDate.split('-').reverse().join('/') : <span className="text-warn">A informar</span>) },
+            { id: 'situation', label: 'Situação', sort: w => (w.endedAt ? 1 : 0), tdClass: 'text-xs', render: w => (w.endedAt ? <span className="text-warn">Apenas no período, até {formatDate(w.endedAt)}<br />(nova inscrição deferida)</span> : <span className="text-muted">Em vigor</span>) },
+            { id: 'actions', label: '', align: 'right', tdClass: 'whitespace-nowrap', render: w => <><button className="btn-secondary btn-sm mr-1" onClick={() => setEditingWd({ ...w })}><Pencil className="w-3.5 h-3.5" /> Editar</button><button className="btn-secondary btn-sm" onClick={() => undoWithdrawal(w)}><RotateCcw className="w-3.5 h-3.5" /> Desfazer</button></> },
+          ]} />
         )}
       </div>
 
@@ -1092,26 +1133,22 @@ function UsersAdmin({ run, confirm }: { run: RunFn; confirm: (m: string, label?:
         <strong className="text-ink"> Administrador</strong>: tudo, inclusive usuários, backup e exclusões em lote · <strong className="text-ink">Gestor</strong>: operação do mutirão · <strong className="text-ink">Consulta</strong>: somente leitura.
         Com ao menos um Administrador cadastrado, a senha compartilhada deixa de funcionar.
       </p>
-      <Table head={['Nome / e-mail', 'Perfil', 'Situação', 'Último acesso', '']}>
-        {list.length === 0 && <EmptyRow cols={5}>Nenhum usuário cadastrado: o acesso ainda é pela senha compartilhada.</EmptyRow>}
-        {list.map(u => (
-          <tr key={u.id} className={u.active ? '' : 'opacity-60'}>
-            <td className="td"><div className="font-medium">{u.name}</div><div className="text-xs text-muted">{u.email}</div></td>
-            <td className="td">
-              <select className="input !py-1.5 !w-auto text-sm" value={u.role} onChange={e => update(u, { role: e.target.value }, 'Perfil alterado.')} aria-label="Perfil">
-                {(Object.keys(ROLE_NAMES) as Role[]).map(r => <option key={r} value={r}>{ROLE_NAMES[r]}</option>)}
-              </select>
-            </td>
-            <td className="td"><Badge tone={u.active ? 'ok' : 'neutral'}>{u.active ? 'Ativo' : 'Desativado'}</Badge>{!u.hasTotp && u.active && <div className="text-[11px] text-warn mt-1">Autenticador a cadastrar no próximo acesso</div>}</td>
-            <td className="td text-xs text-muted whitespace-nowrap">{u.lastLoginAt ? formatDateTime(u.lastLoginAt) : '—'}</td>
-            <td className="td text-right whitespace-nowrap space-x-1">
-              <button className="btn-secondary btn-sm" onClick={() => { setPwFor(u); setPw(''); }}>Redefinir senha</button>
-              {u.hasTotp && <button className="btn-secondary btn-sm" onClick={async () => { if (await confirm(`Redefinir o autenticador de ${u.name}? No próximo acesso será pedido novo cadastro do aplicativo.`, 'Redefinir')) await update(u, { resetTotp: true }, 'Autenticador redefinido.'); }}>Redefinir 2FA</button>}
-              <button className={`btn-sm ${u.active ? 'btn-danger' : 'btn-secondary'}`} onClick={async () => { if (await confirm(`${u.active ? 'Desativar' : 'Reativar'} ${u.name}?`, u.active ? 'Desativar' : 'Reativar')) await update(u, { active: !u.active }, u.active ? 'Usuário desativado.' : 'Usuário reativado.'); }}>{u.active ? 'Desativar' : 'Reativar'}</button>
-            </td>
-          </tr>
-        ))}
-      </Table>
+      <SmartTable id="usuarios" picker={false} rows={list} rowKey={u => u.id} empty="Nenhum usuário cadastrado: o acesso ainda é pela senha compartilhada." defaultSort={{ key: 'name', dir: 'asc' }}
+        rowClass={u => (u.active ? '' : 'opacity-60')} cols={[
+        { id: 'name', label: 'Nome / e-mail', sort: u => u.name, render: u => <><div className="font-medium">{u.name}</div><div className="text-xs text-muted">{u.email}</div></> },
+        { id: 'role', label: 'Perfil', sort: u => ROLE_NAMES[u.role], render: u => (
+          <select className="input !py-1.5 !w-auto text-sm" value={u.role} onChange={e => update(u, { role: e.target.value }, 'Perfil alterado.')} aria-label="Perfil">
+            {(Object.keys(ROLE_NAMES) as Role[]).map(r => <option key={r} value={r}>{ROLE_NAMES[r]}</option>)}
+          </select>
+        ) },
+        { id: 'active', label: 'Situação', sort: u => (u.active ? 0 : 1), render: u => <><Badge tone={u.active ? 'ok' : 'neutral'}>{u.active ? 'Ativo' : 'Desativado'}</Badge>{!u.hasTotp && u.active && <div className="text-[11px] text-warn mt-1">Autenticador a cadastrar no próximo acesso</div>}</> },
+        { id: 'last', label: 'Último acesso', sort: u => u.lastLoginAt ?? '', tdClass: 'text-xs text-muted whitespace-nowrap', render: u => (u.lastLoginAt ? formatDateTime(u.lastLoginAt) : '—') },
+        { id: 'actions', label: '', align: 'right', tdClass: 'whitespace-nowrap space-x-1', render: u => <>
+          <button className="btn-secondary btn-sm" onClick={() => { setPwFor(u); setPw(''); }}>Redefinir senha</button>
+          {u.hasTotp && <button className="btn-secondary btn-sm" onClick={async () => { if (await confirm(`Redefinir o autenticador de ${u.name}? No próximo acesso será pedido novo cadastro do aplicativo.`, 'Redefinir')) await update(u, { resetTotp: true }, 'Autenticador redefinido.'); }}>Redefinir 2FA</button>}
+          <button className={`btn-sm ${u.active ? 'btn-danger' : 'btn-secondary'}`} onClick={async () => { if (await confirm(`${u.active ? 'Desativar' : 'Reativar'} ${u.name}?`, u.active ? 'Desativar' : 'Reativar')) await update(u, { active: !u.active }, u.active ? 'Usuário desativado.' : 'Usuário reativado.'); }}>{u.active ? 'Desativar' : 'Reativar'}</button>
+        </> },
+      ]} />
       <form onSubmit={create} className="card p-5 space-y-4">
         <h4 className="font-semibold text-navy">Novo usuário</h4>
         <div className="grid sm:grid-cols-2 gap-4">
@@ -1274,30 +1311,9 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const [editingMag, setEditingMag] = useState<Magistrate | null>(null);
   const [editingUnit, setEditingUnit] = useState<Unit | null>(null);
   const [openUnitId, setOpenUnitId] = useState('');
-  const [presence, setPresence] = useState<Record<string, { comarca: string[]; unit: string[] }>>({});
+  const [presence, setPresence] = useState<Record<string, Presence>>({});
   const [rejecting, setRejecting] = useState<{ kind: 'magistrates' | 'units'; id: string; name: string; linked: boolean } | null>(null);
   const [rejectReason, setRejectReason] = useState('');
-  const [sortDir, setSortDir] = useState<Record<'magistrates' | 'units' | 'waiting', SortDir>>(() => {
-    try { return { magistrates: 'desc', units: 'desc', waiting: 'desc', ...JSON.parse(localStorage.getItem('mutirao-sort') || '{}') }; }
-    catch { return { magistrates: 'desc', units: 'desc', waiting: 'desc' }; }
-  });
-  const [unitSort, setUnitSort] = useState<{ key: UnitSortKey; dir: SortDir }>(() => {
-    try {
-      const v = JSON.parse(localStorage.getItem('mutirao-unit-sort') || '{}');
-      if (['date', 'name', 'selection'].includes(v.key) && ['asc', 'desc'].includes(v.dir)) return v;
-    } catch { /* armazenamento indisponível */ }
-    return { key: 'date', dir: 'desc' };
-  });
-  const toggleUnitSort = (key: UnitSortKey) => setUnitSort(prev => {
-    const next = prev.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } as const : { key, dir: key === 'date' ? 'desc' : 'asc' } as const;
-    try { localStorage.setItem('mutirao-unit-sort', JSON.stringify(next)); } catch { /* armazenamento indisponível */ }
-    return next;
-  });
-  const toggleSort = (k: 'magistrates' | 'units' | 'waiting') => setSortDir(prev => {
-    const next = { ...prev, [k]: prev[k] === 'desc' ? 'asc' : 'desc' } as typeof prev;
-    try { localStorage.setItem('mutirao-sort', JSON.stringify(next)); } catch { /* armazenamento indisponível */ }
-    return next;
-  });
   const [faqItems, setFaqItems] = useState<FaqItem[]>([]);
   const [editingFaq, setEditingFaq] = useState<FaqItem | null>(null);
   const [wiping, setWiping] = useState<'magistrates' | 'units' | 'matches' | null>(null);
@@ -1340,7 +1356,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       api<Magistrate[]>(`/waiting-list${q}`), api<LogEntry[]>(`/log${q}`),
     ]));
     if (!r) return;
-    api<Record<string, { comarca: string[]; unit: string[] }>>('/panel/presence').then(setPresence).catch(() => setPresence({}));
+    api<Record<string, Presence>>('/panel/presence').then(setPresence).catch(() => setPresence({}));
     [setMagistrates, setUnits, setMatches, setWaiting, setLog].forEach((set, i) => (set as any)(r[i]));
   }, [selectedId, viewAll, run]);
 
@@ -1542,16 +1558,9 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
     refresh();
   };
 
-  const sortedMagistrates = magistrates.filter(m => m.status !== 'Excluído').sort(byDate<Magistrate>(sortDir.magistrates));
+  const sortedMagistrates = magistrates.filter(m => m.status !== 'Excluído'); // a ordem é definida pelos cabeçalhos da tabela
   const excludedMags = magistrates.filter(m => m.status === 'Excluído').sort((a, b) => (b.excludedAt ?? '').localeCompare(a.excludedAt ?? ''));
-  const sortedUnits = [...units].sort((a, b) => {
-    if (unitSort.key === 'date') return byDate<Unit>(unitSort.dir)(a, b);
-    const cmp = unitSort.key === 'name'
-      ? collator.compare(unitLabel(a), unitLabel(b))
-      : (SELECTION_ORDER[a.selection] ?? 9) - (SELECTION_ORDER[b.selection] ?? 9);
-    return (unitSort.dir === 'asc' ? 1 : -1) * cmp || byDate<Unit>('desc')(a, b);
-  });
-  const sortedWaiting = [...waiting].sort(byDate<Magistrate>(sortDir.waiting));
+  const sortedUnits = units;
 
   const readOnlyEdition = selected?.status === 'Encerrada';
   const logRows = log.filter(l => !logFilter || l.category === logFilter);
@@ -1595,7 +1604,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
 
       {readOnlyEdition && <Notice tone="danger">Esta edição está encerrada. Os dados continuam editáveis aqui, mas o portal público não aceita novas inscrições.</Notice>}
 
-      <div className="flex gap-1 border-b border-line overflow-x-auto">
+      <div className="flex flex-wrap gap-x-1 border-b border-line">
         {SUBS.filter(t => me?.role === 'admin' || (t.id !== 'users' && t.id !== 'backup')).map(t => (
           <button key={t.id} onClick={() => setSub(t.id)}
             className={`px-4 py-2.5 text-sm whitespace-nowrap border-b-2 -mb-px transition-colors ${sub === t.id ? 'border-navy text-navy font-medium' : 'border-transparent text-muted hover:text-ink'}`}>
@@ -1682,37 +1691,31 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
           <Toolbar title="Edições do mutirão">
             <button className="btn-primary btn-sm" onClick={() => setModal('edition-new')}><Plus className="w-4 h-4" /> Nova edição</button>
           </Toolbar>
-          <Table head={['Edição', 'Período', 'Inscritos', 'Situação', 'Ações']}>
-            {editions.map(e => (
-              <tr key={e.id} className={e.id === selectedId ? 'bg-bronze-soft/40' : ''}>
-                <td className="td">
-                  <div className="font-medium">{e.title}</div>
-                  <div className="text-xs text-muted">Criada em {formatDate(e.createdAt)}</div>
-                </td>
-                <td className="td text-muted text-xs">{formatDate(e.openingDate)} a {formatDate(e.closingDate)}</td>
-                <td className="td text-xs text-muted">{e.stats?.magistrates ?? 0} magistrados<br />{e.stats?.units ?? 0} unidades · {e.stats?.matches ?? 0} vínculos</td>
-                <td className="td space-y-1">
-                  <div><Badge tone={e.status === 'Encerrada' ? 'neutral' : 'ok'}>{e.status}</Badge></div>
-                  {e.isActive && <div><Badge tone="info">Vigente no portal</Badge></div>}
-                  {e.registration && (
-                    <div title={e.registration.message}>
-                      <Badge tone={e.registration.state === 'open' ? 'ok' : e.registration.state === 'not_yet' ? 'warn' : 'neutral'}>
-                        {{ open: 'Inscrições abertas', not_yet: 'Ainda não abriu', ended: 'Prazo encerrado', paused: 'Inscrições suspensas', closed: 'Edição encerrada' }[e.registration.state as string] ?? e.registration.state}
-                      </Badge>
-                    </div>
-                  )}
-                </td>
-                <td className="td text-right whitespace-nowrap">
-                  {e.id !== selectedId && <button className="btn-ghost btn-sm" onClick={() => setSelectedId(e.id)}>Gerir</button>}
-                  {!e.isActive && e.status === 'Em andamento' && <button className="btn-ghost btn-sm" title="Tornar vigente" onClick={() => editionAction(e.id, 'activate', 'Edição vigente atualizada.', 'Tornar esta edição a vigente? As novas inscrições públicas passarão a ser registradas nela.')}><Radio className="w-4 h-4" /></button>}
-                  {e.status === 'Em andamento'
-                    ? <button className="btn-ghost btn-sm" title="Encerrar edição" onClick={() => editionAction(e.id, 'close', 'Edição encerrada.', 'Encerrar a edição? As inscrições públicas serão fechadas.')}><Archive className="w-4 h-4" /></button>
-                    : <button className="btn-ghost btn-sm" title="Reabrir edição" onClick={() => editionAction(e.id, 'reopen', 'Edição reaberta.')}><RotateCcw className="w-4 h-4" /></button>}
-                  <button className="btn-ghost btn-sm" title="Editar" onClick={() => { setEditingEdition(e); setModal('edition-edit'); }}><Pencil className="w-4 h-4" /></button>
-                </td>
-              </tr>
-            ))}
-          </Table>
+          <SmartTable id="edicoes" picker={false} rows={editions} rowKey={e => e.id} empty="Nenhuma edição." defaultSort={{ key: 'created', dir: 'desc' }}
+            rowClass={e => (e.id === selectedId ? 'bg-bronze-soft/40' : '')} cols={[
+            { id: 'title', label: 'Edição', sort: e => e.title, render: e => <><div className="font-medium">{e.title}</div><div className="text-xs text-muted">Criada em {formatDate(e.createdAt)}</div></> },
+            { id: 'created', label: 'Período', sort: e => e.openingDate, tdClass: 'text-muted text-xs', render: e => <>{formatDate(e.openingDate)} a {formatDate(e.closingDate)}</> },
+            { id: 'stats', label: 'Inscritos', sort: e => e.stats?.magistrates ?? 0, tdClass: 'text-xs text-muted', render: e => <>{e.stats?.magistrates ?? 0} magistrados<br />{e.stats?.units ?? 0} unidades · {e.stats?.matches ?? 0} vínculos</> },
+            { id: 'status', label: 'Situação', sort: e => e.status, tdClass: 'space-y-1', render: e => <>
+              <div><Badge tone={e.status === 'Encerrada' ? 'neutral' : 'ok'}>{e.status}</Badge></div>
+              {e.isActive && <div><Badge tone="info">Vigente no portal</Badge></div>}
+              {e.registration && (
+                <div title={e.registration.message}>
+                  <Badge tone={e.registration.state === 'open' ? 'ok' : e.registration.state === 'not_yet' ? 'warn' : 'neutral'}>
+                    {{ open: 'Inscrições abertas', not_yet: 'Ainda não abriu', ended: 'Prazo encerrado', paused: 'Inscrições suspensas', closed: 'Edição encerrada' }[e.registration.state as string] ?? e.registration.state}
+                  </Badge>
+                </div>
+              )}
+            </> },
+            { id: 'actions', label: 'Ações', align: 'right', tdClass: 'whitespace-nowrap', render: e => <>
+              {e.id !== selectedId && <button className="btn-ghost btn-sm" onClick={() => setSelectedId(e.id)}>Gerir</button>}
+              {!e.isActive && e.status === 'Em andamento' && <button className="btn-ghost btn-sm" title="Tornar vigente" onClick={() => editionAction(e.id, 'activate', 'Edição vigente atualizada.', 'Tornar esta edição a vigente? As novas inscrições públicas passarão a ser registradas nela.')}><Radio className="w-4 h-4" /></button>}
+              {e.status === 'Em andamento'
+                ? <button className="btn-ghost btn-sm" title="Encerrar edição" onClick={() => editionAction(e.id, 'close', 'Edição encerrada.', 'Encerrar a edição? As inscrições públicas serão fechadas.')}><Archive className="w-4 h-4" /></button>
+                : <button className="btn-ghost btn-sm" title="Reabrir edição" onClick={() => editionAction(e.id, 'reopen', 'Edição reaberta.')}><RotateCcw className="w-4 h-4" /></button>}
+              <button className="btn-ghost btn-sm" title="Editar" onClick={() => { setEditingEdition(e); setModal('edition-edit'); }}><Pencil className="w-4 h-4" /></button>
+            </> },
+          ]} />
           <p className="text-xs text-muted">Cada edição mantém suas próprias inscrições de magistrados e unidades, vinculações e registro de atividades. O portal público recebe inscrições apenas na edição vigente.</p>
         </div>
       )}
@@ -1735,46 +1738,42 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
           </>}
           </Toolbar>
           <EditionFilter editions={editions} value={viewAll ? 'all' : selectedId} onChange={pickEdition} what="magistrados" />
-          <Table head={['Magistrado(a)', <SortHeader key="d" label="Inscrição" dir={sortDir.magistrates} onToggle={() => toggleSort('magistrates')} />, 'Lotação', 'Preferências', 'Audiências', 'Status', 'Ações']}>
-            {magistrates.length === 0 && <EmptyRow cols={7}>Nenhuma inscrição nesta edição.</EmptyRow>}
-            {sortedMagistrates.map(m => (
-              <tr key={m.id}>
-                <td className="td"><div className="font-medium">{m.name}</div>{viewAll && <div className="text-[11px] text-bronze">{m.editionTitle}</div>}<div className="text-xs text-muted">{m.email}</div>{m.registeredIp && <div className="text-[11px] text-muted/80">IP {m.registeredIp}</div>}{m.declaration && <div className="text-[11px] text-ok mt-0.5">Declaração de regularidade aceita</div>}{m.duplicateCount && <div className="text-[11px] text-danger mt-0.5">◦ Mesmo nome inscrito {m.duplicateCount} vezes nesta edição</div>}{m.priorWithdrawal && <div className="text-[11px] text-warn mt-0.5">Já desistiu antes (SEI {m.priorWithdrawal.sei || 'não informado'}{m.priorWithdrawal.requestDate ? `, pedido em ${m.priorWithdrawal.requestDate.split('-').reverse().join('/')}` : ''}). Se deferida esta inscrição, a desistência passa a valer só para o período anterior.</div>}</td>
-                <td className="td"><DateCell iso={m.createdAt} /></td>
-                <td className="td text-muted">{m.currentLocation}{m.currentLocation && !m.locationCatalogId && <span className="text-[11px] text-warn block">◦ A padronizar</span>}</td>
-                <td className="td text-xs"><div className="text-bronze font-medium">1ª: {m.firstPreference}</div><div className="text-muted">2ª: {m.secondPreference || '—'}</div></td>
-                <td className="td"><Badge tone={m.acceptsHearings ? 'ok' : 'neutral'}>{m.acceptsHearings ? 'Aceita' : 'Não aceita'}</Badge></td>
-                <td className="td">
-                  <Badge tone={magistrateTone(m.status)}>{m.status}</Badge>
-                  {m.status === 'Rejeitado' && m.rejectionReason && (
-                    <div className="text-[11px] text-danger mt-1.5 max-w-[14rem] leading-snug" title={m.rejectionReason}>Motivo: {m.rejectionReason}</div>
-                  )}
-                </td>
-                <td className="td">
-                 <div className="flex flex-wrap justify-end gap-1.5">
-                  {(m.status === 'Aguardando Conferência' || m.status === 'Rejeitado') && <button className="btn-secondary btn-sm" onClick={() => approve(m.id)}><Check className="w-3.5 h-3.5" /> {m.status === 'Rejeitado' ? 'Reconsiderar' : 'Aprovar'}</button>}
-                  {m.status !== 'Rejeitado' && <button className="btn-secondary btn-sm !text-danger" onClick={() => { setRejecting({ kind: 'magistrates', id: m.id, name: m.name, linked: m.status === 'Atribuído' }); setRejectReason(''); setModal('reject'); }}><X className="w-3.5 h-3.5" /> Rejeitar</button>}
-                  <button className="btn-ghost btn-sm" title="Editar" onClick={() => { setEditingMag(m); setModal('mag-edit'); }}><Pencil className="w-4 h-4" /></button>
-                  <button className="btn-danger" title="Excluir (com justificativa)" onClick={() => setExcluding(m)}><Trash2 className="w-4 h-4" /></button>
-                 </div>
-                </td>
-              </tr>
-            ))}
-          </Table>
+          <SmartTable id="magistrados" rows={sortedMagistrates} rowKey={m => m.id} empty="Nenhuma inscrição nesta edição." defaultSort={{ key: 'name', dir: 'asc' }} cols={[
+            { id: 'name', label: 'Magistrado(a)', sort: m => m.name, tdClass: 'min-w-[13rem]', render: m => <>
+              <div className="font-medium">{m.name}</div>
+              {viewAll && <div className="text-[11px] text-bronze">{m.editionTitle}</div>}
+              {m.duplicateCount && <div className="text-[11px] text-danger mt-0.5">◦ Mesmo nome inscrito {m.duplicateCount} vezes nesta edição</div>}
+              {m.priorWithdrawal && <div className="text-[11px] text-warn mt-0.5">Já desistiu antes (SEI {m.priorWithdrawal.sei || 'não informado'}{m.priorWithdrawal.requestDate ? `, pedido em ${m.priorWithdrawal.requestDate.split('-').reverse().join('/')}` : ''}). Se deferida esta inscrição, a desistência passa a valer só para o período anterior.</div>}
+            </> },
+            { id: 'email', label: 'E-mail', optional: true, hidden: true, sort: m => m.email, render: m => <span className="text-xs text-muted break-all">{m.email || '—'}</span> },
+            { id: 'ip', label: 'IP', optional: true, hidden: true, sort: m => m.registeredIp ?? '', render: m => <span className="text-xs text-muted font-mono">{m.registeredIp || '—'}</span> },
+            { id: 'createdAt', label: 'Inscrição', optional: true, hidden: true, sort: m => m.createdAt, render: m => <DateCell iso={m.createdAt} /> },
+            { id: 'location', label: 'Lotação', optional: true, sort: m => m.currentLocation, tdClass: 'text-muted', render: m => <>{m.currentLocation}{m.currentLocation && !m.locationCatalogId && <span className="text-[11px] text-warn block">◦ A padronizar</span>}</> },
+            { id: 'prefs', label: 'Preferências', optional: true, sort: m => m.firstPreference, tdClass: 'text-xs', render: m => <><div className="text-bronze font-medium">1ª: {m.firstPreference}</div><div className="text-muted">2ª: {m.secondPreference || '—'}</div></> },
+            { id: 'hearings', label: 'Audiências', optional: true, sort: m => (m.acceptsHearings ? 1 : 0), render: m => <Badge tone={m.acceptsHearings ? 'ok' : 'neutral'}>{m.acceptsHearings ? 'Aceita' : 'Não aceita'}</Badge> },
+            { id: 'status', label: 'Status', sort: m => m.status, render: m => <>
+              <Badge tone={magistrateTone(m.status)}>{m.status}</Badge>
+              {m.status === 'Rejeitado' && m.rejectionReason && <div className="text-[11px] text-danger mt-1.5 max-w-[14rem] leading-snug" title={m.rejectionReason}>Motivo: {m.rejectionReason}</div>}
+            </> },
+            { id: 'actions', label: 'Ações', align: 'right', render: m => (
+              <div className="flex flex-wrap justify-end gap-1.5">
+                {(m.status === 'Aguardando Conferência' || m.status === 'Rejeitado') && <button className="btn-secondary btn-sm" onClick={() => approve(m.id)}><Check className="w-3.5 h-3.5" /> {m.status === 'Rejeitado' ? 'Reconsiderar' : 'Aprovar'}</button>}
+                {m.status !== 'Rejeitado' && <button className="btn-secondary btn-sm !text-danger" onClick={() => { setRejecting({ kind: 'magistrates', id: m.id, name: m.name, linked: m.status === 'Atribuído' }); setRejectReason(''); setModal('reject'); }}><X className="w-3.5 h-3.5" /> Rejeitar</button>}
+                <button className="btn-ghost btn-sm" title="Editar" onClick={() => { setEditingMag(m); setModal('mag-edit'); }}><Pencil className="w-4 h-4" /></button>
+                <button className="btn-danger" title="Excluir (com justificativa)" onClick={() => setExcluding(m)}><Trash2 className="w-4 h-4" /></button>
+              </div>
+            ) },
+          ]} />
           {excludedMags.length > 0 && (
             <div className="mt-8 space-y-2">
               <h4 className="font-semibold text-navy">Excluídos <span className="text-muted font-normal">({excludedMags.length})</span></h4>
-              <Table head={['Magistrado(a)', 'Motivo', 'SEI', 'Exclusão', '']}>
-                {excludedMags.map(m => (
-                  <tr key={m.id}>
-                    <td className="td"><div className="font-medium">{m.name}</div>{viewAll && <div className="text-[11px] text-bronze">{m.editionTitle}</div>}</td>
-                    <td className="td text-sm whitespace-pre-wrap">{m.exclusionReason}</td>
-                    <td className="td font-mono text-xs">{m.exclusionSei || '—'}</td>
-                    <td className="td text-xs text-muted whitespace-nowrap">{m.excludedAt ? formatDateTime(m.excludedAt) : '—'}{m.excludedBy && <div>{m.excludedBy}</div>}</td>
-                    <td className="td text-right"><button className="btn-secondary btn-sm" onClick={() => restoreMag(m)}><RotateCcw className="w-3.5 h-3.5" /> Desfazer</button></td>
-                  </tr>
-                ))}
-              </Table>
+              <SmartTable id="excluidos" picker={false} rows={excludedMags} rowKey={m => m.id} empty="" defaultSort={{ key: 'at', dir: 'desc' }} cols={[
+                { id: 'name', label: 'Magistrado(a)', sort: m => m.name, render: m => <><div className="font-medium">{m.name}</div>{viewAll && <div className="text-[11px] text-bronze">{m.editionTitle}</div>}</> },
+                { id: 'reason', label: 'Motivo', sort: m => m.exclusionReason ?? '', tdClass: 'whitespace-pre-wrap', render: m => m.exclusionReason },
+                { id: 'sei', label: 'SEI', sort: m => m.exclusionSei ?? '', tdClass: 'font-mono text-xs', render: m => m.exclusionSei || '—' },
+                { id: 'at', label: 'Exclusão', sort: m => m.excludedAt ?? '', tdClass: 'text-xs text-muted whitespace-nowrap', render: m => <>{m.excludedAt ? formatDateTime(m.excludedAt) : '—'}{m.excludedBy && <div>{m.excludedBy}</div>}</> },
+                { id: 'actions', label: '', align: 'right', render: m => <button className="btn-secondary btn-sm" onClick={() => restoreMag(m)}><RotateCcw className="w-3.5 h-3.5" /> Desfazer</button> },
+              ]} />
             </div>
           )}
           {excluding && <ExcludeModal name={excluding.name} onClose={() => setExcluding(null)} onSubmit={excludeMag} />}
@@ -1800,57 +1799,58 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
           </>}
           </Toolbar>
           <EditionFilter editions={editions} value={viewAll ? 'all' : selectedId} onChange={pickEdition} what="unidades" />
-          <Table head={[
-            <ColSort key="n" label="Unidade / Comarca" active={unitSort.key === 'name'} dir={unitSort.dir} onToggle={() => toggleUnitSort('name')} />,
-            <ColSort key="d" label="Inscrição" active={unitSort.key === 'date'} dir={unitSort.dir} onToggle={() => toggleUnitSort('date')} />,
-            'Áreas e auxílio', 'Magistrados',
-            <ColSort key="s" label="Triagem" active={unitSort.key === 'selection'} dir={unitSort.dir} onToggle={() => toggleUnitSort('selection')} />,
-            'Status', 'Ações']}>
-            {units.length === 0 && <EmptyRow cols={7}>Nenhuma unidade inscrita nesta edição.</EmptyRow>}
-            {sortedUnits.map(u => {
-              const open = openUnitId === u.id;
-              return (
-                <React.Fragment key={u.id}>
-                  <tr className={open ? 'bg-paper' : ''}>
-                    <td className="td">
-                      <button className="flex items-start gap-1.5 text-left" onClick={() => setOpenUnitId(open ? '' : u.id)} aria-expanded={open} title="Ver justificativa e vincular magistrado">
-                        {open ? <ChevronDown className="w-4 h-4 mt-0.5 shrink-0 text-bronze" /> : <ChevronRight className="w-4 h-4 mt-0.5 shrink-0 text-muted" />}
-                        <span><span className="font-medium block">{unitLabel(u)}</span>{!u.catalogId && <span className="text-[11px] text-warn block">◦ A padronizar (fora da lista oficial)</span>}{u.duplicateCount && <span className="text-[11px] text-danger block">◦ Unidade inscrita {u.duplicateCount} vezes nesta edição</span>}{presence[u.id] && <PresenceNote p={presence[u.id]} />}{viewAll && <span className="text-[11px] text-bronze block">{u.editionTitle}</span>}<span className="text-xs text-muted block">Resp.: {u.judgeName}</span><span className="text-xs text-muted block">{u.email}</span>{u.registeredIp && <span className="text-[11px] text-muted/80 block">IP {u.registeredIp}</span>}</span>
-                      </button>
-                    </td>
-                    <td className="td"><DateCell iso={u.createdAt} /></td>
-                    <td className="td"><div className="flex flex-wrap gap-1">{u.areas.map(a => <Badge key={a} tone="info">{a}</Badge>)}<Badge tone="neutral">Precisa de: {u.supportNeeded}</Badge></div></td>
-                    <td className="td"><SlotsControl bare unit={u} linked={matches.filter(m => m.unitId === u.id).length} onChange={n => setSlots(u, n)} /></td>
-                    <td className="td">
-                      <Badge tone={u.selection === 'Escolhida' ? 'ok' : u.selection === 'Rejeitada' ? 'danger' : 'warn'}>{u.selection}</Badge>
-                      {u.selection === 'Rejeitada' && u.rejectionReason && (
-                        <div className="text-[11px] text-danger mt-1.5 max-w-[12rem] leading-snug" title={u.rejectionReason}>Motivo: {u.rejectionReason}</div>
-                      )}
-                    </td>
-                    <td className="td">{u.selection === 'Escolhida' ? <Badge tone={u.status === 'Atendida' ? 'ok' : 'warn'}>{u.status}</Badge> : <span className="text-xs text-muted">—</span>}</td>
-                    <td className="td">
-                     <div className="flex flex-wrap justify-end gap-1.5">
-                      {u.duplicateCount && <button className="btn-secondary btn-sm" onClick={() => mergeUnit(u)}>Fundir repetidas</button>}
-                      {u.selection !== 'Escolhida' && <button className="btn-secondary btn-sm" onClick={() => chooseUnit(u.id)}><Check className="w-3.5 h-3.5" /> Escolher</button>}
-                      {u.selection !== 'Rejeitada' && <button className="btn-secondary btn-sm !text-danger" onClick={() => { setRejecting({ kind: 'units', id: u.id, name: u.unitName, linked: u.status === 'Atendida' }); setRejectReason(''); setModal('reject'); }}><X className="w-3.5 h-3.5" /> Rejeitar</button>}
-                      <button className="btn-ghost btn-sm" title="Justificativa e vinculação" onClick={() => setOpenUnitId(open ? '' : u.id)}>{open ? 'Fechar' : 'Detalhes'}</button>
-                      <button className="btn-ghost btn-sm" title="Editar" onClick={() => { setEditingUnit(u); setModal('unit-edit'); }}><Pencil className="w-4 h-4" /></button>
-                      <button className="btn-danger" title="Excluir" onClick={() => del('units', u.id, `a unidade ${u.unitName}`)}><Trash2 className="w-4 h-4" /></button>
-                     </div>
-                    </td>
-                  </tr>
-                  {open && (
-                    <tr className="bg-paper">
-                      <td colSpan={7} className="px-4 pb-5 pt-1">
-                        <UnitDetail unit={u} magistrates={magistrates} matches={matches} busy={linking}
-                          onLink={(magId, area, workType) => saveLink(u, magId, area, workType)} onUnlink={unlinkFromUnit} />
-                      </td>
-                    </tr>
-                  )}
-                </React.Fragment>
-              );
-            })}
-          </Table>
+          <SmartTable id="unidades" rows={sortedUnits} rowKey={u => u.id} empty="Nenhuma unidade inscrita nesta edição." defaultSort={{ key: 'name', dir: 'asc' }}
+            rowClass={u => (openUnitId === u.id ? 'bg-paper' : '')}
+            after={(u, span) => openUnitId === u.id && (
+              <tr className="bg-paper">
+                <td colSpan={span} className="px-4 pb-5 pt-1">
+                  <UnitDetail unit={u} magistrates={magistrates} matches={matches} busy={linking}
+                    onLink={(magId, area, workType) => saveLink(u, magId, area, workType)} onUnlink={unlinkFromUnit} />
+                </td>
+              </tr>
+            )}
+            cols={[
+              { id: 'name', label: 'Unidade / Comarca', sort: u => unitLabel(u), tdClass: 'min-w-[15rem]', render: u => {
+                const open = openUnitId === u.id;
+                return (
+                  <button className="flex items-start gap-1.5 text-left" onClick={() => setOpenUnitId(open ? '' : u.id)} aria-expanded={open} title="Ver justificativa e vincular magistrado">
+                    {open ? <ChevronDown className="w-4 h-4 mt-0.5 shrink-0 text-bronze" /> : <ChevronRight className="w-4 h-4 mt-0.5 shrink-0 text-muted" />}
+                    <span>
+                      <span className="font-medium block">{unitLabel(u)}</span>
+                      {!u.catalogId && <span className="text-[11px] text-warn block">◦ A padronizar (fora da lista oficial)</span>}
+                      {u.duplicateCount && <span className="text-[11px] text-danger block">◦ Unidade inscrita {u.duplicateCount} vezes nesta edição</span>}
+                      {presence[u.id] && <PresenceNote p={presence[u.id]} />}
+                      {viewAll && <span className="text-[11px] text-bronze block">{u.editionTitle}</span>}
+                    </span>
+                  </button>
+                );
+              } },
+              { id: 'comarca', label: 'Comarca', optional: true, hidden: true, sort: u => u.comarca, render: u => <span className="text-xs">{u.comarca || '—'}</span> },
+              { id: 'judge', label: 'Responsável', optional: true, sort: u => u.judgeName, tdClass: 'text-xs text-muted', render: u => u.judgeName || '—' },
+              { id: 'email', label: 'E-mail', optional: true, hidden: true, sort: u => u.email, render: u => <span className="text-xs text-muted break-all">{u.email || '—'}</span> },
+              { id: 'ip', label: 'IP', optional: true, hidden: true, sort: u => u.registeredIp ?? '', render: u => <span className="text-xs text-muted font-mono">{u.registeredIp || '—'}</span> },
+              { id: 'createdAt', label: 'Inscrição', optional: true, hidden: true, sort: u => u.createdAt, render: u => <DateCell iso={u.createdAt} /> },
+              { id: 'areas', label: 'Áreas e auxílio', optional: true, sort: u => u.areas.join(', '), render: u => <div className="flex flex-wrap gap-1">{u.areas.map(a => <Badge key={a} tone="info">{a}</Badge>)}<Badge tone="neutral">Precisa de: {u.supportNeeded}</Badge></div> },
+              { id: 'slots', label: 'Magistrados', optional: true, sort: u => matches.filter(m => m.unitId === u.id).length, render: u => <SlotsControl bare unit={u} linked={matches.filter(m => m.unitId === u.id).length} onChange={n => setSlots(u, n)} /> },
+              { id: 'selection', label: 'Triagem', sort: u => SELECTION_ORDER[u.selection] ?? 9, render: u => <>
+                <Badge tone={u.selection === 'Escolhida' ? 'ok' : u.selection === 'Rejeitada' ? 'danger' : 'warn'}>{u.selection}</Badge>
+                {u.selection === 'Rejeitada' && u.rejectionReason && <div className="text-[11px] text-danger mt-1.5 max-w-[12rem] leading-snug" title={u.rejectionReason}>Motivo: {u.rejectionReason}</div>}
+              </> },
+              { id: 'status', label: 'Status', optional: true, sort: u => (u.selection === 'Escolhida' ? u.status : ''), render: u => (u.selection === 'Escolhida' ? <Badge tone={u.status === 'Atendida' ? 'ok' : 'warn'}>{u.status}</Badge> : <span className="text-xs text-muted">—</span>) },
+              { id: 'actions', label: 'Ações', align: 'right', render: u => {
+                const open = openUnitId === u.id;
+                return (
+                  <div className="flex flex-wrap justify-end gap-1.5">
+                    {u.duplicateCount && <button className="btn-secondary btn-sm" onClick={() => mergeUnit(u)}>Fundir repetidas</button>}
+                    {u.selection !== 'Escolhida' && <button className="btn-secondary btn-sm" onClick={() => chooseUnit(u.id)}><Check className="w-3.5 h-3.5" /> Escolher</button>}
+                    {u.selection !== 'Rejeitada' && <button className="btn-secondary btn-sm !text-danger" onClick={() => { setRejecting({ kind: 'units', id: u.id, name: u.unitName, linked: u.status === 'Atendida' }); setRejectReason(''); setModal('reject'); }}><X className="w-3.5 h-3.5" /> Rejeitar</button>}
+                    <button className="btn-ghost btn-sm" title="Justificativa e vinculação" onClick={() => setOpenUnitId(open ? '' : u.id)}>{open ? 'Fechar' : 'Detalhes'}</button>
+                    <button className="btn-ghost btn-sm" title="Editar" onClick={() => { setEditingUnit(u); setModal('unit-edit'); }}><Pencil className="w-4 h-4" /></button>
+                    <button className="btn-danger" title="Excluir" onClick={() => del('units', u.id, `a unidade ${u.unitName}`)}><Trash2 className="w-4 h-4" /></button>
+                  </div>
+                );
+              } },
+            ]} />
         </div>
       )}
 
@@ -1904,19 +1904,15 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       {sub === 'waiting' && (
         <div>
           <Toolbar title="Lista de espera" />
-          <Table head={['Magistrado(a)', 'Lotação', '1ª preferência', '2ª preferência', 'Audiências', <SortHeader key="d" label="Inscrição" dir={sortDir.waiting} onToggle={() => toggleSort('waiting')} />]}>
-            {waiting.length === 0 && <EmptyRow cols={6}>Nenhum magistrado em espera.</EmptyRow>}
-            {sortedWaiting.map(m => (
-              <tr key={m.id}>
-                <td className="td"><div className="font-medium">{m.name}</div><div className="text-xs text-muted">{m.email}</div></td>
-                <td className="td text-muted">{m.currentLocation}</td>
-                <td className="td text-bronze font-medium">{m.firstPreference}</td>
-                <td className="td text-muted">{m.secondPreference || '—'}</td>
-                <td className="td text-muted">{m.acceptsHearings ? 'Aceita' : 'Não aceita'}</td>
-                <td className="td"><DateCell iso={m.createdAt} /></td>
-              </tr>
-            ))}
-          </Table>
+          <SmartTable id="espera" rows={waiting} rowKey={m => m.id} empty="Nenhum magistrado em espera." defaultSort={{ key: 'createdAt', dir: 'asc' }} cols={[
+            { id: 'name', label: 'Magistrado(a)', sort: m => m.name, render: m => <div className="font-medium">{m.name}</div> },
+            { id: 'email', label: 'E-mail', optional: true, hidden: true, sort: m => m.email, render: m => <span className="text-xs text-muted break-all">{m.email || '—'}</span> },
+            { id: 'location', label: 'Lotação', optional: true, sort: m => m.currentLocation, tdClass: 'text-muted', render: m => m.currentLocation },
+            { id: 'first', label: '1ª preferência', sort: m => m.firstPreference, tdClass: 'text-bronze font-medium', render: m => m.firstPreference },
+            { id: 'second', label: '2ª preferência', optional: true, sort: m => m.secondPreference, tdClass: 'text-muted', render: m => m.secondPreference || '—' },
+            { id: 'hearings', label: 'Audiências', optional: true, sort: m => (m.acceptsHearings ? 1 : 0), tdClass: 'text-muted', render: m => (m.acceptsHearings ? 'Aceita' : 'Não aceita') },
+            { id: 'createdAt', label: 'Inscrição', optional: true, hidden: true, sort: m => m.createdAt, render: m => <DateCell iso={m.createdAt} /> },
+          ]} />
         </div>
       )}
 
@@ -1972,18 +1968,13 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             </select>
             <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/csv?type=log&${q}`, 'registro.csv')}><Download className="w-4 h-4" /> CSV</button>
           </Toolbar>
-          <Table head={['Data/hora', 'Responsável', 'Categoria', 'IP', 'Descrição']}>
-            {logRows.length === 0 && <EmptyRow cols={5}>Sem registros.</EmptyRow>}
-            {logRows.map(l => (
-              <tr key={l.id}>
-                <td className="td text-xs text-muted whitespace-nowrap">{formatDateTime(l.timestamp)}</td>
-                <td className="td text-xs">{l.actor}{l.by && <div className="text-muted">{l.by}</div>}</td>
-                <td className="td"><Badge tone="neutral">{l.category}</Badge></td>
-                <td className="td text-xs text-muted font-mono whitespace-nowrap">{l.ip ?? '—'}</td>
-                <td className="td">{l.description}</td>
-              </tr>
-            ))}
-          </Table>
+          <SmartTable id="registro" rows={logRows} rowKey={l => l.id} empty="Sem registros." defaultSort={{ key: 'at', dir: 'desc' }} cols={[
+            { id: 'at', label: 'Data/hora', sort: l => l.timestamp, tdClass: 'text-xs text-muted whitespace-nowrap', render: l => formatDateTime(l.timestamp) },
+            { id: 'who', label: 'Responsável', optional: true, sort: l => `${l.actor} ${l.by ?? ''}`, tdClass: 'text-xs', render: l => <>{l.actor}{l.by && <div className="text-muted">{l.by}</div>}</> },
+            { id: 'cat', label: 'Categoria', optional: true, sort: l => l.category, render: l => <Badge tone="neutral">{l.category}</Badge> },
+            { id: 'ip', label: 'IP', optional: true, hidden: true, sort: l => l.ip ?? '', tdClass: 'text-xs text-muted font-mono whitespace-nowrap', render: l => l.ip ?? '—' },
+            { id: 'desc', label: 'Descrição', sort: l => l.description, render: l => l.description },
+          ]} />
           <p className="text-xs text-muted mt-3">Registro das últimas 500 ocorrências da edição, incluindo acessos ao painel.</p>
         </div>
       )}

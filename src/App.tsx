@@ -125,7 +125,7 @@ function AppInner() {
   return (
     <div className="min-h-screen flex flex-col">
       <header className="bg-navy text-white sticky top-0 z-40">
-        <div className="max-w-6xl mx-auto px-5 h-16 flex items-center justify-between">
+        <div className={`mx-auto h-16 flex items-center justify-between ${tab === 'admin' ? 'max-w-[min(100%,110rem)] px-4 sm:px-6 lg:px-10' : 'max-w-6xl px-5'}`}>
           <button onClick={() => go('home')} className="flex items-center gap-3 text-left">
             <Scale className="w-5 h-5 text-bronze-soft" />
             <span className="font-serif text-[17px] font-semibold tracking-tight leading-tight whitespace-nowrap">
@@ -158,7 +158,7 @@ function AppInner() {
         )}
       </header>
 
-      <main className="flex-1 w-full max-w-6xl mx-auto px-5 py-10 sm:py-14">
+      <main className={`flex-1 w-full mx-auto py-10 sm:py-14 ${tab === 'admin' ? 'max-w-[min(100%,110rem)] px-4 sm:px-6 lg:px-10' : 'max-w-6xl px-5'}`}>
         <ErrorBoundary key={tab}>
         {tab === 'home' && (
           <section className="max-w-3xl mx-auto">

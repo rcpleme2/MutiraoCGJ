@@ -11,7 +11,7 @@ import QRCode from 'qrcode';
 import PDFDocument from 'pdfkit';
 import { AsyncLocalStorage } from 'async_hooks';
 import { catalogById, canonicalComarca, fullUnitName, CATALOG_SEPARATOR } from './src/catalogo-tjpr';
-import { resolveCatalog, suggestCatalog, tokens as nameTokens } from './src/catalogo-match';
+import { comarcaInText, resolveCatalog, suggestCatalog, tokens as nameTokens } from './src/catalogo-match';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -1428,22 +1428,33 @@ async function startServer() {
   app.get('/api/panel/presence', (_req, res) => {
     const rows = panelRows();
     const unitOf = new Map(units.map((u) => [u.id, u]));
-    const out: Record<string, { comarca: string[]; unit: string[] }> = {};
+    // Unidade oficial e comarca de cada inscrição: pelo catálogo; para nomes digitados, pela melhor correspondência inequívoca
+    const idOf = new Map<string, string | undefined>(), comarcaOfMap = new Map<string, string>();
+    const resolve = (x: Unit) => {
+      if (!idOf.has(x.id)) {
+        const full = fullUnitName(x);
+        const id = x.catalogId ?? resolveCatalog(full, canonicalComarca(x.comarca))?.id;
+        idOf.set(x.id, id);
+        comarcaOfMap.set(x.id, canonicalComarca(x.comarca) ?? catalogById(id)?.comarca ?? comarcaInText(full) ?? x.comarca ?? '');
+      }
+      return { id: idOf.get(x.id), comarca: comarcaOfMap.get(x.id) ?? '', full: norm(fullUnitName(x)) };
+    };
+    const out: Record<string, { comarca: string; inComarca: { name: string; unit: string }[]; inUnit: { name: string; unit: string }[] }> = {};
     for (const u of units) {
       if (editionById(u.editionId)?.isInitial) continue;
-      // Comarca comparada pela lista oficial; vara pelo id do catálogo (texto só para o que ainda não foi padronizado)
-      const comarcaOf = (x?: Unit) => norm(canonicalComarca(x?.comarca) ?? x?.comarca ?? '');
-      const c = comarcaOf(u), n = norm(u.unitName);
-      const comarca = new Set<string>(), unit = new Set<string>();
+      const me = resolve(u);
+      const inComarca: { name: string; unit: string }[] = [], inUnit: { name: string; unit: string }[] = [];
       for (const r of rows) {
         if (r.unitId === u.id) continue;
         const ru = unitOf.get(r.unitId);
-        const rc = comarcaOf(ru);
-        if (c && rc === c) comarca.add(r.name);
-        const sameUnit = u.catalogId && ru?.catalogId ? ru.catalogId === u.catalogId : norm(r.unit) === n && (!c || !rc || rc === c);
-        if (sameUnit) unit.add(r.name);
+        if (!ru) continue;
+        const other = resolve(ru);
+        const sameUnit = me.id && other.id ? me.id === other.id : me.full === other.full;
+        const item = { name: r.name, unit: fullUnitName(ru) };
+        if (sameUnit) inUnit.push(item);
+        else if (me.comarca && norm(other.comarca) === norm(me.comarca)) inComarca.push(item);
       }
-      if (comarca.size || unit.size) out[u.id] = { comarca: [...comarca], unit: [...unit] };
+      if (inComarca.length || inUnit.length) out[u.id] = { comarca: me.comarca, inComarca, inUnit };
     }
     res.json(out);
   });
