@@ -162,6 +162,9 @@ export function MagistrateForm({
       <Field label="E-mail institucional">
         <input required={!relaxed} type="email" placeholder="nome@tjpr.jus.br" className="input" value={f.email} onChange={set('email')} />
       </Field>
+      <p className="text-xs text-muted leading-relaxed border-l-2 border-bronze/50 pl-3 -mt-1">
+        <strong className="text-ink">Juiz(a) de Direito Substituto(a):</strong> escolha a comarca e a unidade em que mais atua.
+      </p>
       <CatalogPicker value={loc} onChange={setLoc} comarcaLabel="Comarca de lotação" unitLabel="Unidade de lotação atual" relaxed={relaxed} />
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <Field label="1ª escolha (área)">
