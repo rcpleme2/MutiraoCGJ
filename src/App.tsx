@@ -268,8 +268,11 @@ function AppInner() {
                             <div className="font-serif font-semibold text-navy">{m.name}</div>
                             <div className="text-xs text-muted">{m.editionTitle} · {m.currentLocation}</div>
                           </div>
-                          <Badge tone={magistrateTone(m.status)}>{m.status}</Badge>
+                          {m.status !== 'Lista de Espera' && <Badge tone={magistrateTone(m.status)}>{m.status}</Badge>}
                         </div>
+                        {m.status === 'Lista de Espera' && (
+                          <div className="bg-bronze-soft text-bronze text-sm rounded-md px-3 py-2.5">Aguardando consolidação das inscrições e vinculação a uma unidade.</div>
+                        )}
                         <div className="text-xs text-muted">
                           1ª: <span className="text-ink">{m.firstPreference}</span> · 2ª: <span className="text-ink">{m.secondPreference || '—'}</span> · Audiências: <span className="text-ink">{m.acceptsHearings ? 'aceita' : 'não aceita'}</span>
                         </div>
