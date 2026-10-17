@@ -2683,46 +2683,6 @@ async function startServer() {
     res.json({ success: true, id });
   });
 
-  // Auto-matching, scoped to one edition
-  app.post('/api/matches/auto', (req, res) => {
-    const edition = resolveEdition(req);
-    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
-
-    const eMags = magistrates.filter((m) => m.editionId === edition.id);
-    const eUnits = units.filter((u) => u.editionId === edition.id && u.selection === 'Escolhida');
-    const assignedMagIds = new Set(matches.filter((m) => m.editionId === edition.id).map((m) => m.magistrateId));
-    let newMatchesCount = 0;
-
-    const pass = (pick: (m: Magistrate) => string) => {
-      for (const mag of eMags) {
-        const area = pick(mag);
-        if (!area || mag.status === 'Aguardando Conferência' || mag.status === 'Rejeitado' || mag.status === 'Desistente' || mag.status === 'Excluído' || assignedMagIds.has(mag.id)) continue;
-        const target = eUnits.find((u) => linkedCount(u.id) < (u.slots || 1) && u.areas.includes(area));
-        if (!target) continue;
-        matches.push({
-          id: newId('match'),
-          editionId: edition.id,
-          magistrateId: mag.id,
-          unitId: target.id,
-          assignedArea: area,
-          workType: defaultWorkType(target, mag),
-          status: 'Vinculado',
-          createdAt: new Date().toISOString(),
-        });
-        assignedMagIds.add(mag.id);
-        refreshUnitStatus(target.id);
-        mag.status = 'Atribuído';
-        newMatchesCount++;
-      }
-    };
-    pass((m) => m.firstPreference);
-    pass((m) => m.secondPreference);
-
-    log(edition.id, 'Administração', 'Vinculação',
-      `Vinculação automática executada: ${newMatchesCount} nova(s) vinculação(ões).`);
-    res.json({ success: true, newMatchesCount });
-  });
-
   app.get('/api/waiting-list', (req, res) => {
     const edition = resolveEdition(req);
     if (!edition) return res.json([]);

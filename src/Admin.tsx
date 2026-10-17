@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Lock, Unlock, Plus, Trash2, Check, Pencil, Download, Sparkles, LogOut, Radio, Archive, RotateCcw, ChevronDown, ChevronRight, X, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 import { api, download, getToken, setToken } from './api';
-import { Edition, FaqItem, LogEntry, Magistrate, Match, PanelRow, Transfer, Unit, Withdrawal, WorkType, WORK_TYPES } from './types';
+import { PREFERENCE_AREAS, Edition, FaqItem, LogEntry, Magistrate, Match, PanelRow, Transfer, Unit, Withdrawal, WorkType, WORK_TYPES } from './types';
 import { COMARCAS, canonicalComarca, catalogById, fullUnitName, unitsOfComarca } from './catalogo-tjpr';
 import { Badge, EmptyRow, Field, Modal, Notice, formatDate, formatDateTime, magistrateTone, useFeedback } from './ui';
 import { MagistrateForm, UnitForm } from './Forms';
@@ -785,8 +785,10 @@ function PanelAdmin({ run, confirm, onChanged }: {
               </Field>
             )}
             <Field label="Área de atuação">
-              <input className="input" list="painel-areas" maxLength={150} required value={moveArea} onChange={e => setMoveArea(e.target.value)} />
-              <datalist id="painel-areas">{areas.map(([k, a]) => <option key={k} value={a.label} />)}</datalist>
+              <select className="input" required value={moveArea} onChange={e => setMoveArea(e.target.value)}>
+                {!PREFERENCE_AREAS.includes(moveArea) && moveArea && <option value={moveArea}>{moveArea} (fora da lista)</option>}
+                {PREFERENCE_AREAS.map(a => <option key={a} value={a}>{a}</option>)}
+              </select>
             </Field>
             <Field label="Valerá a partir de">
               <input className="input" type="date" required value={moveDate} onChange={e => setMoveDate(e.target.value)} />
@@ -1456,11 +1458,6 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
     refresh();
   };
   const approve = async (id: string) => { await run(() => api(`/magistrates/${id}/approve`, { method: 'POST' }), 'Inscrição aprovada.'); refresh(); };
-  const auto = async () => {
-    const r = await run(() => api<{ newMatchesCount: number }>(`/matches/auto?${q}`, { method: 'POST' }));
-    if (r) toast(`${r.newMatchesCount} nova(s) vinculação(ões) automática(s).`);
-    refresh();
-  };
   const askAi = async () => {
     setAi({ ...aiClosed, loading: true });
     const r = await run(() => api<{ recommendations: any[]; balance: AiBalance; aiError?: string }>(`/ai/match-recommendations?${q}`, { method: 'POST' }));
@@ -1652,12 +1649,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
               </div>
             ))}
           </div>
-          <div className="grid md:grid-cols-3 gap-4">
-            <div className="card p-5 space-y-3">
-              <h4 className="font-semibold text-navy">Vinculação automática</h4>
-              <p className="text-sm text-muted">Vincula magistrados aprovados priorizando a 1ª e a 2ª preferência, apenas nesta edição.</p>
-              <button className="btn-primary btn-sm" onClick={auto}><Sparkles className="w-4 h-4" /> Executar</button>
-            </div>
+          <div className="grid md:grid-cols-2 gap-4">
             <div className="card p-5 space-y-3">
               <h4 className="font-semibold text-navy">Sugestões por IA</h4>
               <p className="text-sm text-muted">Mostra o resultado na tela para revisão antes de qualquer vinculação e, havendo saldo de magistrados, sugere quais unidades em análise atender. Dados de inscritos são enviados ao serviço de IA.</p>
@@ -2020,7 +2012,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       )}
       {ai.open && (
         <Modal wide title="Sugestões para revisão" onClose={() => setAi(aiClosed)}>
-          <div className="space-y-6">
+          <div className="space-y-6 max-h-[70vh] overflow-y-auto pr-2">
             <p className="text-sm text-muted">Nada foi vinculado ainda. Revise as sugestões abaixo e confirme apenas o que fizer sentido.</p>
             {ai.error && <Notice tone="danger">{ai.error}</Notice>}
             <section>
