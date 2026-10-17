@@ -634,6 +634,10 @@ function PanelAdmin({ run, confirm, onChanged }: {
     await load(); onChanged();
   };
   const exportPdf = () => run(() => download('/panel/report.pdf', 'designacoes.pdf'));
+  const exportXlsx = () => {
+    const labels = areaFilter.map(k => areaMap.get(k)?.label).filter(Boolean) as string[];
+    return run(() => download(`/panel/export.xlsx${labels.length ? `?areas=${encodeURIComponent(labels.join('|'))}` : ''}`, 'designacoes.xlsx'));
+  };
   const exportPdfByArea = () => {
     const labels = areaFilter.map(k => areaMap.get(k)?.label).filter(Boolean) as string[];
     return run(() => download(`/panel/report.pdf?por=area${labels.length ? `&areas=${encodeURIComponent(labels.join('|'))}` : ''}`, 'designacoes-por-area.pdf'));
@@ -652,6 +656,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
     <div className="space-y-6">
       <Toolbar title="Painel de vinculações">
         <button className="btn-secondary btn-sm" onClick={exportPdfByArea} title="Só as designações, um bloco por área (respeita o filtro de áreas escolhido)"><Download className="w-4 h-4" /> PDF por área de atuação</button>
+        <button className="btn-secondary btn-sm" onClick={exportXlsx} title="Planilha das designações vigentes (respeita o filtro de áreas)"><Download className="w-4 h-4" /> Planilha (XLSX)</button>
         <button className="btn-secondary btn-sm" onClick={exportPdf}><Download className="w-4 h-4" /> Exportar relatório em PDF</button>
       </Toolbar>
       <p className="text-sm text-muted -mt-2">
@@ -1872,6 +1877,8 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             )}
               <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/xlsx/unlinked-units?${q}`, 'unidades-sem-magistrado.xlsx')}><Download className="w-4 h-4" /> Unidades sem magistrado (XLSX)</button>
               <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/xlsx/matches?${q}`, 'vinculacoes.xlsx')}><Download className="w-4 h-4" /> Vinculações (XLSX)</button>
+              <button className="btn-secondary btn-sm" onClick={() => exportFile(`/panel/report.pdf?edition=${encodeURIComponent(selectedId)}`, 'designacoes-edicao.pdf')}><Download className="w-4 h-4" /> Relatório da edição (PDF)</button>
+              <button className="btn-secondary btn-sm" onClick={() => exportFile(`/panel/report.pdf?por=area&edition=${encodeURIComponent(selectedId)}`, 'designacoes-edicao-por-area.pdf')}><Download className="w-4 h-4" /> PDF por área da edição</button>
             </Toolbar>
             <p className="text-sm text-muted mb-4">
               Unidades escolhidas para o mutirão. Defina em cada unidade <strong className="text-ink">quantos magistrados serão alocados</strong> (padrão 1),
