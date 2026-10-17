@@ -1894,7 +1894,8 @@ async function startServer() {
     res.setHeader('Content-Disposition', `attachment; filename=${byArea ? 'designacoes-por-area-' : 'relatorio-designacoes-'}${new Date().toISOString().slice(0, 10)}.pdf`);
     doc.pipe(res);
 
-    const NAVY = '#2a323d', BRONZE = '#7d8794', INK = '#222831', MUTED = '#6d7681', HAIR = '#dde0e4', TINT = '#f2f4f6'; // paleta neutra; fonte única (Helvetica)
+    // Identidade: documento institucional sóbrio, alinhado à esquerda, uma só família (Helvetica) e um único acento azul-aço.
+    const INK = '#1d232b', SLATE = '#4a5460', MUTED = '#7a838e', HAIR = '#dadee3', BAND = '#eff2f5', ACCENT = '#52698a';
     const L = doc.page.margins.left;
     const W = doc.page.width - L - doc.page.margins.right;
     const limit = () => doc.page.height - doc.page.margins.bottom;
@@ -1903,37 +1904,36 @@ async function startServer() {
     type Col = { label: string; w: number; align?: 'left' | 'right' | 'center' };
     const drawHead = (cols: Col[]) => {
       const y = doc.y;
-      doc.rect(L, y, W, 22).fill(TINT);
-      doc.moveTo(L, y + 22).lineTo(L + W, y + 22).lineWidth(1).strokeColor(NAVY).stroke();
-      doc.fillColor(NAVY).font('Helvetica-Bold').fontSize(7.2);
+      doc.fillColor(MUTED).font('Helvetica-Bold').fontSize(7.6);
       let x = L;
-      cols.forEach((c) => { doc.text(t(c.label).toUpperCase(), x + 7, y + 8, { width: c.w - 14, align: c.align ?? 'left', lineBreak: false, characterSpacing: 0.5 }); x += c.w; });
-      doc.y = y + 22;
+      cols.forEach((c) => { doc.text(t(c.label), x + 6, y + 2, { width: c.w - 12, align: c.align ?? 'left', lineBreak: false }); x += c.w; });
+      doc.moveTo(L, y + 16).lineTo(L + W, y + 16).lineWidth(0.8).strokeColor(INK).stroke();
+      doc.y = y + 16;
     };
     type Row = string[] | { sep: string; count: string };
     const table = (cols: Col[], data: Row[], opts: { boldFirst?: number } = {}) => {
       need(70);
       drawHead(cols);
       data.forEach((r, idx) => {
-        if (!Array.isArray(r)) { // separador de área: faixa clara com filete lateral e a quantidade de magistrados
-          if (idx > 0) doc.y += 12; // respiro entre uma área e a seguinte
-          if (doc.y + 26 + 40 > limit()) { doc.addPage(); drawHead(cols); }
-          const y = doc.y;
-          doc.rect(L, y, W, 26).fill('#e8ecf0');
-          doc.rect(L, y, 3, 26).fill('#9aa6b5');
-          doc.fillColor(NAVY).font('Helvetica-Bold').fontSize(8.6).text(t(r.sep).toUpperCase(), L + 14, y + 9, { width: W - 130, lineBreak: false, characterSpacing: 0.8 });
-          doc.fillColor(MUTED).font('Helvetica').fontSize(7.8).text(t(r.count), L + W - 113, y + 9, { width: 106, align: 'right', lineBreak: false });
+        if (!Array.isArray(r)) { // faixa da área de atuação: tom claro, filete lateral e a quantidade de magistrados
+          if (idx > 0) doc.y += 16; // respiro entre uma área e a seguinte
+          if (doc.y + 28 + 44 > limit()) { doc.addPage(); drawHead(cols); }
+          const y = doc.y + 4;
+          doc.rect(L, y, W, 26).fill(BAND);
+          doc.rect(L, y, 3, 26).fill(ACCENT);
+          doc.fillColor(INK).font('Helvetica-Bold').fontSize(10).text(t(r.sep), L + 14, y + 8, { width: W - 140, lineBreak: false });
+          doc.fillColor(SLATE).font('Helvetica').fontSize(8).text(t(r.count), L + W - 120, y + 9, { width: 112, align: 'right', lineBreak: false });
           doc.y = y + 26;
           return;
         }
-        const h = Math.max(...r.map((c, k) => { doc.font(k === (opts.boldFirst ?? -1) ? 'Helvetica-Bold' : 'Helvetica').fontSize(8.6); return doc.heightOfString(t(c), { width: cols[k].w - 14, lineGap: 1.5 }); })) + 12;
+        const h = Math.max(...r.map((c, k) => { doc.font(k === (opts.boldFirst ?? -1) ? 'Helvetica-Bold' : 'Helvetica').fontSize(9); return doc.heightOfString(t(c), { width: cols[k].w - 12, lineGap: 2 }); })) + 14;
         if (doc.y + h > limit()) { doc.addPage(); drawHead(cols); }
         const y = doc.y;
         let x = L;
         r.forEach((c, k) => {
           const first = k === (opts.boldFirst ?? -1);
-          doc.fillColor(k === 0 && cols[0].label === 'Nº' ? MUTED : INK).font(first ? 'Helvetica-Bold' : 'Helvetica').fontSize(8.6)
-            .text(t(c), x + 7, y + 7, { width: cols[k].w - 14, align: cols[k].align ?? 'left', lineGap: 1.5 });
+          doc.fillColor(k === 0 && cols[0].label === 'Nº' ? MUTED : INK).font(first ? 'Helvetica-Bold' : 'Helvetica').fontSize(9)
+            .text(t(c), x + 6, y + 7, { width: cols[k].w - 12, align: cols[k].align ?? 'left', lineGap: 2 });
           x += cols[k].w;
         });
         doc.moveTo(L, y + h).lineTo(L + W, y + h).lineWidth(0.4).strokeColor(HAIR).stroke();
@@ -1941,43 +1941,39 @@ async function startServer() {
       });
       doc.moveDown(1.2);
     };
-    const section = (num: string, title: string, note?: string) => {
-      need(96);
-      doc.moveDown(1);
-      doc.fillColor(NAVY).font('Helvetica-Bold').fontSize(15).text(`${num ? `${num}.  ` : ''}${t(title)}`, L, doc.y, { width: W, align: 'center' });
-      const y = doc.y + 5;
-      doc.moveTo(L + W / 2 - 17, y).lineTo(L + W / 2 + 17, y).lineWidth(1.4).strokeColor(BRONZE).stroke();
-      doc.y = y + 8;
-      if (note) doc.fillColor(MUTED).font('Helvetica').fontSize(8.4).text(t(note), L + 30, doc.y, { width: W - 60, align: 'center', lineGap: 1.5 });
-      doc.moveDown(0.9);
+    const section = (_num: string, title: string, note?: string) => {
+      need(90);
+      doc.y += 14;
+      doc.fillColor(INK).font('Helvetica-Bold').fontSize(13).text(t(title), L, doc.y, { width: W });
+      if (note) doc.fillColor(SLATE).font('Helvetica').fontSize(8.6).text(t(note), L, doc.y + 3, { width: Math.min(W, 420), lineGap: 2 });
+      doc.y += 12;
     };
     const empty = (msg: string) => { doc.fillColor(MUTED).font('Helvetica-Oblique').fontSize(9).text(msg, L, doc.y, { width: W }); doc.moveDown(1); };
+    const countOf = (list: { name: string }[]) => { const n = new Set(list.map((r) => r.name.toLowerCase())).size; return `${n} ${n === 1 ? 'magistrado' : 'magistrados'}`; };
 
-    // ---------- Cabeçalho ----------
-    doc.fillColor(BRONZE).font('Helvetica-Bold').fontSize(7.6).text('TRIBUNAL DE JUSTIÇA DO ESTADO DO PARANÁ', L, doc.y, { width: W, align: 'center', characterSpacing: 1.2 });
-    doc.fillColor(MUTED).font('Helvetica').fontSize(7.6).text('Corregedoria-Geral da Justiça', L, doc.y + 3, { width: W, align: 'center', characterSpacing: 0.4 });
-    doc.moveDown(1.6);
-    doc.fillColor(NAVY).font('Helvetica-Bold').fontSize(22).text(byArea ? 'Designações por Área de Atuação' : 'Relatório de Designações', L, doc.y, { width: W, align: 'center' });
-    doc.fillColor(INK).font('Helvetica').fontSize(12.5).text(t(`Mutirão de Julgamento${ed ? ` — ${ed.title}` : ''}`), L, doc.y + 3, { width: W, align: 'center' });
-    doc.moveDown(0.9);
-    doc.moveTo(L, doc.y).lineTo(L + W, doc.y).lineWidth(1.2).strokeColor(NAVY).stroke();
-    doc.moveTo(L, doc.y + 3).lineTo(L + W, doc.y + 3).lineWidth(0.4).strokeColor(BRONZE).stroke();
-    doc.y += 11;
-    doc.fillColor(MUTED).font('Helvetica').fontSize(8.2).text(`Emitido em ${stamp} (horário de Brasília)`, L, doc.y, { width: W, align: 'center' });
-    doc.moveDown(1.3);
+    // ---------- Cabeçalho (alinhado à esquerda) ----------
+    doc.fillColor(MUTED).font('Helvetica').fontSize(8.4).text('Tribunal de Justiça do Estado do Paraná  |  Corregedoria-Geral da Justiça', L, doc.y, { width: W });
+    doc.y += 16;
+    doc.fillColor(INK).font('Helvetica-Bold').fontSize(24).text(byArea ? 'Designações por área de atuação' : 'Relatório de designações', L, doc.y, { width: W });
+    doc.y += 4;
+    doc.fillColor(SLATE).font('Helvetica').fontSize(11.5).text(t(`Mutirão de Julgamento${ed ? `  |  ${ed.title}` : ''}`), L, doc.y, { width: W });
+    doc.y += 10;
+    doc.moveTo(L, doc.y).lineTo(L + W, doc.y).lineWidth(1).strokeColor(INK).stroke();
+    doc.fillColor(MUTED).font('Helvetica').fontSize(8).text(`Emitido em ${stamp} (horário de Brasília)`, L, doc.y + 7, { width: W });
+    doc.y += 30;
 
-    // Resumo em quatro quadros (conteúdo centralizado)
-    const stats = [['Designações vigentes', rows.length], ['Áreas de atuação', areas.length], ['Alterações de vinculação', moves.length], ['Desistentes', drops.length]] as const;
-    const bw = (W - 3 * 10) / 4, by = doc.y;
-    if (!byArea) stats.forEach(([label, n], i) => {
-      const x = L + i * (bw + 10);
-      doc.rect(x, by, bw, 56).lineWidth(0.6).strokeColor(HAIR).stroke();
-      doc.rect(x, by, bw, 2.5).fill(i === 0 ? NAVY : BRONZE);
-      doc.fillColor(NAVY).font('Helvetica-Bold').fontSize(23).text(String(n), x, by + 11, { width: bw, align: 'center', lineBreak: false });
-      doc.fillColor(MUTED).font('Helvetica').fontSize(7.4).text(t(label), x, by + 41, { width: bw, align: 'center', lineBreak: false });
-    });
-    if (!byArea) doc.y = by + 56;
-    doc.moveDown(0.4);
+    // Resumo em uma linha de números, sem caixas
+    if (!byArea) {
+      const stats = [['designações vigentes', rows.length], ['áreas de atuação', areas.length], ['alterações de vinculação', moves.length], ['desistentes', drops.length]] as const;
+      const cw = W / stats.length, sy = doc.y;
+      stats.forEach(([label, n], i) => {
+        const x = L + i * cw;
+        if (i > 0) doc.moveTo(x - 8, sy + 2).lineTo(x - 8, sy + 34).lineWidth(0.4).strokeColor(HAIR).stroke();
+        doc.fillColor(INK).font('Helvetica-Bold').fontSize(20).text(String(n), x, sy, { width: cw - 16, lineBreak: false });
+        doc.fillColor(SLATE).font('Helvetica').fontSize(8).text(t(label), x, sy + 25, { width: cw - 16, lineBreak: false });
+      });
+      doc.y = sy + 44;
+    }
 
     // ---------- 1. Designações vigentes (tabela única, por área e em ordem alfabética) ----------
     if (byArea) {
@@ -1985,10 +1981,8 @@ async function startServer() {
       if (rows.length === 0) empty('Nenhuma designação vigente.');
       areas.forEach((area, i) => {
         const list = rows.filter((r) => r.area.trim() === area).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR') || a.unit.localeCompare(b.unit, 'pt-BR'));
-        if (i > 0) doc.moveDown(1.6); // quebra de linha entre as áreas
-        const magistrados = new Set(list.map((r) => r.name.toLowerCase())).size;
         table([{ label: 'Nº', w: 38, align: 'center' }, { label: 'Magistrado(a)', w: 180 }, { label: 'Unidade designada', w: W - 280 }, { label: 'Atuação', w: 62 }],
-          [{ sep: area, count: `${magistrados} magistrados` }, ...list.map((r, k): Row => [String(k + 1), `${r.name}\n${preferenceText(r)} atendida`.replace('Fora das preferências atendida', 'Fora das preferências'), unitCell(r), acting(r.workType)])], { boldFirst: 1 });
+          [{ sep: area, count: countOf(list) }, ...list.map((r, k): Row => [String(k + 1), r.name, unitCell(r), acting(r.workType)])], { boldFirst: 1 });
       });
     } else {
     section('1', 'Designações vigentes', 'Classificadas por área de atuação e, dentro de cada área, em ordem alfabética. Permanecem válidas até o registro da desistência.');
@@ -1999,8 +1993,8 @@ async function startServer() {
       areas.forEach((area) => {
         const list = rows.filter((r) => r.area.trim() === area).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR') || a.unit.localeCompare(b.unit, 'pt-BR'));
         const magistrados = new Set(list.map((r) => r.name.toLowerCase())).size;
-        data.push({ sep: area, count: `${magistrados} magistrados` });
-        list.forEach((r) => data.push([String(++n), `${r.name}\n${preferenceText(r)} atendida`.replace('Fora das preferências atendida', 'Fora das preferências'), unitCell(r), acting(r.workType)]));
+        data.push({ sep: area, count: countOf(list) });
+        list.forEach((r) => data.push([String(++n), r.name, unitCell(r), acting(r.workType)]));
       });
       table([{ label: 'Nº', w: 38, align: 'center' }, { label: 'Magistrado(a)', w: 180 }, { label: 'Unidade designada', w: W - 280 }, { label: 'Atuação', w: 62 }], data, { boldFirst: 1 });
     }
@@ -2029,12 +2023,13 @@ async function startServer() {
       doc.switchToPage(range.start + i);
       const m = doc.page.margins; doc.page.margins = { top: 0, bottom: 0, left: m.left, right: m.right }; // permite escrever nas margens
       if (i > 0) {
-        doc.fillColor(MUTED).font('Helvetica').fontSize(7.4).text('Relatório de Designações — Mutirão de Julgamento', L, 30, { width: W, lineBreak: false, characterSpacing: 0.3 });
+        doc.fillColor(MUTED).font('Helvetica').fontSize(7.6).text(t(`${byArea ? 'Designações por área de atuação' : 'Relatório de designações'}  |  Mutirão de Julgamento`), L, 30, { width: W / 2, lineBreak: false });
+        if (ed) doc.text(t(ed.title), L + W / 2, 30, { width: W / 2, align: 'right', lineBreak: false });
         doc.moveTo(L, 44).lineTo(L + W, 44).lineWidth(0.4).strokeColor(HAIR).stroke();
       }
       const fy = doc.page.height - 42;
       doc.moveTo(L, fy - 8).lineTo(L + W, fy - 8).lineWidth(0.4).strokeColor(HAIR).stroke();
-      doc.fillColor(MUTED).font('Helvetica').fontSize(7.4)
+      doc.fillColor(MUTED).font('Helvetica').fontSize(7.6)
         .text('Documento de uso restrito da administração', L, fy, { width: W / 2, lineBreak: false })
         .text(`Página ${i + 1} de ${range.count}`, L + W / 2, fy, { width: W / 2, align: 'right', lineBreak: false });
       doc.page.margins = m;
