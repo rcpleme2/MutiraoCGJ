@@ -181,9 +181,15 @@ Exemplo: `gcloud run services update mutirao-cgj --region southamerica-east1 --u
 
 Uma cópia por dia vai para um bucket do Cloud Storage, guardada por 60 dias. O bucket fica numa região dos EUA, que tem cota
 gratuita de 5 GB. O Cloud Scheduler permite 3 tarefas grátis por conta. Os comandos abaixo são executados **uma vez** no
-Cloud Shell, com `PROJECT_ID` e `SA` definidos como na seção 2.
+Cloud Shell. As variáveis abaixo são redefinidas aqui (o Cloud Shell as perde ao reiniciar; com `PROJECT_ID` vazio o nome do
+bucket fica inválido, `-mutirao-backups`).
 
 ```bash
+PROJECT_ID=$(gcloud config get-value project)
+SA="mutirao-run@${PROJECT_ID}.iam.gserviceaccount.com"
+echo "Projeto: $PROJECT_ID"   # deve mostrar o ID do projeto; se vier vazio, rode: gcloud config set project SEU_PROJECT_ID
+gcloud services enable secretmanager.googleapis.com
+
 BUCKET="${PROJECT_ID}-mutirao-backups"
 gcloud storage buckets create gs://$BUCKET --location=us-central1 --uniform-bucket-level-access
 echo '{"rule":[{"action":{"type":"Delete"},"condition":{"age":60}}]}' > /tmp/lifecycle.json
