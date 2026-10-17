@@ -189,6 +189,7 @@ PROJECT_ID=$(gcloud config get-value project)
 SA="mutirao-run@${PROJECT_ID}.iam.gserviceaccount.com"
 echo "Projeto: $PROJECT_ID"   # deve mostrar o ID do projeto; se vier vazio, rode: gcloud config set project SEU_PROJECT_ID
 gcloud services enable secretmanager.googleapis.com
+gcloud iam service-accounts describe $SA --format='value(email)' || echo "ATENÇÃO: faltou a seção 2 (conta de serviço). Faça-a antes de continuar."
 
 BUCKET="${PROJECT_ID}-mutirao-backups"
 gcloud storage buckets create gs://$BUCKET --location=us-central1 --uniform-bucket-level-access
@@ -197,13 +198,15 @@ gcloud storage buckets update gs://$BUCKET --lifecycle-file=/tmp/lifecycle.json
 gcloud storage buckets add-iam-policy-binding gs://$BUCKET --member="serviceAccount:$SA" --role="roles/storage.objectAdmin"
 
 TOKEN=$(openssl rand -hex 32)
-printf "%s" "$TOKEN" | gcloud secrets create BACKUP_CRON_TOKEN --data-file=-
+printf "%s" "$TOKEN" | gcloud secrets create BACKUP_CRON_TOKEN --data-file=- \
+  || { printf "%s" "$TOKEN" | gcloud secrets versions add BACKUP_CRON_TOKEN --data-file=-; }   # já existe: nova versão
 gcloud secrets add-iam-policy-binding BACKUP_CRON_TOKEN --member="serviceAccount:$SA" --role="roles/secretmanager.secretAccessor"
 gcloud run services update mutirao-cgj --region southamerica-east1 \
   --update-env-vars=BACKUP_BUCKET=$BUCKET --update-secrets=BACKUP_CRON_TOKEN=BACKUP_CRON_TOKEN:latest
 
 URL=$(gcloud run services describe mutirao-cgj --region southamerica-east1 --format='value(status.url)')
 gcloud services enable cloudscheduler.googleapis.com
+gcloud scheduler jobs delete mutirao-backup-diario --location=southamerica-east1 --quiet 2>/dev/null   # recria se já existir
 gcloud scheduler jobs create http mutirao-backup-diario --location=southamerica-east1 \
   --schedule="0 3 * * *" --time-zone="America/Sao_Paulo" \
   --uri="$URL/api/backup/auto" --http-method=POST --headers="x-backup-token=$TOKEN"
