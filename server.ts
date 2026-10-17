@@ -98,6 +98,12 @@ interface Unit {
   slots: number;
   rejectionReason?: string;
   rejectedAt?: string;
+  /** Rejeitada com o pedido mantido: aguarda a criação da próxima edição para ser transportada */
+  carryOver?: boolean;
+  /** Edição para a qual o pedido foi transportado */
+  carriedToEditionId?: string;
+  /** Edição de origem, quando o pedido foi transportado de uma edição anterior */
+  carriedFromEditionId?: string;
 }
 
 interface Match {
@@ -378,7 +384,7 @@ let panelEntries: PanelEntry[] = [];
 interface Withdrawal { id: string; editionId: string; name: string; area: string; unit: string; sei: string; /** data do pedido de desistência (AAAA-MM-DD) */ requestDate?: string; magistrateIds?: string[]; /** nova inscrição deferida: a desistência vale só até esta data */ endedAt?: string; returnedMagistrateId?: string; createdAt: string }
 let withdrawals: Withdrawal[] = [];
 /** Alteração de vinculação (troca de unidade): a vinculação antiga vale até o dia anterior à data informada; a nova, a partir dela. */
-interface Transfer { id: string; editionId: string; magistrateId: string; name: string; area: string; fromUnit: string; toUnit: string; fromWorkType: string; toWorkType: string; effectiveDate: string; createdAt: string }
+interface Transfer { id: string; editionId: string; magistrateId: string; name: string; /** área de atuação anterior */ area: string; /** nova área de atuação (ausente em registros antigos: a área não mudou) */ toArea?: string; fromUnit: string; toUnit: string; fromWorkType: string; toWorkType: string; effectiveDate: string; createdAt: string }
 let transfers: Transfer[] = [];
 /** Pares de nomes parecidos que a administração indicou NÃO serem a mesma pessoa (chave "nomeA|nomeB") */
 let dupDismissed: string[] = [];
@@ -613,6 +619,26 @@ const confirmedWipe = (req: express.Request) => req.body?.confirm === 'EXCLUIR';
 const actorOf = (source: unknown): LogEntry['actor'] => (source === 'admin' ? 'Administração' : 'Público');
 
 const editionById = (id: string | undefined) => editions.find((e) => e.id === id);
+
+/** Primeira edição (não inicial) criada depois da edição informada */
+function nextEditionAfter(editionId: string): Edition | undefined {
+  const cur = editionById(editionId);
+  if (!cur) return undefined;
+  return editions.filter((e) => !e.isInitial && e.id !== cur.id && e.createdAt > cur.createdAt).sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
+}
+
+/** Copia o pedido de uma unidade rejeitada para a edição de destino (volta a "Em análise", mantendo a data original da inscrição). Devolve false se a unidade já constava ali. */
+function carryUnitTo(u: Unit, target: Edition): boolean {
+  u.carryOver = false;
+  u.carriedToEditionId = target.id;
+  const same = (x: Unit) => (u.catalogId ? x.catalogId === u.catalogId : normName(x.unitName) === normName(u.unitName) && normName(x.comarca) === normName(u.comarca));
+  if (units.some((x) => x.editionId === target.id && same(x))) return false;
+  units.unshift({
+    ...u, id: newId('unit'), editionId: target.id, selection: 'Em análise', status: 'Pendente',
+    rejectionReason: undefined, rejectedAt: undefined, carryOver: undefined, carriedToEditionId: undefined, carriedFromEditionId: u.editionId,
+  });
+  return true;
+}
 
 /** Resolves the edition targeted by a request (?edition=, body.editionId) or falls back to the active one. */
 function resolveEdition(req: express.Request): Edition | undefined {
@@ -1250,6 +1276,10 @@ async function startServer() {
     };
     editions.push(edition);
     log(edition.id, 'Administração', 'Edição', `Edição "${edition.title}" criada.`);
+    // Pedidos de unidades rejeitadas que ficaram aguardando a próxima edição passam para esta
+    const waiting = units.filter((u) => u.carryOver && u.editionId !== edition.id);
+    const carried = waiting.filter((u) => carryUnitTo(u, edition)).length;
+    if (waiting.length) log(edition.id, 'Sistema', 'Unidade', `${carried} pedido(s) de unidade mantido(s) da edição anterior foi(ram) transportado(s) para esta edição (em análise).`);
     if (activate) {
       activeEditionId = edition.id;
       log(edition.id, 'Administração', 'Edição', 'Edição definida como a vigente para inscrições públicas.');
@@ -1920,12 +1950,12 @@ async function startServer() {
     }
 
     // ---------- 3. Alterações ----------
-    section('2', 'Alterações de vinculação', 'A vinculação anterior vale até o dia anterior à data informada; a nova vinculação vale a partir dela.');
+    section('2', 'Alterações de vinculação', 'Alterações de vara e/ou de área de atuação. A vinculação anterior vale até o dia anterior à data informada; a nova vale a partir dela.');
     if (moves.length === 0) empty('Nenhuma alteração de vinculação registrada.');
     else table([{ label: 'Magistrado(a)', w: 120 }, { label: 'Vinculação anterior', w: (W - 120) / 2 }, { label: 'Nova vinculação', w: (W - 120) / 2 }],
       moves.map((m) => [m.name,
-        `${m.fromUnit}\n${acting(m.fromWorkType)} · até ${dmy(dayBefore(m.effectiveDate))}`,
-        `${m.toUnit}\n${acting(m.toWorkType)} · a partir de ${dmy(m.effectiveDate)}`]), { boldFirst: 0 });
+        `${m.fromUnit}\nÁrea: ${m.area || '—'} · ${acting(m.fromWorkType)} · até ${dmy(dayBefore(m.effectiveDate))}`,
+        `${m.toUnit}\nÁrea: ${m.toArea || m.area || '—'}${m.toArea && m.toArea.trim() !== m.area.trim() ? ' (alterada)' : ''} · ${acting(m.toWorkType)} · a partir de ${dmy(m.effectiveDate)}`]), { boldFirst: 0 });
 
     // ---------- 4. Desistentes ----------
     section('3', 'Desistentes', 'Magistrados que desistiram da participação, com o processo SEI e a data do pedido. Havendo nova inscrição deferida, a desistência vale apenas para o período anterior.');
@@ -2420,6 +2450,7 @@ async function startServer() {
     unit.selection = 'Escolhida';
     unit.rejectionReason = undefined;
     unit.rejectedAt = undefined;
+    unit.carryOver = false;
     log(unit.editionId, 'Administração', 'Unidade',
       `Unidade "${unit.unitName}" ${was === 'Rejeitada' ? 'reconsiderada e escolhida' : 'escolhida'} para o mutirão.`);
     res.json({ success: true, unit });
@@ -2443,8 +2474,15 @@ async function startServer() {
     unit.status = 'Pendente';
     unit.rejectionReason = reason;
     unit.rejectedAt = new Date().toISOString();
+    // Opcional: o pedido segue para a próxima edição (agora, se já existir; senão, assim que ela for criada)
+    let carryNote = '';
+    if (req.body?.carryOver === true && !unit.carriedToEditionId) {
+      const next = nextEditionAfter(unit.editionId);
+      if (next) { carryUnitTo(unit, next); carryNote = ` Pedido mantido e transportado para "${next.title}".`; }
+      else { unit.carryOver = true; carryNote = ' Pedido mantido para a próxima edição (será transportado quando ela for criada).'; }
+    }
     log(unit.editionId, 'Administração', 'Unidade',
-      `Unidade "${unit.unitName}" rejeitada${linked.length ? ' (vinculação desfeita)' : ''}. Motivo: ${reason}`);
+      `Unidade "${unit.unitName}" rejeitada${linked.length ? ' (vinculação desfeita)' : ''}. Motivo: ${reason}${carryNote}`);
     res.json({ success: true, unit });
   });
 
@@ -2607,7 +2645,11 @@ async function startServer() {
     const changedMag = nextMag.id !== oldMag?.id;
     // Troca de unidade do mesmo magistrado: exige a data a partir da qual ele atuará na nova unidade (a antiga vale até o dia anterior)
     const effectiveDate = typeof req.body?.effectiveDate === 'string' ? req.body.effectiveDate.trim() : '';
-    const isTransfer = movingUnit && !changedMag;
+    const newArea = typeof assignedArea === 'string' ? cleanCell(assignedArea) : '';
+    if (newArea.length > 150) return res.status(400).json({ error: 'Área de atuação longa demais.' });
+    const changingArea = !!newArea && newArea !== match.assignedArea;
+    // Trocar a unidade (ou, no painel, a área de atuação) do mesmo magistrado é uma alteração de vinculação e exige a data de vigência
+    const isTransfer = !changedMag && (movingUnit || (changingArea && initialMatch)); // na edição das vinculações iniciais a área também é alterada pelo painel
     if (isTransfer && (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveDate) || Number.isNaN(Date.parse(`${effectiveDate}T00:00:00${BRT}`)) || effectiveDate < '2000-01-01')) {
       return res.status(400).json({ error: 'Informe a partir de quando o magistrado atuará na nova unidade.' });
     }
@@ -2617,7 +2659,8 @@ async function startServer() {
 
     match.magistrateId = nextMag.id;
     match.unitId = nextUnit.id;
-    match.assignedArea = assignedArea || match.assignedArea;
+    match.assignedArea = newArea || match.assignedArea;
+    if (initialMatch && match.assignedArea && !nextUnit.areas.some((a) => normName(a) === normName(match.assignedArea))) nextUnit.areas.push(match.assignedArea);
     match.workType = workType || (movingUnit || changedMag ? defaultWorkType(nextUnit, nextMag) : match.workType);
     match.exceptionReason = undefined;
     nextMag.status = 'Atribuído';
@@ -2626,11 +2669,11 @@ async function startServer() {
     if (isTransfer) {
       match.startDate = effectiveDate;
       const label = (u?: Unit) => (u ? fullUnitName(u) : 'unidade removida');
-      transfers.push({ id: newId('tr'), editionId: match.editionId, magistrateId: nextMag.id, name: nextMag.name, area: oldArea, fromUnit: label(oldUnit), toUnit: label(nextUnit),
+      transfers.push({ id: newId('tr'), editionId: match.editionId, magistrateId: nextMag.id, name: nextMag.name, area: oldArea, toArea: match.assignedArea, fromUnit: label(oldUnit), toUnit: label(nextUnit),
         fromWorkType: oldWorkType, toWorkType: match.workType, effectiveDate, createdAt: new Date().toISOString() });
     }
 
-    log(match.editionId, 'Administração', 'Vinculação', `Vinculação alterada${isTransfer ? ` (nova unidade a partir de ${effectiveDate.split('-').reverse().join('/')})` : ''}: de ${before} para ${describeMatch(match)}.`);
+    log(match.editionId, 'Administração', 'Vinculação', `Vinculação alterada${isTransfer ? ` (${movingUnit ? 'nova unidade' : 'nova área'}${movingUnit && changingArea ? ' e nova área' : ''} a partir de ${effectiveDate.split('-').reverse().join('/')})` : ''}: de ${before} para ${describeMatch(match)}.`);
     res.json({ success: true, match });
   });
 
@@ -2687,30 +2730,73 @@ async function startServer() {
     res.json(magistrates.filter((m) => m.editionId === edition.id && m.status !== 'Atribuído' && m.status !== 'Rejeitado' && m.status !== 'Desistente' && m.status !== 'Excluído' && !assigned.has(m.id)));
   });
 
-  // ---------- AI recommendations ----------
-  app.post('/api/ai/match-recommendations', async (req, res) => {
-    if (!ai) {
-      return res.status(500).json({ error: 'Chave da API Gemini não configurada.' });
+  // ---------- Sugestões (IA) ----------
+  const isAvailableMag = (m: Magistrate, assigned: Set<string>) =>
+    !['Aguardando Conferência', 'Atribuído', 'Rejeitado', 'Desistente', 'Excluído'].includes(m.status) && !assigned.has(m.id);
+
+  /** Com saldo de magistrados (disponíveis > vagas abertas nas unidades escolhidas), indica quais unidades "Em análise" atender, priorizando
+   *  a afinidade com as áreas dos magistrados disponíveis e, em seguida, a data da inscrição. Não altera nada: a administração decide. */
+  function unitSuggestions(editionId: string) {
+    const assigned = new Set(matches.filter((m) => m.editionId === editionId).map((m) => m.magistrateId));
+    const avail = magistrates.filter((m) => m.editionId === editionId && isAvailableMag(m, assigned));
+    const chosen = units.filter((u) => u.editionId === editionId && u.selection === 'Escolhida');
+    const openSlots = chosen.reduce((n, u) => n + Math.max(0, (u.slots || 1) - linkedCount(u.id)), 0);
+    const balance = avail.length - openSlots;
+    const pending = units.filter((u) => u.editionId === editionId && u.selection === 'Em análise');
+    const suggestions: { unitId: string; unit: string; comarca: string; areas: string[]; slots: number; candidates: string[]; reason: string }[] = [];
+    let left = balance;
+    if (balance > 0) {
+      const scored = pending.map((u) => {
+        const cands = avail.filter((m) => u.areas.includes(m.firstPreference) || (!!m.secondPreference && u.areas.includes(m.secondPreference)));
+        return { u, cands };
+      }).sort((x, y) => y.cands.length - x.cands.length || x.u.createdAt.localeCompare(y.u.createdAt));
+      for (const { u, cands } of scored) {
+        if (left <= 0) break;
+        const slots = Math.max(1, u.slots || 1);
+        suggestions.push({
+          unitId: u.id, unit: fullUnitName(u), comarca: u.comarca, areas: u.areas, slots,
+          candidates: cands.slice(0, 5).map((m) => m.name),
+          reason: cands.length
+            ? `${cands.length} magistrado(s) disponível(is) com preferência por ${u.areas.join(' / ')}; inscrita em ${new Date(u.createdAt).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}.`
+            : `Sem magistrado com preferência pelas áreas da unidade (${u.areas.join(' / ')}), mas há saldo de magistrados; inscrita em ${new Date(u.createdAt).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}.`,
+        });
+        left -= slots;
+      }
     }
+    return { available: avail.length, openSlots, balance, pendingUnits: pending.length, suggestions };
+  }
+
+  app.get('/api/matches/unit-suggestions', (req, res) => {
     const edition = resolveEdition(req);
     if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+    res.json(unitSuggestions(edition.id));
+  });
+
+  // Mostra as sugestões na tela para revisão; nada é vinculado aqui (a vinculação é feita pela administração em POST /api/matches).
+  app.post('/api/ai/match-recommendations', async (req, res) => {
+    const edition = resolveEdition(req);
+    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+    const balance = unitSuggestions(edition.id);
+    if (!ai) {
+      return res.json({ success: true, recommendations: [], balance, aiError: 'Chave da API Gemini não configurada: sugestões de alocação por IA indisponíveis.' });
+    }
 
     try {
       const assigned = new Set(matches.filter((m) => m.editionId === edition.id).map((m) => m.magistrateId));
-      const unassignedMags = magistrates.filter(
-        (m) => m.editionId === edition.id && m.status !== 'Atribuído' && m.status !== 'Rejeitado' && m.status !== 'Desistente' && m.status !== 'Excluído' && !assigned.has(m.id),
-      );
-      const pendingUnits = units.filter((u) => u.editionId === edition.id && u.selection === 'Escolhida' && u.status !== 'Atendida');
+      const unassignedMags = magistrates.filter((m) => m.editionId === edition.id && isAvailableMag(m, assigned));
+      const pendingUnits = units.filter((u) => u.editionId === edition.id && u.selection === 'Escolhida' && linkedCount(u.id) < (u.slots || 1));
 
       const prompt = `
         Você é o assistente de inteligência artificial de coordenação de um Mutirão de Julgamento do Tribunal de Justiça.
         Analise os magistrados voluntários aprovados e não alocados e as unidades judiciais pendentes abaixo e sugira as melhores alocações estratégicas.
+        Cada magistrado só pode aparecer uma vez; cada unidade só pode receber tantos magistrados quanto o número de vagas ("slots") menos os já vinculados.
+        "assignedArea" deve ser uma das áreas da unidade, de preferência a 1ª ou a 2ª preferência do magistrado.
 
         Magistrados Disponíveis:
-        ${JSON.stringify(unassignedMags, null, 2)}
+        ${JSON.stringify(unassignedMags.map((m) => ({ id: m.id, name: m.name, currentLocation: m.currentLocation, firstPreference: m.firstPreference, secondPreference: m.secondPreference, acceptsHearings: m.acceptsHearings })), null, 2)}
 
         Unidades Judiciais Pendentes:
-        ${JSON.stringify(pendingUnits, null, 2)}
+        ${JSON.stringify(pendingUnits.map((u) => ({ id: u.id, unitName: u.unitName, comarca: u.comarca, areas: u.areas, supportNeeded: u.supportNeeded, slots: u.slots, alreadyLinked: linkedCount(u.id), description: u.description })), null, 2)}
 
         Responda em JSON contendo um array de recomendações com a estrutura:
         [
@@ -2729,12 +2815,24 @@ async function startServer() {
         config: { responseMimeType: 'application/json' },
       });
 
-      const result = JSON.parse(response.text || '[]');
-      log(edition.id, 'Sistema', 'Vinculação', `Recomendações de IA geradas (${Array.isArray(result) ? result.length : 0}).`);
-      res.json({ success: true, recommendations: result });
+      const raw = JSON.parse(response.text || '[]');
+      // Descarta o que a IA inventou ou que não cabe (magistrado/unidade inexistente, repetido, sem vaga ou área estranha à unidade)
+      const used = new Set<string>(); const taken = new Map<string, number>();
+      const result = (Array.isArray(raw) ? raw : []).filter((r: any) => {
+        const mag = unassignedMags.find((m) => m.id === r?.magistrateId);
+        const un = pendingUnits.find((u) => u.id === r?.unitId);
+        if (!mag || !un || used.has(mag.id)) return false;
+        if (linkedCount(un.id) + (taken.get(un.id) ?? 0) >= (un.slots || 1)) return false;
+        if (typeof r.assignedArea !== 'string' || !un.areas.includes(r.assignedArea)) r.assignedArea = [mag.firstPreference, mag.secondPreference].find((a) => un.areas.includes(a)) ?? un.areas[0];
+        r.justification = typeof r.justification === 'string' ? r.justification.slice(0, 600) : '';
+        used.add(mag.id); taken.set(un.id, (taken.get(un.id) ?? 0) + 1);
+        return true;
+      });
+      log(edition.id, 'Sistema', 'Vinculação', `Sugestões de IA geradas (${result.length}); ${balance.suggestions.length} unidade(s) em análise sugerida(s) por saldo de magistrados. Nada foi vinculado.`);
+      res.json({ success: true, recommendations: result, balance });
     } catch (err: any) {
       console.error('Gemini AI error:', err);
-      res.status(500).json({ error: err.message || 'Erro ao gerar recomendações com IA.' });
+      res.json({ success: true, recommendations: [], balance, aiError: err.message || 'Erro ao gerar recomendações com IA.' });
     }
   });
 

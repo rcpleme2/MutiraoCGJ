@@ -570,6 +570,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
   const [moving, setMoving] = useState<{ row: PanelRow; units: Unit[] } | null>(null);
   const [moveUnit, setMoveUnit] = useState('');
   const [moveNewName, setMoveNewName] = useState('');
+  const [moveArea, setMoveArea] = useState('');
   const [moveDate, setMoveDate] = useState('');
   const [sei, setSei] = useState('');
   const today = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Sao_Paulo' });
@@ -614,12 +615,15 @@ function PanelAdmin({ run, confirm, onChanged }: {
     const list = await run(() => api<Unit[]>(`/units?edition=${encodeURIComponent(r.editionId)}`));
     if (!list) return;
     setMoving({ row: r, units: list.filter(u => u.selection === 'Escolhida' && u.id !== r.unitId).sort((a, b) => a.unitName.localeCompare(b.unitName, 'pt-BR')) });
-    setMoveUnit(''); setMoveNewName(''); setMoveDate(today());
+    setMoveUnit(''); setMoveNewName(''); setMoveArea(r.area); setMoveDate(today());
   };
   const submitMove = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!moving) return;
-    const r = await run(() => api(`/matches/${moving.row.id}`, { method: 'PUT', json: moveNewName.trim() ? { newUnitName: moveNewName.trim(), effectiveDate: moveDate } : { unitId: moveUnit, effectiveDate: moveDate } }), 'Vinculação alterada.');
+    const body: Record<string, string> = { effectiveDate: moveDate };
+    if (moveNewName.trim()) body.newUnitName = moveNewName.trim(); else if (moveUnit) body.unitId = moveUnit;
+    if (moveArea.trim() && moveArea.trim() !== moving.row.area.trim()) body.assignedArea = moveArea.trim();
+    const r = await run(() => api(`/matches/${moving.row.id}`, { method: 'PUT', json: body }), 'Vinculação alterada.');
     if (r) { setMoving(null); await load(); onChanged(); }
   };
   const undoWithdrawal = async (w: Withdrawal) => {
@@ -645,7 +649,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
       </Toolbar>
       <p className="text-sm text-muted -mt-2">
         Relação total das vinculações vigentes de <strong className="text-ink">todas as edições</strong>, de uso restrito da administração. As designações de edições anteriores continuam valendo até que seja registrada a desistência.
-        Ao desfazer uma vinculação, a linha sai daqui automaticamente. Para trocar a vara de alguém, use "Alterar vara" (informa a partir de quando atua na nova unidade; a anterior fica registrada até o dia anterior).
+        Ao desfazer uma vinculação, a linha sai daqui automaticamente. Para trocar a vara e/ou a área de atuação de alguém, use "Alterar vara/área" (informa a partir de quando atua na nova unidade; a anterior fica registrada até o dia anterior).
       </p>
 
       <div className="card overflow-hidden">
@@ -686,7 +690,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
             { id: 'edition', label: 'Edição', optional: true, sort: r => r.editionTitle, tdClass: 'text-xs text-muted', render: r => r.editionTitle },
             { id: 'actions', label: '', align: 'right', render: r => (
               <div className="flex flex-wrap justify-end gap-1">
-                <button className="btn-secondary btn-sm" onClick={() => openMove(r)}>Alterar vara</button>
+                <button className="btn-secondary btn-sm" onClick={() => openMove(r)}>Alterar vara/área</button>
                 <button className="btn-secondary btn-sm" onClick={() => setExcludingRow(r)}>Excluir</button>
                 <button className="btn-secondary btn-sm" onClick={() => { setDropping(r); setSei(''); setRequestDate(today()); }}>Desistência</button>
                 <button className="btn-danger" title="Desfazer vinculação" aria-label="Desfazer vinculação" onClick={() => removeRow(r)}><Trash2 className="w-4 h-4" /></button>
@@ -701,8 +705,8 @@ function PanelAdmin({ run, confirm, onChanged }: {
           <div className="p-4 border-b border-line"><h4 className="font-semibold text-navy">Alterações de vinculação <span className="text-muted font-normal">({data.transfers.length})</span></h4></div>
           <SmartTable bare picker={false} id="alteracoes" rows={data.transfers} rowKey={t => t.id} empty="" defaultSort={{ key: 'date', dir: 'desc' }} cols={[
             { id: 'name', label: 'Magistrado(a)', sort: t => t.name, tdClass: 'font-medium', render: t => t.name },
-            { id: 'from', label: 'Vinculação anterior', sort: t => t.fromUnit, render: t => { const d = new Date(`${t.effectiveDate}T00:00:00Z`); d.setUTCDate(d.getUTCDate() - 1); return <>{t.fromUnit}<div className="text-xs text-muted">até {d.toISOString().slice(0, 10).split('-').reverse().join('/')}</div></>; } },
-            { id: 'to', label: 'Nova vinculação', sort: t => t.toUnit, render: t => <>{t.toUnit}<div className="text-xs text-bronze">a partir de {t.effectiveDate.split('-').reverse().join('/')}</div></> },
+            { id: 'from', label: 'Vinculação anterior', sort: t => t.fromUnit, render: t => { const d = new Date(`${t.effectiveDate}T00:00:00Z`); d.setUTCDate(d.getUTCDate() - 1); return <>{t.fromUnit}<div className="text-xs text-muted">{t.area} · até {d.toISOString().slice(0, 10).split('-').reverse().join('/')}</div></>; } },
+            { id: 'to', label: 'Nova vinculação', sort: t => t.toUnit, render: t => <>{t.toUnit}<div className="text-xs text-bronze">{t.toArea || t.area}{t.toArea && t.toArea.trim() !== t.area.trim() ? ' (alterada)' : ''} · a partir de {t.effectiveDate.split('-').reverse().join('/')}</div></> },
             { id: 'date', label: 'Vigência', sort: t => t.effectiveDate, tdClass: 'text-xs text-muted whitespace-nowrap', render: t => t.effectiveDate.split('-').reverse().join('/') },
           ]} />
         </div>
@@ -766,12 +770,12 @@ function PanelAdmin({ run, confirm, onChanged }: {
       </details>
 
       {moving && (
-        <Modal title="Alterar vara" onClose={() => setMoving(null)}>
+        <Modal title="Alterar vara e/ou área de atuação" onClose={() => setMoving(null)}>
           <form onSubmit={submitMove} className="space-y-4">
-            <p className="text-sm text-muted"><strong className="text-ink">{moving.row.name}</strong> atua hoje em <strong className="text-ink">{moving.row.unit}</strong>. A vinculação anterior ficará registrada como válida até o dia anterior à data informada.</p>
-            <Field label="Nova unidade">
-              <select className="input" required={!moveNewName.trim()} value={moveUnit} onChange={e => setMoveUnit(e.target.value)} disabled={!!moveNewName.trim()}>
-                <option value="" disabled>Selecione…</option>
+            <p className="text-sm text-muted"><strong className="text-ink">{moving.row.name}</strong> atua hoje em <strong className="text-ink">{moving.row.unit}</strong> (área: <strong className="text-ink">{moving.row.area}</strong>). Altere a vara, a área ou ambas. A vinculação anterior ficará registrada como válida até o dia anterior à data informada.</p>
+            <Field label="Nova unidade (deixe em branco para manter a atual)">
+              <select className="input" value={moveUnit} onChange={e => setMoveUnit(e.target.value)} disabled={!!moveNewName.trim()}>
+                <option value="">Manter a unidade atual</option>
                 {moving.units.map(u => <option key={u.id} value={u.id}>{unitLabel(u)}</option>)}
               </select>
             </Field>
@@ -780,12 +784,16 @@ function PanelAdmin({ run, confirm, onChanged }: {
                 <input className="input" maxLength={300} value={moveNewName} onChange={e => setMoveNewName(e.target.value)} placeholder="Ex.: 2ª Vara Cível de Londrina" />
               </Field>
             )}
-            <Field label="Atuará na nova unidade a partir de">
+            <Field label="Área de atuação">
+              <input className="input" list="painel-areas" maxLength={150} required value={moveArea} onChange={e => setMoveArea(e.target.value)} />
+              <datalist id="painel-areas">{areas.map(([k, a]) => <option key={k} value={a.label} />)}</datalist>
+            </Field>
+            <Field label="Valerá a partir de">
               <input className="input" type="date" required value={moveDate} onChange={e => setMoveDate(e.target.value)} />
             </Field>
             <div className="flex justify-end gap-2">
               <button type="button" className="btn-ghost" onClick={() => setMoving(null)}>Cancelar</button>
-              <button className="btn-primary" disabled={(!moveUnit && !moveNewName.trim()) || !moveDate}>Registrar alteração</button>
+              <button className="btn-primary" disabled={(!moveUnit && !moveNewName.trim() && moveArea.trim() === moving.row.area.trim()) || !moveArea.trim() || !moveDate}>Registrar alteração</button>
             </div>
           </form>
         </Modal>
@@ -1314,12 +1322,15 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const [presence, setPresence] = useState<Record<string, Presence>>({});
   const [rejecting, setRejecting] = useState<{ kind: 'magistrates' | 'units'; id: string; name: string; linked: boolean } | null>(null);
   const [rejectReason, setRejectReason] = useState('');
+  const [rejectCarry, setRejectCarry] = useState(false);
   const [faqItems, setFaqItems] = useState<FaqItem[]>([]);
   const [editingFaq, setEditingFaq] = useState<FaqItem | null>(null);
   const [wiping, setWiping] = useState<'magistrates' | 'units' | 'matches' | null>(null);
   const [wipeText, setWipeText] = useState('');
   const [linking, setLinking] = useState(false);
-  const [ai, setAi] = useState<{ loading: boolean; items: any[] }>({ loading: false, items: [] });
+  interface AiBalance { available: number; openSlots: number; balance: number; pendingUnits: number; suggestions: { unitId: string; unit: string; comarca: string; areas: string[]; slots: number; candidates: string[]; reason: string }[] }
+  const [ai, setAi] = useState<{ loading: boolean; open: boolean; items: any[]; balance: AiBalance | null; error: string; picked: number[] }>({ loading: false, open: false, items: [], balance: null, error: '', picked: [] });
+  const aiClosed = { loading: false, open: false, items: [] as any[], balance: null, error: '', picked: [] as number[] };
 
   const selected = editions.find(e => e.id === selectedId);
 
@@ -1363,7 +1374,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const refresh = useCallback(async () => { await loadEditions(); await loadScoped(); onEditionsChanged(); }, [loadEditions, loadScoped, onEditionsChanged]);
 
   useEffect(() => { if (authed) { loadEditions(); loadFaq(); api<typeof me>('/admin/me').then(setMe).catch(() => setMe(null)); } }, [authed]);
-  useEffect(() => { if (authed) { loadScoped(); setAi({ loading: false, items: [] }); } }, [authed, selectedId, viewAll]);
+  useEffect(() => { if (authed) { loadScoped(); setAi(aiClosed); } }, [authed, selectedId, viewAll]);
   useEffect(() => { if (sub !== 'magistrates' && sub !== 'units') setViewAll(false); }, [sub]);
 
   const login = async (e: React.FormEvent) => {
@@ -1451,9 +1462,22 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
     refresh();
   };
   const askAi = async () => {
-    setAi({ loading: true, items: [] });
-    const r = await run(() => api<{ recommendations: any[] }>(`/ai/match-recommendations?${q}`, { method: 'POST' }));
-    setAi({ loading: false, items: r?.recommendations || [] });
+    setAi({ ...aiClosed, loading: true });
+    const r = await run(() => api<{ recommendations: any[]; balance: AiBalance; aiError?: string }>(`/ai/match-recommendations?${q}`, { method: 'POST' }));
+    const items = r?.recommendations || [];
+    setAi({ loading: false, open: !!r, items, balance: r?.balance ?? null, error: r?.aiError ?? '', picked: items.map((_, i) => i) });
+  };
+  /** Vincula as sugestões marcadas na revisão (nada é vinculado antes disso) */
+  const applyAi = async () => {
+    const chosen = ai.items.filter((_, i) => ai.picked.includes(i));
+    if (!chosen.length) return;
+    if (!(await confirm(`Vincular as ${chosen.length} sugestão(ões) marcada(s)?`, 'Vincular'))) return;
+    let ok = 0;
+    for (const rec of chosen) {
+      if (await run(() => api('/matches', { method: 'POST', json: { magistrateId: rec.magistrateId, unitId: rec.unitId, assignedArea: rec.assignedArea, source: 'ai' } }))) ok++;
+    }
+    toast(`${ok} de ${chosen.length} vinculação(ões) efetivada(s).`);
+    setAi(aiClosed); refresh();
   };
   const exportFile = (path: string, name: string) => run(() => download(path, name)).then(loadScoped);
 
@@ -1495,8 +1519,8 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const rejectItem = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!rejecting) return;
-    const r = await run(() => api(`/${rejecting.kind}/${rejecting.id}/reject`, { method: 'POST', json: { reason: rejectReason } }),
-      rejecting.kind === 'units' ? 'Unidade rejeitada.' : 'Inscrição rejeitada.');
+    const r = await run(() => api(`/${rejecting.kind}/${rejecting.id}/reject`, { method: 'POST', json: { reason: rejectReason, carryOver: rejecting.kind === 'units' && rejectCarry } }),
+      rejecting.kind === 'units' ? (rejectCarry ? 'Unidade rejeitada; pedido mantido para a próxima edição.' : 'Unidade rejeitada.') : 'Inscrição rejeitada.');
     if (r) { setModal(null); refresh(); }
   };
   const WIPE = {
@@ -1636,7 +1660,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             </div>
             <div className="card p-5 space-y-3">
               <h4 className="font-semibold text-navy">Sugestões por IA</h4>
-              <p className="text-sm text-muted">Propostas de alocação para revisão. Dados de inscritos são enviados ao serviço de IA.</p>
+              <p className="text-sm text-muted">Mostra o resultado na tela para revisão antes de qualquer vinculação e, havendo saldo de magistrados, sugere quais unidades em análise atender. Dados de inscritos são enviados ao serviço de IA.</p>
               <button className="btn-secondary btn-sm" onClick={askAi} disabled={ai.loading}><Sparkles className="w-4 h-4" /> {ai.loading ? 'Gerando…' : 'Gerar sugestões'}</button>
             </div>
             <div className="card p-5 space-y-3">
@@ -1650,32 +1674,6 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
           </div>
           <SupplyDemand editionId={selectedId} refreshKey={matches.length + units.length + magistrates.length} onGo={setSub} />
           <AttendedUnits refreshKey={matches.length + units.length} />
-          {ai.items.length > 0 && (
-            <div className="card p-5">
-              <h4 className="font-semibold text-navy mb-3">Sugestões da IA</h4>
-              <div className="divide-y divide-line">
-                {ai.items.map((rec, i) => {
-                  const mag = magistrates.find(m => m.id === rec.magistrateId);
-                  const unit = units.find(u => u.id === rec.unitId);
-                  return (
-                    <div key={i} className="py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                      <div>
-                        <div className="text-sm font-medium">{mag?.name || 'Magistrado'} → {unit?.unitName || 'Unidade'}</div>
-                        <div className="text-xs text-bronze">{rec.assignedArea}</div>
-                        <p className="text-xs text-muted mt-1">{rec.justification}</p>
-                      </div>
-                      {mag && unit && (
-                        <button className="btn-secondary btn-sm shrink-0" onClick={async () => {
-                          await run(() => api('/matches', { method: 'POST', json: { magistrateId: mag.id, unitId: unit.id, assignedArea: rec.assignedArea, source: 'ai' } }), 'Vinculação efetivada.');
-                          setAi(a => ({ ...a, items: a.items.filter((_, j) => j !== i) })); refresh();
-                        }}>Efetivar</button>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
           <div className="card p-5">
             <h4 className="font-semibold text-navy mb-3">Últimas atividades</h4>
             {log.slice(0, 6).map(l => (
@@ -1835,6 +1833,8 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
               { id: 'selection', label: 'Triagem', sort: u => SELECTION_ORDER[u.selection] ?? 9, render: u => <>
                 <Badge tone={u.selection === 'Escolhida' ? 'ok' : u.selection === 'Rejeitada' ? 'danger' : 'warn'}>{u.selection}</Badge>
                 {u.selection === 'Rejeitada' && u.rejectionReason && <div className="text-[11px] text-danger mt-1.5 max-w-[12rem] leading-snug" title={u.rejectionReason}>Motivo: {u.rejectionReason}</div>}
+                {u.selection === 'Rejeitada' && (u.carryOver || u.carriedToEditionId) && <div className="text-[11px] text-bronze mt-1">{u.carriedToEditionId ? 'Pedido mantido: transportado para a próxima edição' : 'Pedido mantido: aguarda a próxima edição'}</div>}
+                {u.carriedFromEditionId && <div className="text-[11px] text-bronze mt-1">Pedido mantido da edição anterior</div>}
               </> },
               { id: 'status', label: 'Status', optional: true, sort: u => (u.selection === 'Escolhida' ? u.status : ''), render: u => (u.selection === 'Escolhida' ? <Badge tone={u.status === 'Atendida' ? 'ok' : 'warn'}>{u.status}</Badge> : <span className="text-xs text-muted">—</span>) },
               { id: 'actions', label: 'Ações', align: 'right', render: u => {
@@ -1843,7 +1843,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
                   <div className="flex flex-wrap justify-end gap-1.5">
                     {u.duplicateCount && <button className="btn-secondary btn-sm" onClick={() => mergeUnit(u)}>Fundir repetidas</button>}
                     {u.selection !== 'Escolhida' && <button className="btn-secondary btn-sm" onClick={() => chooseUnit(u.id)}><Check className="w-3.5 h-3.5" /> Escolher</button>}
-                    {u.selection !== 'Rejeitada' && <button className="btn-secondary btn-sm !text-danger" onClick={() => { setRejecting({ kind: 'units', id: u.id, name: u.unitName, linked: u.status === 'Atendida' }); setRejectReason(''); setModal('reject'); }}><X className="w-3.5 h-3.5" /> Rejeitar</button>}
+                    {u.selection !== 'Rejeitada' && <button className="btn-secondary btn-sm !text-danger" onClick={() => { setRejecting({ kind: 'units', id: u.id, name: u.unitName, linked: u.status === 'Atendida' }); setRejectReason(''); setRejectCarry(false); setModal('reject'); }}><X className="w-3.5 h-3.5" /> Rejeitar</button>}
                     <button className="btn-ghost btn-sm" title="Justificativa e vinculação" onClick={() => setOpenUnitId(open ? '' : u.id)}>{open ? 'Fechar' : 'Detalhes'}</button>
                     <button className="btn-ghost btn-sm" title="Editar" onClick={() => { setEditingUnit(u); setModal('unit-edit'); }}><Pencil className="w-4 h-4" /></button>
                     <button className="btn-danger" title="Excluir" onClick={() => del('units', u.id, `a unidade ${u.unitName}`)}><Trash2 className="w-4 h-4" /></button>
@@ -2018,6 +2018,69 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
           </form>
         </Modal>
       )}
+      {ai.open && (
+        <Modal wide title="Sugestões para revisão" onClose={() => setAi(aiClosed)}>
+          <div className="space-y-6">
+            <p className="text-sm text-muted">Nada foi vinculado ainda. Revise as sugestões abaixo e confirme apenas o que fizer sentido.</p>
+            {ai.error && <Notice tone="danger">{ai.error}</Notice>}
+            <section>
+              <h4 className="font-semibold text-navy mb-2">Alocações sugeridas <span className="text-muted font-normal">({ai.items.length})</span></h4>
+              {ai.items.length === 0 ? <p className="text-sm text-muted">Nenhuma alocação sugerida para os magistrados disponíveis e as unidades escolhidas com vaga.</p> : (
+                <>
+                  <div className="divide-y divide-line border border-line rounded-md">
+                    {ai.items.map((rec, i) => {
+                      const mag = magistrates.find(m => m.id === rec.magistrateId);
+                      const unit = units.find(u => u.id === rec.unitId);
+                      return (
+                        <label key={i} className="flex items-start gap-3 p-3 cursor-pointer">
+                          <input type="checkbox" className="mt-1" checked={ai.picked.includes(i)} onChange={() => setAi(a => ({ ...a, picked: a.picked.includes(i) ? a.picked.filter(x => x !== i) : [...a.picked, i] }))} />
+                          <span className="text-sm min-w-0">
+                            <span className="font-medium block">{mag?.name || 'Magistrado'} → {unit ? unitLabel(unit) : 'Unidade'}</span>
+                            <span className="block text-xs text-bronze">{rec.assignedArea}</span>
+                            <span className="block text-xs text-muted mt-1">{rec.justification}</span>
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <div className="flex justify-end mt-3">
+                    <button className="btn-primary btn-sm" disabled={!ai.picked.length} onClick={applyAi}><Check className="w-4 h-4" /> Vincular {ai.picked.length} selecionada(s)</button>
+                  </div>
+                </>
+              )}
+            </section>
+            <section>
+              <h4 className="font-semibold text-navy mb-1">Unidades em análise a atender</h4>
+              {ai.balance && (
+                <p className="text-xs text-muted mb-2">
+                  {ai.balance.available} magistrado(s) disponível(is) · {ai.balance.openSlots} vaga(s) aberta(s) nas unidades escolhidas · saldo de <strong className="text-ink">{ai.balance.balance}</strong> · {ai.balance.pendingUnits} unidade(s) em análise
+                </p>
+              )}
+              {!ai.balance || ai.balance.suggestions.length === 0 ? (
+                <p className="text-sm text-muted">{ai.balance && ai.balance.balance > 0 ? 'Não há unidades em análise para atender.' : 'Sem saldo de magistrados: as vagas abertas nas unidades já escolhidas absorvem os magistrados disponíveis.'}</p>
+              ) : (
+                <div className="divide-y divide-line border border-line rounded-md">
+                  {ai.balance.suggestions.map(sg => (
+                    <div key={sg.unitId} className="p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="text-sm min-w-0">
+                        <div className="font-medium">{sg.unit}</div>
+                        <div className="text-xs text-bronze">{sg.areas.join(' · ')} · {sg.slots} vaga(s)</div>
+                        <p className="text-xs text-muted mt-1">{sg.reason}</p>
+                        {sg.candidates.length > 0 && <p className="text-xs text-muted">Candidatos: {sg.candidates.join(', ')}</p>}
+                      </div>
+                      <button className="btn-secondary btn-sm shrink-0" onClick={async () => {
+                        if (await run(() => api(`/units/${sg.unitId}/choose`, { method: 'POST' }), 'Unidade escolhida para o mutirão.')) {
+                          setAi(a => ({ ...a, balance: a.balance && { ...a.balance, suggestions: a.balance.suggestions.filter(x => x.unitId !== sg.unitId) } })); refresh();
+                        }
+                      }}>Escolher unidade</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          </div>
+        </Modal>
+      )}
       {modal === 'reject' && rejecting && (
         <Modal title={rejecting.kind === 'units' ? 'Rejeitar unidade' : 'Rejeitar inscrição'} onClose={() => setModal(null)}>
           <form onSubmit={rejectItem} className="space-y-4">
@@ -2028,6 +2091,12 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             <Field label="Motivo da rejeição (uso interno; o inscrito vê apenas o status)">
               <textarea required autoFocus rows={4} className="input" value={rejectReason} onChange={e => setRejectReason(e.target.value)} placeholder={rejecting.kind === 'units' ? 'Ex.: Demanda não se enquadra nos critérios do mutirão.' : 'Ex.: Declaração de regularidade incompatível com os registros funcionais.'} />
             </Field>
+            {rejecting.kind === 'units' && (
+              <label className="flex items-start gap-2 text-sm">
+                <input type="checkbox" className="mt-1" checked={rejectCarry} onChange={e => setRejectCarry(e.target.checked)} />
+                <span>Rejeitar nesta edição, mas <strong>manter o pedido para a próxima edição</strong>. Ele é copiado automaticamente (em análise) para a próxima edição, ou assim que ela for criada.</span>
+              </label>
+            )}
             <div className="flex justify-end gap-2">
               <button type="button" className="btn-secondary" onClick={() => setModal(null)}>Cancelar</button>
               <button className="btn-primary" disabled={!rejectReason.trim()}>{rejecting.kind === 'units' ? 'Rejeitar unidade' : 'Rejeitar inscrição'}</button>

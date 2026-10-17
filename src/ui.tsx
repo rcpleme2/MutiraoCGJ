@@ -35,10 +35,10 @@ export function Notice({ tone, children }: { tone: 'ok' | 'danger'; children: Re
   );
 }
 
-export function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+export function Modal({ title, onClose, children, wide }: { title: string; onClose: () => void; children: React.ReactNode; wide?: boolean }) {
   return (
     <div className="fixed inset-0 z-50 bg-navy/40 flex items-center justify-center p-4 overflow-y-auto" onMouseDown={onClose}>
-      <div className="card shadow-xl w-full max-w-lg p-6 sm:p-7 relative my-8" onMouseDown={e => e.stopPropagation()}>
+      <div className={`card shadow-xl w-full ${wide ? 'max-w-3xl' : 'max-w-lg'} p-6 sm:p-7 relative my-8`} onMouseDown={e => e.stopPropagation()}>
         <button onClick={onClose} className="absolute top-4 right-4 text-muted hover:text-ink" aria-label="Fechar">
           <X className="w-5 h-5" />
         </button>
