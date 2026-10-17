@@ -384,7 +384,7 @@ let panelEntries: PanelEntry[] = [];
 interface Withdrawal { id: string; editionId: string; name: string; area: string; unit: string; sei: string; /** data do pedido de desistência (AAAA-MM-DD) */ requestDate?: string; magistrateIds?: string[]; /** nova inscrição deferida: a desistência vale só até esta data */ endedAt?: string; returnedMagistrateId?: string; createdAt: string }
 let withdrawals: Withdrawal[] = [];
 /** Alteração de vinculação (troca de unidade): a vinculação antiga vale até o dia anterior à data informada; a nova, a partir dela. */
-interface Transfer { id: string; editionId: string; magistrateId: string; name: string; /** área de atuação anterior */ area: string; /** nova área de atuação (ausente em registros antigos: a área não mudou) */ toArea?: string; fromUnit: string; toUnit: string; fromWorkType: string; toWorkType: string; effectiveDate: string; createdAt: string }
+interface Transfer { id: string; editionId: string; magistrateId: string; name: string; /** área de atuação anterior */ area: string; /** nova área de atuação (ausente em registros antigos: a área não mudou) */ toArea?: string; /** processo SEI da alteração (opcional) */ sei?: string; fromUnit: string; toUnit: string; fromWorkType: string; toWorkType: string; effectiveDate: string; createdAt: string }
 let transfers: Transfer[] = [];
 /** Pares de nomes parecidos que a administração indicou NÃO serem a mesma pessoa (chave "nomeA|nomeB") */
 let dupDismissed: string[] = [];
@@ -1829,8 +1829,10 @@ async function startServer() {
   });
 
   // Relatório em PDF: designações vigentes (total e por área), alterações de vinculação e desistentes.
-  app.get('/api/panel/report.pdf', (_req, res) => {
-    const rows = panelRows();
+  app.get('/api/panel/report.pdf', (req, res) => {
+    const byArea = req.query.por === 'area'; // versão só com as designações, uma área por bloco
+    const onlyAreas = typeof req.query.areas === 'string' && req.query.areas ? new Set(req.query.areas.split('|').map((a) => norm(a))) : null;
+    const rows = panelRows().filter((r) => !byArea || !onlyAreas || onlyAreas.has(norm(r.area)));
     const drops = [...withdrawals].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
     const moves = [...transfers].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR') || a.effectiveDate.localeCompare(b.effectiveDate));
     const areas = [...new Set(rows.map((r) => r.area.trim()))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
@@ -1847,7 +1849,7 @@ async function startServer() {
     const doc = new PDFDocument({ size: 'A4', margins: { top: 62, bottom: 62, left: 54, right: 54 }, bufferPages: true,
       info: { Title: 'Relatório de Designações — Mutirão de Julgamento', Author: 'Mutirão de Julgamento' } });
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename=relatorio-designacoes-${new Date().toISOString().slice(0, 10)}.pdf`);
+    res.setHeader('Content-Disposition', `attachment; filename=${byArea ? 'designacoes-por-area-' : 'relatorio-designacoes-'}${new Date().toISOString().slice(0, 10)}.pdf`);
     doc.pipe(res);
 
     const NAVY = '#1b2b43', BRONZE = '#8a6d3b', INK = '#1c2530', MUTED = '#6b7686', HAIR = '#d8d3c6', TINT = '#f4f1ea';
@@ -1899,7 +1901,7 @@ async function startServer() {
     const section = (num: string, title: string, note?: string) => {
       need(96);
       doc.moveDown(1);
-      doc.fillColor(NAVY).font('Times-Bold').fontSize(15).text(`${num}.  ${t(title)}`, L, doc.y, { width: W, align: 'center' });
+      doc.fillColor(NAVY).font('Times-Bold').fontSize(15).text(`${num ? `${num}.  ` : ''}${t(title)}`, L, doc.y, { width: W, align: 'center' });
       const y = doc.y + 5;
       doc.moveTo(L + W / 2 - 17, y).lineTo(L + W / 2 + 17, y).lineWidth(1.4).strokeColor(BRONZE).stroke();
       doc.y = y + 8;
@@ -1912,7 +1914,7 @@ async function startServer() {
     doc.fillColor(BRONZE).font('Helvetica-Bold').fontSize(7.6).text('TRIBUNAL DE JUSTIÇA DO ESTADO DO PARANÁ', L, doc.y, { width: W, align: 'center', characterSpacing: 1.2 });
     doc.fillColor(MUTED).font('Helvetica').fontSize(7.6).text('Corregedoria-Geral da Justiça', L, doc.y + 3, { width: W, align: 'center', characterSpacing: 0.4 });
     doc.moveDown(1.6);
-    doc.fillColor(NAVY).font('Times-Bold').fontSize(25).text('Relatório de Designações', L, doc.y, { width: W, align: 'center' });
+    doc.fillColor(NAVY).font('Times-Bold').fontSize(25).text(byArea ? 'Designações por Área de Atuação' : 'Relatório de Designações', L, doc.y, { width: W, align: 'center' });
     doc.fillColor(INK).font('Times-Roman').fontSize(12.5).text('Mutirão de Julgamento', L, doc.y + 3, { width: W, align: 'center' });
     doc.moveDown(0.9);
     doc.moveTo(L, doc.y).lineTo(L + W, doc.y).lineWidth(1.2).strokeColor(NAVY).stroke();
@@ -1924,17 +1926,28 @@ async function startServer() {
     // Resumo em quatro quadros (conteúdo centralizado)
     const stats = [['Designações vigentes', rows.length], ['Áreas de atuação', areas.length], ['Alterações de vinculação', moves.length], ['Desistentes', drops.length]] as const;
     const bw = (W - 3 * 10) / 4, by = doc.y;
-    stats.forEach(([label, n], i) => {
+    if (!byArea) stats.forEach(([label, n], i) => {
       const x = L + i * (bw + 10);
       doc.rect(x, by, bw, 56).lineWidth(0.6).strokeColor(HAIR).stroke();
       doc.rect(x, by, bw, 2.5).fill(i === 0 ? NAVY : BRONZE);
       doc.fillColor(NAVY).font('Times-Bold').fontSize(23).text(String(n), x, by + 11, { width: bw, align: 'center', lineBreak: false });
       doc.fillColor(MUTED).font('Helvetica').fontSize(7.4).text(t(label), x, by + 41, { width: bw, align: 'center', lineBreak: false });
     });
-    doc.y = by + 56;
+    if (!byArea) doc.y = by + 56;
     doc.moveDown(0.4);
 
     // ---------- 1. Designações vigentes (tabela única, por área e em ordem alfabética) ----------
+    if (byArea) {
+      section('', 'Designações vigentes', 'Classificadas por área de atuação e, dentro de cada área, em ordem alfabética.');
+      if (rows.length === 0) empty('Nenhuma designação vigente.');
+      areas.forEach((area, i) => {
+        const list = rows.filter((r) => r.area.trim() === area).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR') || a.unit.localeCompare(b.unit, 'pt-BR'));
+        if (i > 0) doc.moveDown(1.6); // quebra de linha entre as áreas
+        const magistrados = new Set(list.map((r) => r.name.toLowerCase())).size;
+        table([{ label: 'Nº', w: 38, align: 'center' }, { label: 'Magistrado(a)', w: 180 }, { label: 'Unidade designada', w: W - 280 }, { label: 'Atuação', w: 62 }],
+          [{ sep: area, count: `${magistrados} magistrados` }, ...list.map((r, k): Row => [String(k + 1), r.name, unitCell(r), acting(r.workType)])], { boldFirst: 1 });
+      });
+    } else {
     section('1', 'Designações vigentes', 'Classificadas por área de atuação e, dentro de cada área, em ordem alfabética. Permanecem válidas até o registro da desistência.');
     if (rows.length === 0) empty('Nenhuma designação vigente.');
     else {
@@ -1949,13 +1962,15 @@ async function startServer() {
       table([{ label: 'Nº', w: 38, align: 'center' }, { label: 'Magistrado(a)', w: 180 }, { label: 'Unidade designada', w: W - 280 }, { label: 'Atuação', w: 62 }], data, { boldFirst: 1 });
     }
 
+    }
+    if (!byArea) {
     // ---------- 3. Alterações ----------
     section('2', 'Alterações de vinculação', 'Alterações de vara e/ou de área de atuação. A vinculação anterior vale até o dia anterior à data informada; a nova vale a partir dela.');
     if (moves.length === 0) empty('Nenhuma alteração de vinculação registrada.');
     else table([{ label: 'Magistrado(a)', w: 120 }, { label: 'Vinculação anterior', w: (W - 120) / 2 }, { label: 'Nova vinculação', w: (W - 120) / 2 }],
       moves.map((m) => [m.name,
         `${m.fromUnit}\nÁrea: ${m.area || '—'} · ${acting(m.fromWorkType)} · até ${dmy(dayBefore(m.effectiveDate))}`,
-        `${m.toUnit}\nÁrea: ${m.toArea || m.area || '—'}${m.toArea && m.toArea.trim() !== m.area.trim() ? ' (alterada)' : ''} · ${acting(m.toWorkType)} · a partir de ${dmy(m.effectiveDate)}`]), { boldFirst: 0 });
+        `${m.toUnit}\nÁrea: ${m.toArea || m.area || '—'}${m.toArea && m.toArea.trim() !== m.area.trim() ? ' (alterada)' : ''} · ${acting(m.toWorkType)} · a partir de ${dmy(m.effectiveDate)}${m.sei ? `\nSEI: ${m.sei}` : ''}`]), { boldFirst: 0 });
 
     // ---------- 4. Desistentes ----------
     section('3', 'Desistentes', 'Magistrados que desistiram da participação, com o processo SEI e a data do pedido. Havendo nova inscrição deferida, a desistência vale apenas para o período anterior.');
@@ -1964,6 +1979,7 @@ async function startServer() {
       drops.map((w) => [w.name, `${w.area}\n${w.unit}`, w.sei || 'A informar', w.requestDate ? dmy(w.requestDate) : 'A informar',
         w.endedAt ? `Apenas no período, até ${day(w.endedAt)}` : 'Em vigor']), { boldFirst: 0 });
 
+    }
     // ---------- Cabeçalho corrido e rodapé ----------
     const range = doc.bufferedPageRange();
     for (let i = 0; i < range.count; i++) {
@@ -2645,6 +2661,8 @@ async function startServer() {
     const changedMag = nextMag.id !== oldMag?.id;
     // Troca de unidade do mesmo magistrado: exige a data a partir da qual ele atuará na nova unidade (a antiga vale até o dia anterior)
     const effectiveDate = typeof req.body?.effectiveDate === 'string' ? req.body.effectiveDate.trim() : '';
+    const transferSei = typeof req.body?.sei === 'string' ? cleanCell(req.body.sei) : '';
+    if (transferSei && (transferSei.length < 3 || transferSei.length > 100)) return res.status(400).json({ error: 'Número do processo SEI inválido.' });
     const newArea = typeof assignedArea === 'string' ? cleanCell(assignedArea) : '';
     if (newArea.length > 150) return res.status(400).json({ error: 'Área de atuação longa demais.' });
     const changingArea = !!newArea && newArea !== match.assignedArea;
@@ -2669,11 +2687,11 @@ async function startServer() {
     if (isTransfer) {
       match.startDate = effectiveDate;
       const label = (u?: Unit) => (u ? fullUnitName(u) : 'unidade removida');
-      transfers.push({ id: newId('tr'), editionId: match.editionId, magistrateId: nextMag.id, name: nextMag.name, area: oldArea, toArea: match.assignedArea, fromUnit: label(oldUnit), toUnit: label(nextUnit),
+      transfers.push({ id: newId('tr'), editionId: match.editionId, magistrateId: nextMag.id, name: nextMag.name, area: oldArea, toArea: match.assignedArea, ...(transferSei ? { sei: transferSei } : {}), fromUnit: label(oldUnit), toUnit: label(nextUnit),
         fromWorkType: oldWorkType, toWorkType: match.workType, effectiveDate, createdAt: new Date().toISOString() });
     }
 
-    log(match.editionId, 'Administração', 'Vinculação', `Vinculação alterada${isTransfer ? ` (${movingUnit ? 'nova unidade' : 'nova área'}${movingUnit && changingArea ? ' e nova área' : ''} a partir de ${effectiveDate.split('-').reverse().join('/')})` : ''}: de ${before} para ${describeMatch(match)}.`);
+    log(match.editionId, 'Administração', 'Vinculação', `Vinculação alterada${isTransfer ? ` (${movingUnit ? 'nova unidade' : 'nova área'}${movingUnit && changingArea ? ' e nova área' : ''} a partir de ${effectiveDate.split('-').reverse().join('/')}${transferSei ? `; SEI ${transferSei}` : ''})` : ''}: de ${before} para ${describeMatch(match)}.`);
     res.json({ success: true, match });
   });
 
@@ -2694,6 +2712,13 @@ async function startServer() {
   const isAvailableMag = (m: Magistrate, assigned: Set<string>) =>
     !['Aguardando Conferência', 'Atribuído', 'Rejeitado', 'Desistente', 'Excluído'].includes(m.status) && !assigned.has(m.id);
 
+  /** A designação precisa ser para fora da comarca em que o magistrado atua */
+  const sameComarcaAs = (m: Magistrate, u: Unit) => {
+    const mc = normName(m.locationComarca || '');
+    if (mc) return mc === normName(u.comarca);
+    return !!u.comarca && normName(m.currentLocation).includes(normName(u.comarca)); // lotação digitada sem comarca da lista
+  };
+
   /** Com saldo de magistrados (disponíveis > vagas abertas nas unidades escolhidas), indica quais unidades "Em análise" atender, priorizando
    *  a afinidade com as áreas dos magistrados disponíveis e, em seguida, a data da inscrição. Não altera nada: a administração decide. */
   function unitSuggestions(editionId: string) {
@@ -2707,7 +2732,7 @@ async function startServer() {
     let left = balance;
     if (balance > 0) {
       const scored = pending.map((u) => {
-        const cands = avail.filter((m) => u.areas.includes(m.firstPreference) || (!!m.secondPreference && u.areas.includes(m.secondPreference)));
+        const cands = avail.filter((m) => !sameComarcaAs(m, u)).filter((m) => u.areas.includes(m.firstPreference) || (!!m.secondPreference && u.areas.includes(m.secondPreference)));
         return { u, cands };
       }).sort((x, y) => y.cands.length - x.cands.length || x.u.createdAt.localeCompare(y.u.createdAt));
       for (const { u, cands } of scored) {
@@ -2749,11 +2774,12 @@ async function startServer() {
       const prompt = `
         Você é o assistente de inteligência artificial de coordenação de um Mutirão de Julgamento do Tribunal de Justiça.
         Analise os magistrados voluntários aprovados e não alocados e as unidades judiciais pendentes abaixo e sugira as melhores alocações estratégicas.
+        REGRA OBRIGATÓRIA: a designação deve ser, necessariamente, para unidade FORA da comarca em que o magistrado atua (compare "locationComarca"/"currentLocation" do magistrado com a "comarca" da unidade). Jamais sugira um magistrado para unidade da sua própria comarca.
         Cada magistrado só pode aparecer uma vez; cada unidade só pode receber tantos magistrados quanto o número de vagas ("slots") menos os já vinculados.
         "assignedArea" deve ser uma das áreas da unidade, de preferência a 1ª ou a 2ª preferência do magistrado.
 
         Magistrados Disponíveis:
-        ${JSON.stringify(unassignedMags.map((m) => ({ id: m.id, name: m.name, currentLocation: m.currentLocation, firstPreference: m.firstPreference, secondPreference: m.secondPreference, acceptsHearings: m.acceptsHearings })), null, 2)}
+        ${JSON.stringify(unassignedMags.map((m) => ({ id: m.id, name: m.name, currentLocation: m.currentLocation, locationComarca: m.locationComarca, firstPreference: m.firstPreference, secondPreference: m.secondPreference, acceptsHearings: m.acceptsHearings })), null, 2)}
 
         Unidades Judiciais Pendentes:
         ${JSON.stringify(pendingUnits.map((u) => ({ id: u.id, unitName: u.unitName, comarca: u.comarca, areas: u.areas, supportNeeded: u.supportNeeded, slots: u.slots, alreadyLinked: linkedCount(u.id), description: u.description })), null, 2)}
@@ -2781,7 +2807,7 @@ async function startServer() {
       const result = (Array.isArray(raw) ? raw : []).filter((r: any) => {
         const mag = unassignedMags.find((m) => m.id === r?.magistrateId);
         const un = pendingUnits.find((u) => u.id === r?.unitId);
-        if (!mag || !un || used.has(mag.id)) return false;
+        if (!mag || !un || used.has(mag.id) || sameComarcaAs(mag, un)) return false; // nunca na comarca de atuação do magistrado
         if (linkedCount(un.id) + (taken.get(un.id) ?? 0) >= (un.slots || 1)) return false;
         if (typeof r.assignedArea !== 'string' || !un.areas.includes(r.assignedArea)) r.assignedArea = [mag.firstPreference, mag.secondPreference].find((a) => un.areas.includes(a)) ?? un.areas[0];
         r.justification = typeof r.justification === 'string' ? r.justification.slice(0, 600) : '';

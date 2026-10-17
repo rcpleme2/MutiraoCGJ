@@ -571,6 +571,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
   const [moveUnit, setMoveUnit] = useState('');
   const [moveNewName, setMoveNewName] = useState('');
   const [moveArea, setMoveArea] = useState('');
+  const [moveSei, setMoveSei] = useState('');
   const [moveDate, setMoveDate] = useState('');
   const [sei, setSei] = useState('');
   const today = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Sao_Paulo' });
@@ -615,12 +616,13 @@ function PanelAdmin({ run, confirm, onChanged }: {
     const list = await run(() => api<Unit[]>(`/units?edition=${encodeURIComponent(r.editionId)}`));
     if (!list) return;
     setMoving({ row: r, units: list.filter(u => u.selection === 'Escolhida' && u.id !== r.unitId).sort((a, b) => a.unitName.localeCompare(b.unitName, 'pt-BR')) });
-    setMoveUnit(''); setMoveNewName(''); setMoveArea(r.area); setMoveDate(today());
+    setMoveUnit(''); setMoveNewName(''); setMoveArea(r.area); setMoveSei(''); setMoveDate(today());
   };
   const submitMove = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!moving) return;
     const body: Record<string, string> = { effectiveDate: moveDate };
+    if (moveSei.trim()) body.sei = moveSei.trim();
     if (moveNewName.trim()) body.newUnitName = moveNewName.trim(); else if (moveUnit) body.unitId = moveUnit;
     if (moveArea.trim() && moveArea.trim() !== moving.row.area.trim()) body.assignedArea = moveArea.trim();
     const r = await run(() => api(`/matches/${moving.row.id}`, { method: 'PUT', json: body }), 'Vinculação alterada.');
@@ -632,6 +634,10 @@ function PanelAdmin({ run, confirm, onChanged }: {
     await load(); onChanged();
   };
   const exportPdf = () => run(() => download('/panel/report.pdf', 'designacoes.pdf'));
+  const exportPdfByArea = () => {
+    const labels = areaFilter.map(k => areaMap.get(k)?.label).filter(Boolean) as string[];
+    return run(() => download(`/panel/report.pdf?por=area${labels.length ? `&areas=${encodeURIComponent(labels.join('|'))}` : ''}`, 'designacoes-por-area.pdf'));
+  };
 
   if (!data) return <div className="card p-8 text-sm text-muted">Carregando…</div>;
   const fold = (t: string) => t.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
@@ -645,6 +651,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
   return (
     <div className="space-y-6">
       <Toolbar title="Painel de vinculações">
+        <button className="btn-secondary btn-sm" onClick={exportPdfByArea} title="Só as designações, um bloco por área (respeita o filtro de áreas escolhido)"><Download className="w-4 h-4" /> PDF por área de atuação</button>
         <button className="btn-secondary btn-sm" onClick={exportPdf}><Download className="w-4 h-4" /> Exportar relatório em PDF</button>
       </Toolbar>
       <p className="text-sm text-muted -mt-2">
@@ -706,7 +713,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
           <SmartTable bare picker={false} id="alteracoes" rows={data.transfers} rowKey={t => t.id} empty="" defaultSort={{ key: 'date', dir: 'desc' }} cols={[
             { id: 'name', label: 'Magistrado(a)', sort: t => t.name, tdClass: 'font-medium', render: t => t.name },
             { id: 'from', label: 'Vinculação anterior', sort: t => t.fromUnit, render: t => { const d = new Date(`${t.effectiveDate}T00:00:00Z`); d.setUTCDate(d.getUTCDate() - 1); return <>{t.fromUnit}<div className="text-xs text-muted">{t.area} · até {d.toISOString().slice(0, 10).split('-').reverse().join('/')}</div></>; } },
-            { id: 'to', label: 'Nova vinculação', sort: t => t.toUnit, render: t => <>{t.toUnit}<div className="text-xs text-bronze">{t.toArea || t.area}{t.toArea && t.toArea.trim() !== t.area.trim() ? ' (alterada)' : ''} · a partir de {t.effectiveDate.split('-').reverse().join('/')}</div></> },
+            { id: 'to', label: 'Nova vinculação', sort: t => t.toUnit, render: t => <>{t.toUnit}<div className="text-xs text-bronze">{t.toArea || t.area}{t.toArea && t.toArea.trim() !== t.area.trim() ? ' (alterada)' : ''} · a partir de {t.effectiveDate.split('-').reverse().join('/')}</div>{t.sei && <div className="text-xs text-muted font-mono">SEI {t.sei}</div>}</> },
             { id: 'date', label: 'Vigência', sort: t => t.effectiveDate, tdClass: 'text-xs text-muted whitespace-nowrap', render: t => t.effectiveDate.split('-').reverse().join('/') },
           ]} />
         </div>
@@ -789,6 +796,9 @@ function PanelAdmin({ run, confirm, onChanged }: {
                 {!PREFERENCE_AREAS.includes(moveArea) && moveArea && <option value={moveArea}>{moveArea} (fora da lista)</option>}
                 {PREFERENCE_AREAS.map(a => <option key={a} value={a}>{a}</option>)}
               </select>
+            </Field>
+            <Field label="Processo SEI da alteração (opcional)">
+              <input className="input" maxLength={100} value={moveSei} onChange={e => setMoveSei(e.target.value)} placeholder="0000000-00.2026.8.16.6000" />
             </Field>
             <Field label="Valerá a partir de">
               <input className="input" type="date" required value={moveDate} onChange={e => setMoveDate(e.target.value)} />
