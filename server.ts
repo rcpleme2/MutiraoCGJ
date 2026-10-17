@@ -1680,15 +1680,27 @@ async function startServer() {
     const chosen = us.filter((u) => u.selection === 'Escolhida');
     const linkedMag = new Set(matches.map((m) => m.magistrateId));
     const available = ms.filter((m) => (m.status === 'Aprovado' || m.status === 'Lista de Espera') && !linkedMag.has(m.id));
-    const areaSet = new Set<string>(PREFERENCE_AREAS);
-    chosen.forEach((u) => u.areas.forEach((a) => areaSet.add(a)));
-    const byArea = [...areaSet].map((area) => {
-      const want = chosen.filter((u) => u.areas.includes(area));
-      const openSlots = want.reduce((n, u) => n + Math.max(0, (u.slots || 1) - linkedCount(u.id)), 0);
-      const first = available.filter((m) => m.firstPreference === area).length;
-      const second = available.filter((m) => m.secondPreference === area).length;
-      return { area, units: want.length, openSlots, filled: mts.filter((m) => m.assignedArea === area).length, first, second, balance: first + second - openSlots };
-    }).filter((r) => r.units || r.filled || r.first || r.second);
+    // Quantos juízes faltam e para qual área: cada vaga aberta de unidade escolhida é casada (emparelhamento máximo) com um magistrado disponível
+    // que tenha a área da unidade entre as preferências, na mesma edição e fora da comarca em que atua. Vaga sem par = juiz que falta.
+    const slots = chosen.flatMap((u) => Array.from({ length: Math.max(0, (u.slots || 1) - linkedCount(u.id)) }, () => u));
+    const edges = slots.map((u) => available.map((m, j) => (m.editionId === u.editionId && !sameComarcaAs(m, u) && (u.areas.includes(m.firstPreference) || (!!m.secondPreference && u.areas.includes(m.secondPreference))) ? j : -1)).filter((j) => j >= 0));
+    const slotOf = new Array<number>(available.length).fill(-1);
+    const tryFill = (i: number, seen: Set<number>): boolean => {
+      for (const j of edges[i]) {
+        if (seen.has(j)) continue;
+        seen.add(j);
+        if (slotOf[j] < 0 || tryFill(slotOf[j], seen)) { slotOf[j] = i; return true; }
+      }
+      return false;
+    };
+    slots.forEach((_, i) => tryFill(i, new Set()));
+    const covered = new Set(slotOf.filter((i) => i >= 0));
+    const areaRow = new Map<string, { area: string; units: Set<string>; openSlots: number; covered: number; missing: number; spare: number }>();
+    const rowOf = (area: string) => { let r = areaRow.get(area); if (!r) { r = { area, units: new Set(), openSlots: 0, covered: 0, missing: 0, spare: 0 }; areaRow.set(area, r); } return r; };
+    slots.forEach((u, i) => { const r = rowOf(u.areas.join(' / ') || '(sem área)'); r.units.add(u.id); r.openSlots++; if (covered.has(i)) r.covered++; else r.missing++; });
+    available.forEach((m, j) => { if (slotOf[j] < 0 && m.firstPreference) rowOf(m.firstPreference).spare++; });
+    const byArea = [...areaRow.values()].map((r) => ({ ...r, units: r.units.size })).sort((x, y) => y.missing - x.missing || x.area.localeCompare(y.area, 'pt-BR'));
+    const missingTotal = slots.length - covered.size;
     const comarcas = new Map<string, { comarca: string; pending: number; partial: number; attended: number }>();
     for (const u of chosen) {
       const c = canonicalComarca(u.comarca) ?? (u.comarca || '(sem comarca)');
@@ -1711,7 +1723,7 @@ async function startServer() {
       .sort((a, b) => b.days - a.days);
     const unitsWithout = chosen.filter((u) => linkedCount(u.id) === 0).map((u) => ({ unit: fullUnitName(u), areas: u.areas.join(', '), since: u.createdAt }));
     res.json({
-      totals: { units: us.length, chosen: chosen.length, openSlots: chosen.reduce((n, u) => n + Math.max(0, (u.slots || 1) - linkedCount(u.id)), 0), available: available.length, matches: mts.length },
+      totals: { units: us.length, chosen: chosen.length, openSlots: slots.length, available: available.length, matches: mts.length, covered: covered.size, missing: missingTotal, spare: available.length - covered.size, pendingUnits: us.filter((u) => u.selection === 'Em análise').length },
       byArea, byComarca: [...comarcas.values()].sort((a, b) => b.pending - a.pending || a.comarca.localeCompare(b.comarca, 'pt-BR')),
       alerts: {
         ownPlace, waitingLong, unitsWithout,

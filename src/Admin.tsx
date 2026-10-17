@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Lock, Unlock, Plus, Trash2, Check, Pencil, Download, Sparkles, LogOut, Radio, Archive, RotateCcw, ChevronDown, ChevronRight, X, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
+import { Lock, Unlock, Plus, Trash2, Check, Pencil, Download, Sparkles, LogOut, Radio, Archive, RotateCcw, ChevronDown, ChevronRight, X, ArrowUp, ArrowDown, ArrowUpDown, Filter } from 'lucide-react';
 import { api, download, getToken, setToken } from './api';
 import { PREFERENCE_AREAS, Edition, FaqItem, LogEntry, Magistrate, Match, PanelRow, Transfer, Unit, Withdrawal, WorkType, WORK_TYPES } from './types';
 import { COMARCAS, canonicalComarca, catalogById, fullUnitName, unitsOfComarca } from './catalogo-tjpr';
@@ -128,6 +128,8 @@ interface Col<T> {
   render: (x: T) => React.ReactNode;
   /** valor usado na ordenação (sem ele, a coluna não ordena) */
   sort?: (x: T) => string | number;
+  /** valores usados no filtro do cabeçalho (sem ele, a coluna não filtra) */
+  filter?: (x: T) => string | string[];
   /** pode ser ocultada pelo usuário; `hidden` = começa oculta */
   optional?: boolean;
   hidden?: boolean;
@@ -136,6 +138,50 @@ interface Col<T> {
 }
 const readPref = <V,>(key: string, fallback: V): V => { try { const v = localStorage.getItem(key); return v ? { ...fallback as any, ...JSON.parse(v) } : fallback; } catch { return fallback; } };
 const writePref = (key: string, v: unknown) => { try { localStorage.setItem(key, JSON.stringify(v)); } catch { /* armazenamento indisponível */ } };
+
+const countValues = (vals: string[]) => {
+  const m = new Map<string, number>();
+  vals.forEach(v => m.set(v, (m.get(v) ?? 0) + 1));
+  return [...m.entries()].sort((a, b) => collator.compare(a[0], b[0]));
+};
+
+/** Filtro do cabeçalho: escolher um ou mais valores a exibir */
+function ColFilter({ label, options, selected, onChange, open, onOpen }: {
+  label: string; options: [string, number][]; selected: string[]; onChange: (v: string[]) => void; open: boolean; onOpen: (o: boolean) => void;
+}) {
+  const [q, setQ] = useState('');
+  const on = selected.length > 0;
+  const list = options.filter(([v]) => !q || v.toLowerCase().includes(q.toLowerCase()));
+  return (
+    <span className="relative inline-block font-normal normal-case tracking-normal">
+      <button type="button" aria-label={`Filtrar ${label}`} aria-expanded={open} title={`Filtrar ${label}`} onClick={() => { setQ(''); onOpen(!open); }}
+        className={`p-0.5 rounded ${on ? 'text-bronze bg-bronze-soft' : 'text-muted/70 hover:text-ink'}`}>
+        <Filter className="w-3.5 h-3.5" />
+      </button>
+      {open && (
+        <>
+          <span className="fixed inset-0 z-20" onClick={() => onOpen(false)} />
+          <div className="absolute left-0 top-full mt-1 z-30 w-64 card shadow-lg p-3 space-y-2 text-sm text-ink text-left">
+            {options.length > 8 && <input className="input !py-1.5 text-xs" placeholder="Buscar…" value={q} onChange={e => setQ(e.target.value)} autoFocus />}
+            <div className="max-h-56 overflow-auto space-y-1.5">
+              {list.length === 0 && <p className="text-xs text-muted">Nenhum valor.</p>}
+              {list.map(([v, n]) => (
+                <label key={v} className="flex items-start gap-2 cursor-pointer">
+                  <input type="checkbox" className="mt-0.5" checked={selected.includes(v)} onChange={() => onChange(selected.includes(v) ? selected.filter(x => x !== v) : [...selected, v])} />
+                  <span className="flex-1 min-w-0 break-words">{v}</span><span className="text-xs text-muted">{n}</span>
+                </label>
+              ))}
+            </div>
+            <div className="flex justify-between text-xs pt-1 border-t border-line">
+              <button className="text-bronze hover:underline" onClick={() => onChange(options.map(o => o[0]))}>Marcar todos</button>
+              <button className="text-bronze hover:underline" onClick={() => onChange([])}>Limpar</button>
+            </div>
+          </div>
+        </>
+      )}
+    </span>
+  );
+}
 
 function SmartTable<T>({ id, cols, rows, rowKey, empty, defaultSort, rowClass, after, picker = true, bare = false }: {
   id: string; cols: Col<T>[]; rows: T[]; rowKey: (x: T) => string; empty: React.ReactNode;
@@ -152,11 +198,16 @@ function SmartTable<T>({ id, cols, rows, rowKey, empty, defaultSort, rowClass, a
   const toggleSort = (key: string) => setSort(prev => { const next = { key, dir: prev.key === key && prev.dir === 'asc' ? 'desc' as SortDir : 'asc' as SortDir }; writePref(`mutirao-sort-${id}`, next); return next; });
   const toggleCol = (cid: string) => setHidden(prev => { const next = { ...prev, [cid]: !prev[cid] }; writePref(`mutirao-cols-${id}`, next); return next; });
   const sortCol = cols.find(c => c.id === sort.key && c.sort);
-  const sorted = sortCol ? [...rows].sort((a, b) => {
+  const [filters, setFilters] = useState<Record<string, string[]>>({});
+  const [openFilter, setOpenFilter] = useState('');
+  const valuesOf = (c: Col<T>, x: T) => { const v = c.filter!(x); return (Array.isArray(v) ? v : [v]).map(t => t || '—'); };
+  const active = cols.filter(c => c.filter && (filters[c.id]?.length ?? 0) > 0);
+  const shown = active.length ? rows.filter(x => active.every(c => valuesOf(c, x).some(v => filters[c.id].includes(v)))) : rows;
+  const sorted = sortCol ? [...shown].sort((a, b) => {
     const va = sortCol.sort!(a), vb = sortCol.sort!(b);
     const cmp = typeof va === 'number' && typeof vb === 'number' ? va - vb : collator.compare(String(va ?? ''), String(vb ?? ''));
     return sort.dir === 'asc' ? cmp : -cmp;
-  }) : rows;
+  }) : shown;
   const optional = cols.filter(c => c.optional);
   return (
     <div className={bare ? '' : 'space-y-2'}>
@@ -174,12 +225,25 @@ function SmartTable<T>({ id, cols, rows, rowKey, empty, defaultSort, rowClass, a
           </details>
         </div>
       )}
+      {active.length > 0 && (
+        <div className={`flex flex-wrap items-center gap-2 text-xs text-muted ${bare ? 'px-3 pt-2' : ''}`}>
+          <span>Filtrando por {active.map(c => c.label).join(', ')} — {shown.length} de {rows.length}</span>
+          <button className="text-bronze hover:underline" onClick={() => setFilters({})}>Limpar filtros</button>
+        </div>
+      )}
       <div className={bare ? '' : 'card overflow-hidden'}>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead><tr>{visible.map(c => (
               <th key={c.id} className={`th ${c.align === 'right' ? 'text-right' : ''}`} aria-sort={sort.key === c.id ? (sort.dir === 'asc' ? 'ascending' : 'descending') : undefined}>
-                {c.sort ? <ColSort label={c.label} active={sort.key === c.id} dir={sort.dir} onToggle={() => toggleSort(c.id)} /> : c.label}
+                <span className="inline-flex items-center gap-1">
+                  {c.sort ? <ColSort label={c.label} active={sort.key === c.id} dir={sort.dir} onToggle={() => toggleSort(c.id)} /> : c.label}
+                  {c.filter && (
+                    <ColFilter label={c.label} open={openFilter === c.id} onOpen={o => setOpenFilter(o ? c.id : '')}
+                      options={countValues(rows.flatMap(x => valuesOf(c, x)))} selected={filters[c.id] ?? []}
+                      onChange={v => setFilters(f => ({ ...f, [c.id]: v }))} />
+                  )}
+                </span>
               </th>
             ))}</tr></thead>
             <tbody className="divide-y divide-line">
@@ -576,6 +640,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
   const [excludingRow, setExcludingRow] = useState<PanelRow | null>(null);
   const [moving, setMoving] = useState<{ row: PanelRow; units: Unit[] } | null>(null);
   const [moveUnit, setMoveUnit] = useState('');
+  const [moveComarca, setMoveComarca] = useState('');
   const [moveNewName, setMoveNewName] = useState('');
   const [moveArea, setMoveArea] = useState('');
   const [moveSei, setMoveSei] = useState('');
@@ -623,14 +688,15 @@ function PanelAdmin({ run, confirm, onChanged }: {
     const list = await run(() => api<Unit[]>(`/units?edition=${encodeURIComponent(r.editionId)}`));
     if (!list) return;
     setMoving({ row: r, units: list.filter(u => u.selection === 'Escolhida' && u.id !== r.unitId).sort((a, b) => a.unitName.localeCompare(b.unitName, 'pt-BR')) });
-    setMoveUnit(''); setMoveNewName(''); setMoveArea(r.area); setMoveSei(''); setMoveDate(today());
+    setMoveUnit(''); setMoveComarca(''); setMoveNewName(''); setMoveArea(r.area); setMoveSei(''); setMoveDate(today());
   };
   const submitMove = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!moving) return;
     const body: Record<string, string> = { effectiveDate: moveDate };
     if (moveSei.trim()) body.sei = moveSei.trim();
-    if (moveNewName.trim()) body.newUnitName = moveNewName.trim(); else if (moveUnit) body.unitId = moveUnit;
+    const cat = moveUnit.startsWith('cat:') ? catalogById(moveUnit.slice(4)) : undefined;
+    if (moveNewName.trim()) body.newUnitName = moveNewName.trim(); else if (cat) body.newUnitName = fullUnitName(cat); else if (moveUnit) body.unitId = moveUnit;
     if (moveArea.trim() && moveArea.trim() !== moving.row.area.trim()) body.assignedArea = moveArea.trim();
     const r = await run(() => api(`/matches/${moving.row.id}`, { method: 'PUT', json: body }), 'Vinculação alterada.');
     if (r) { setMoving(null); await load(); onChanged(); }
@@ -698,19 +764,19 @@ function PanelAdmin({ run, confirm, onChanged }: {
         <SmartTable bare id="painel" rows={rows} rowKey={r => r.id} defaultSort={{ key: 'name', dir: 'asc' }}
           empty={data.rows.length === 0 ? 'Nenhuma vinculação vigente.' : 'Nenhum resultado para o filtro escolhido.'} cols={[
             { id: 'name', label: 'Magistrado(a)', sort: r => r.name, tdClass: 'font-medium', render: r => r.name },
-            { id: 'area', label: 'Área de atuação', optional: true, sort: r => r.area, tdClass: 'text-muted', render: r => r.area },
-            { id: 'pref', label: 'Preferência atendida', optional: true, sort: r => r.preference || 9, render: r => <>
+            { id: 'area', label: 'Área de atuação', optional: true, filter: r => r.area, sort: r => r.area, tdClass: 'text-muted', render: r => r.area },
+            { id: 'pref', label: 'Preferência atendida', optional: true, filter: r => (r.preference === 1 ? '1ª preferência' : r.preference === 2 ? '2ª preferência' : 'Fora das preferências'), sort: r => r.preference || 9, render: r => <>
               <Badge tone={r.preference === 1 ? 'ok' : r.preference === 2 ? 'info' : 'warn'}>{r.preference === 1 ? '1ª preferência' : r.preference === 2 ? '2ª preferência' : 'Fora das preferências'}</Badge>
               <div className="text-[11px] text-muted mt-1 leading-snug">1ª: {r.firstPreference || '—'}{r.secondPreference ? <><br />2ª: {r.secondPreference}</> : null}</div>
             </> },
-            { id: 'unit', label: 'Unidade', sort: r => fullUnitName({ unitName: r.unit, comarca: r.comarca, separator: r.separator }), render: r => <>
+            { id: 'unit', label: 'Unidade', filter: r => fullUnitName({ unitName: r.unit, comarca: r.comarca, separator: r.separator }), sort: r => fullUnitName({ unitName: r.unit, comarca: r.comarca, separator: r.separator }), render: r => <>
               {fullUnitName({ unitName: r.unit, comarca: r.comarca, separator: r.separator })}
               {r.note && <div className="text-xs text-muted">Obs.: {r.note}</div>}
               {r.startDate && <div className="text-xs text-bronze">a partir de {r.startDate.split('-').reverse().join('/')}</div>}
             </> },
-            { id: 'comarca', label: 'Comarca', optional: true, hidden: true, sort: r => r.comarca ?? '', tdClass: 'text-xs', render: r => r.comarca || '—' },
-            { id: 'work', label: 'Atuação', optional: true, sort: r => r.workType ?? '', tdClass: 'text-xs', render: r => (r.workType === 'Audiência' ? 'Audiências' : r.workType === 'Sentença' ? 'Sentença' : r.workType) },
-            { id: 'edition', label: 'Edição', optional: true, sort: r => r.editionTitle, tdClass: 'text-xs text-muted', render: r => r.editionTitle },
+            { id: 'comarca', label: 'Comarca', optional: true, hidden: true, sort: r => r.comarca ?? '', filter: r => r.comarca ?? '', tdClass: 'text-xs', render: r => r.comarca || '—' },
+            { id: 'work', label: 'Atuação', optional: true, filter: r => r.workType ?? '', sort: r => r.workType ?? '', tdClass: 'text-xs', render: r => (r.workType === 'Audiência' ? 'Audiências' : r.workType === 'Sentença' ? 'Sentença' : r.workType) },
+            { id: 'edition', label: 'Edição', optional: true, sort: r => r.editionTitle, filter: r => r.editionTitle, tdClass: 'text-xs text-muted', render: r => r.editionTitle },
             { id: 'actions', label: '', align: 'right', render: r => (
               <div className="flex flex-wrap justify-end gap-1">
                 <button className="btn-secondary btn-sm" onClick={() => openMove(r)}>Alterar vara/área</button>
@@ -740,7 +806,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
         {data.withdrawals.length === 0 ? <p className="p-8 text-center text-sm text-muted">Nenhuma desistência registrada.</p> : (
           <SmartTable bare picker={false} id="desistentes" rows={data.withdrawals} rowKey={w => w.id} empty="" defaultSort={{ key: 'name', dir: 'asc' }} cols={[
             { id: 'name', label: 'Magistrado(a)', sort: w => w.name, tdClass: 'font-medium', render: w => w.name },
-            { id: 'area', label: 'Área', sort: w => w.area, tdClass: 'text-muted', render: w => w.area },
+            { id: 'area', label: 'Área', sort: w => w.area, filter: w => w.area, tdClass: 'text-muted', render: w => w.area },
             { id: 'unit', label: 'Unidade', sort: w => w.unit, render: w => w.unit },
             { id: 'sei', label: 'SEI', sort: w => w.sei, tdClass: 'font-mono text-xs', render: w => w.sei || <span className="text-warn font-sans">A informar</span> },
             { id: 'date', label: 'Pedido em', sort: w => w.requestDate ?? '', tdClass: 'text-muted whitespace-nowrap', render: w => (w.requestDate ? w.requestDate.split('-').reverse().join('/') : <span className="text-warn">A informar</span>) },
@@ -796,15 +862,33 @@ function PanelAdmin({ run, confirm, onChanged }: {
         <Modal title="Alterar vara e/ou área de atuação" onClose={() => setMoving(null)}>
           <form onSubmit={submitMove} className="space-y-4">
             <p className="text-sm text-muted"><strong className="text-ink">{moving.row.name}</strong> atua hoje em <strong className="text-ink">{moving.row.unit}</strong> (área: <strong className="text-ink">{moving.row.area}</strong>). Altere a vara, a área ou ambas. A vinculação anterior ficará registrada como válida até o dia anterior à data informada.</p>
-            <Field label="Nova unidade (deixe em branco para manter a atual)">
-              <select className="input" value={moveUnit} onChange={e => setMoveUnit(e.target.value)} disabled={!!moveNewName.trim()}>
-                <option value="">Manter a unidade atual</option>
-                {moving.units.map(u => <option key={u.id} value={u.id}>{unitLabel(u)}</option>)}
-              </select>
-            </Field>
+            {(() => {
+              const initial = moving.row.editionId === data.initialEdition.id;
+              const comarcas = initial ? COMARCAS : [...new Set(moving.units.map(u => u.comarca))].sort((x, y) => x.localeCompare(y, 'pt-BR'));
+              const existing = moving.units.filter(u => u.comarca === moveComarca);
+              const have = new Set(existing.map(u => u.catalogId).filter(Boolean));
+              const fromCatalog = initial && moveComarca ? unitsOfComarca(moveComarca).filter(c => !have.has(c.id) && fullUnitName(c) !== moving.row.unit && c.unitName !== moving.row.unit) : [];
+              return (
+                <div className="grid sm:grid-cols-2 gap-4">
+                  <Field label="Nova comarca (em branco para manter a atual)">
+                    <select className="input" value={moveComarca} onChange={e => { setMoveComarca(e.target.value); setMoveUnit(''); }} disabled={!!moveNewName.trim()}>
+                      <option value="">Manter a comarca atual</option>
+                      {comarcas.map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </Field>
+                  <Field label="Nova vara">
+                    <select className="input" value={moveUnit} onChange={e => setMoveUnit(e.target.value)} disabled={!moveComarca || !!moveNewName.trim()}>
+                      <option value="">{moveComarca ? 'Manter a unidade atual' : 'Escolha a comarca primeiro'}</option>
+                      {existing.map(u => <option key={u.id} value={u.id}>{u.unitName}</option>)}
+                      {fromCatalog.map(c => <option key={c.id} value={`cat:${c.id}`}>{c.unitName}</option>)}
+                    </select>
+                  </Field>
+                </div>
+              );
+            })()}
             {moving.row.editionId === data.initialEdition.id && (
               <Field label="Ou digite o nome da nova vara (se ainda não estiver na lista)">
-                <input className="input" maxLength={300} value={moveNewName} onChange={e => setMoveNewName(e.target.value)} placeholder="Ex.: 2ª Vara Cível de Londrina" />
+                <input className="input" maxLength={300} value={moveNewName} onChange={e => setMoveNewName(e.target.value)} placeholder="Ex.: 2ª Vara Cível de Londrina (com a comarca)" />
               </Field>
             )}
             <Field label="Área de atuação">
@@ -898,8 +982,8 @@ function ExcludeModal({ name, onClose, onSubmit }: { name: string; onClose: () =
 
 /* ---------- Painel oferta × demanda ---------- */
 interface Dashboard {
-  totals: { units: number; chosen: number; openSlots: number; available: number; matches: number };
-  byArea: { area: string; units: number; openSlots: number; filled: number; first: number; second: number; balance: number }[];
+  totals: { units: number; chosen: number; openSlots: number; available: number; matches: number; covered: number; missing: number; spare: number; pendingUnits: number };
+  byArea: { area: string; units: number; openSlots: number; covered: number; missing: number; spare: number }[];
   byComarca: { comarca: string; pending: number; partial: number; attended: number }[];
   alerts: {
     ownPlace: { name: string; unit: string; kind: string }[];
@@ -938,27 +1022,40 @@ function SupplyDemand({ editionId, refreshKey, onGo }: { editionId: string; refr
           ))}
         </div>
       </div>
-      <p className="text-xs text-muted -mt-2">
-        {d.totals.chosen} unidades escolhidas · <strong className="text-ink">{d.totals.openSlots} vagas abertas</strong> · <strong className="text-ink">{d.totals.available} magistrados aprovados sem designação</strong> · {d.totals.matches} vinculações.
-      </p>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        {([
+          ['Vagas abertas', d.totals.openSlots, 'juízes que as unidades escolhidas ainda precisam', 'text-navy'],
+          ['Voluntários disponíveis', d.totals.available, 'aprovados, ainda sem designação', 'text-navy'],
+          ['Faltam designar', d.totals.missing, 'vagas sem voluntário compatível (área e comarca)', d.totals.missing ? 'text-danger' : 'text-ok'],
+          ['Sobram', d.totals.spare, 'voluntários sem vaga compatível', d.totals.spare ? 'text-warn' : 'text-muted'],
+        ] as const).map(([l, v, hint, tone]) => (
+          <div key={l} className="border border-line rounded-md p-3">
+            <div className={`text-2xl font-serif font-semibold ${tone}`}>{v}</div>
+            <div className="text-xs font-medium text-ink">{l}</div>
+            <div className="text-[11px] text-muted leading-snug">{hint}</div>
+          </div>
+        ))}
+      </div>
       <div className="overflow-x-auto border border-line rounded-md">
         <table className="w-full text-sm">
-          <thead><tr><th className="th">Área</th><th className="th text-right">Unidades que pedem</th><th className="th text-right">Vagas abertas</th><th className="th text-right">Vinculados</th><th className="th text-right">Disponíveis (1ª / 2ª)</th><th className="th text-right">Saldo</th></tr></thead>
+          <thead><tr><th className="th">Área de atuação</th><th className="th text-right">Vagas abertas</th><th className="th text-right">Cobertas por voluntários</th><th className="th text-right">Faltam juízes</th><th className="th text-right">Voluntários sobrando</th></tr></thead>
           <tbody className="divide-y divide-line">
-            {d.byArea.length === 0 && <EmptyRow cols={6}>Sem dados.</EmptyRow>}
+            {d.byArea.length === 0 && <EmptyRow cols={5}>Nenhuma vaga aberta nas unidades escolhidas.</EmptyRow>}
             {d.byArea.map(r => (
               <tr key={r.area}>
-                <td className="td font-medium">{r.area}</td>
-                <td className="td text-right">{r.units}</td>
+                <td className="td font-medium">{r.area}<div className="text-[11px] text-muted font-normal">{r.units} unidade(s)</div></td>
                 <td className="td text-right">{r.openSlots}</td>
-                <td className="td text-right">{r.filled}</td>
-                <td className="td text-right">{r.first} / {r.second}</td>
-                <td className={`td text-right font-semibold ${r.balance < 0 ? 'text-danger' : r.balance > 0 ? 'text-ok' : 'text-muted'}`}>{r.balance > 0 ? `+${r.balance}` : r.balance}</td>
+                <td className="td text-right text-ok">{r.covered}</td>
+                <td className={`td text-right font-semibold ${r.missing ? 'text-danger' : 'text-muted'}`}>{r.missing ? `${r.missing} a designar` : '—'}</td>
+                <td className={`td text-right ${r.spare ? 'text-warn' : 'text-muted'}`}>{r.spare || '—'}</td>
               </tr>
             ))}
           </tbody>
         </table>
-        <p className="px-4 py-2 text-[11px] text-muted border-t border-line">Saldo = magistrados disponíveis (1ª e 2ª preferência) − vagas abertas. Negativo indica falta de voluntários na área. Unidades com mais de uma área contam em cada uma.</p>
+        <p className="px-4 py-2 text-[11px] text-muted border-t border-line">
+          Cada vaga aberta é casada com um voluntário disponível que tenha a área entre a 1ª ou a 2ª preferência e atue em outra comarca; "Faltam" é o que sobra sem par. Unidades com mais de uma área aparecem juntas na mesma linha.
+          {d.totals.pendingUnits > 0 && <> Há {d.totals.pendingUnits} unidade(s) ainda em análise, que não entram na conta até serem escolhidas.</>}
+        </p>
       </div>
       <div className="grid lg:grid-cols-2 gap-4">
         <div className="overflow-x-auto border border-line rounded-md">
@@ -1764,10 +1861,10 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             { id: 'email', label: 'E-mail', optional: true, hidden: true, sort: m => m.email, render: m => <span className="text-xs text-muted break-all">{m.email || '—'}</span> },
             { id: 'ip', label: 'IP', optional: true, hidden: true, sort: m => m.registeredIp ?? '', render: m => <span className="text-xs text-muted font-mono">{m.registeredIp || '—'}</span> },
             { id: 'createdAt', label: 'Inscrição', optional: true, hidden: true, sort: m => m.createdAt, render: m => <DateCell iso={m.createdAt} /> },
-            { id: 'location', label: 'Lotação', optional: true, sort: m => m.currentLocation, tdClass: 'text-muted', render: m => <>{m.currentLocation}{m.currentLocation && !m.locationCatalogId && <span className="text-[11px] text-warn block">◦ A padronizar</span>}</> },
-            { id: 'prefs', label: 'Preferências', optional: true, sort: m => m.firstPreference, tdClass: 'text-xs', render: m => <><div className="text-bronze font-medium">1ª: {m.firstPreference}</div><div className="text-muted">2ª: {m.secondPreference || '—'}</div></> },
-            { id: 'hearings', label: 'Audiências', optional: true, sort: m => (m.acceptsHearings ? 1 : 0), render: m => <Badge tone={m.acceptsHearings ? 'ok' : 'neutral'}>{m.acceptsHearings ? 'Aceita' : 'Não aceita'}</Badge> },
-            { id: 'status', label: 'Status', sort: m => m.status, render: m => <>
+            { id: 'location', label: 'Lotação', optional: true, filter: m => m.currentLocation, sort: m => m.currentLocation, tdClass: 'text-muted', render: m => <>{m.currentLocation}{m.currentLocation && !m.locationCatalogId && <span className="text-[11px] text-warn block">◦ A padronizar</span>}</> },
+            { id: 'prefs', label: 'Preferências', optional: true, filter: m => [m.firstPreference, m.secondPreference].filter(Boolean), sort: m => m.firstPreference, tdClass: 'text-xs', render: m => <><div className="text-bronze font-medium">1ª: {m.firstPreference}</div><div className="text-muted">2ª: {m.secondPreference || '—'}</div></> },
+            { id: 'hearings', label: 'Audiências', optional: true, filter: m => (m.acceptsHearings ? 'Aceita audiências' : 'Não aceita'), sort: m => (m.acceptsHearings ? 1 : 0), render: m => <Badge tone={m.acceptsHearings ? 'ok' : 'neutral'}>{m.acceptsHearings ? 'Aceita' : 'Não aceita'}</Badge> },
+            { id: 'status', label: 'Status', sort: m => m.status, filter: m => m.status, render: m => <>
               <Badge tone={magistrateTone(m.status)}>{m.status}</Badge>
               {m.status === 'Rejeitado' && m.rejectionReason && <div className="text-[11px] text-danger mt-1.5 max-w-[14rem] leading-snug" title={m.rejectionReason}>Motivo: {m.rejectionReason}</div>}
             </> },
@@ -1841,20 +1938,20 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
                   </button>
                 );
               } },
-              { id: 'comarca', label: 'Comarca', optional: true, hidden: true, sort: u => u.comarca, render: u => <span className="text-xs">{u.comarca || '—'}</span> },
+              { id: 'comarca', label: 'Comarca', optional: true, hidden: true, sort: u => u.comarca, filter: u => u.comarca || '—', render: u => <span className="text-xs">{u.comarca || '—'}</span> },
               { id: 'judge', label: 'Responsável', optional: true, sort: u => u.judgeName, tdClass: 'text-xs text-muted', render: u => u.judgeName || '—' },
               { id: 'email', label: 'E-mail', optional: true, hidden: true, sort: u => u.email, render: u => <span className="text-xs text-muted break-all">{u.email || '—'}</span> },
               { id: 'ip', label: 'IP', optional: true, hidden: true, sort: u => u.registeredIp ?? '', render: u => <span className="text-xs text-muted font-mono">{u.registeredIp || '—'}</span> },
               { id: 'createdAt', label: 'Inscrição', optional: true, hidden: true, sort: u => u.createdAt, render: u => <DateCell iso={u.createdAt} /> },
-              { id: 'areas', label: 'Áreas e auxílio', optional: true, sort: u => u.areas.join(', '), render: u => <div className="flex flex-wrap gap-1">{u.areas.map(a => <Badge key={a} tone="info">{a}</Badge>)}<Badge tone="neutral">Precisa de: {u.supportNeeded}</Badge></div> },
+              { id: 'areas', label: 'Áreas e auxílio', optional: true, filter: u => [...u.areas, `Precisa de: ${u.supportNeeded}`], sort: u => u.areas.join(', '), render: u => <div className="flex flex-wrap gap-1">{u.areas.map(a => <Badge key={a} tone="info">{a}</Badge>)}<Badge tone="neutral">Precisa de: {u.supportNeeded}</Badge></div> },
               { id: 'slots', label: 'Magistrados', optional: true, sort: u => matches.filter(m => m.unitId === u.id).length, render: u => <SlotsControl bare unit={u} linked={matches.filter(m => m.unitId === u.id).length} onChange={n => setSlots(u, n)} /> },
-              { id: 'selection', label: 'Triagem', sort: u => SELECTION_ORDER[u.selection] ?? 9, render: u => <>
+              { id: 'selection', label: 'Triagem', filter: u => u.selection, sort: u => SELECTION_ORDER[u.selection] ?? 9, render: u => <>
                 <Badge tone={u.selection === 'Escolhida' ? 'ok' : u.selection === 'Rejeitada' ? 'danger' : 'warn'}>{u.selection}</Badge>
                 {u.selection === 'Rejeitada' && u.rejectionReason && <div className="text-[11px] text-danger mt-1.5 max-w-[12rem] leading-snug" title={u.rejectionReason}>Motivo: {u.rejectionReason}</div>}
                 {u.selection === 'Rejeitada' && (u.carryOver || u.carriedToEditionId) && <div className="text-[11px] text-bronze mt-1">{u.carriedToEditionId ? 'Pedido mantido: transportado para a próxima edição' : 'Pedido mantido: aguarda a próxima edição'}</div>}
                 {u.carriedFromEditionId && <div className="text-[11px] text-bronze mt-1">Pedido mantido da edição anterior</div>}
               </> },
-              { id: 'status', label: 'Status', optional: true, sort: u => (u.selection === 'Escolhida' ? u.status : ''), render: u => (u.selection === 'Escolhida' ? <Badge tone={u.status === 'Atendida' ? 'ok' : 'warn'}>{u.status}</Badge> : <span className="text-xs text-muted">—</span>) },
+              { id: 'status', label: 'Status', optional: true, filter: u => (u.selection === 'Escolhida' ? u.status : '—'), sort: u => (u.selection === 'Escolhida' ? u.status : ''), render: u => (u.selection === 'Escolhida' ? <Badge tone={u.status === 'Atendida' ? 'ok' : 'warn'}>{u.status}</Badge> : <span className="text-xs text-muted">—</span>) },
               { id: 'actions', label: 'Ações', align: 'right', render: u => {
                 const open = openUnitId === u.id;
                 return (
@@ -1928,9 +2025,9 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             { id: 'name', label: 'Magistrado(a)', sort: m => m.name, render: m => <div className="font-medium">{m.name}</div> },
             { id: 'email', label: 'E-mail', optional: true, hidden: true, sort: m => m.email, render: m => <span className="text-xs text-muted break-all">{m.email || '—'}</span> },
             { id: 'location', label: 'Lotação', optional: true, sort: m => m.currentLocation, tdClass: 'text-muted', render: m => m.currentLocation },
-            { id: 'first', label: '1ª preferência', sort: m => m.firstPreference, tdClass: 'text-bronze font-medium', render: m => m.firstPreference },
-            { id: 'second', label: '2ª preferência', optional: true, sort: m => m.secondPreference, tdClass: 'text-muted', render: m => m.secondPreference || '—' },
-            { id: 'hearings', label: 'Audiências', optional: true, sort: m => (m.acceptsHearings ? 1 : 0), tdClass: 'text-muted', render: m => (m.acceptsHearings ? 'Aceita' : 'Não aceita') },
+            { id: 'first', label: '1ª preferência', filter: m => m.firstPreference, sort: m => m.firstPreference, tdClass: 'text-bronze font-medium', render: m => m.firstPreference },
+            { id: 'second', label: '2ª preferência', optional: true, filter: m => m.secondPreference || '—', sort: m => m.secondPreference, tdClass: 'text-muted', render: m => m.secondPreference || '—' },
+            { id: 'hearings', label: 'Audiências', optional: true, filter: m => (m.acceptsHearings ? 'Aceita' : 'Não aceita'), sort: m => (m.acceptsHearings ? 1 : 0), tdClass: 'text-muted', render: m => (m.acceptsHearings ? 'Aceita' : 'Não aceita') },
             { id: 'createdAt', label: 'Inscrição', optional: true, hidden: true, sort: m => m.createdAt, render: m => <DateCell iso={m.createdAt} /> },
           ]} />
         </div>
@@ -1990,8 +2087,8 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
           </Toolbar>
           <SmartTable id="registro" rows={logRows} rowKey={l => l.id} empty="Sem registros." defaultSort={{ key: 'at', dir: 'desc' }} cols={[
             { id: 'at', label: 'Data/hora', sort: l => l.timestamp, tdClass: 'text-xs text-muted whitespace-nowrap', render: l => formatDateTime(l.timestamp) },
-            { id: 'who', label: 'Responsável', optional: true, sort: l => `${l.actor} ${l.by ?? ''}`, tdClass: 'text-xs', render: l => <>{l.actor}{l.by && <div className="text-muted">{l.by}</div>}</> },
-            { id: 'cat', label: 'Categoria', optional: true, sort: l => l.category, render: l => <Badge tone="neutral">{l.category}</Badge> },
+            { id: 'who', label: 'Responsável', optional: true, filter: l => l.actor, sort: l => `${l.actor} ${l.by ?? ''}`, tdClass: 'text-xs', render: l => <>{l.actor}{l.by && <div className="text-muted">{l.by}</div>}</> },
+            { id: 'cat', label: 'Categoria', optional: true, filter: l => l.category, sort: l => l.category, render: l => <Badge tone="neutral">{l.category}</Badge> },
             { id: 'ip', label: 'IP', optional: true, hidden: true, sort: l => l.ip ?? '', tdClass: 'text-xs text-muted font-mono whitespace-nowrap', render: l => l.ip ?? '—' },
             { id: 'desc', label: 'Descrição', sort: l => l.description, render: l => l.description },
           ]} />
