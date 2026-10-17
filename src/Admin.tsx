@@ -275,6 +275,12 @@ interface Eligible { m: Magistrate; area: string; rank: 0 | 1 | 2 }
  * `current` é a vinculação em edição (o magistrado dela continua na lista); quem está vinculado em qualquer
  * outro lugar, inclusive nesta mesma unidade, não é oferecido.
  */
+/** Qual preferência do magistrado a área da vinculação atende */
+const prefLabel = (m: Magistrate | undefined, area: string) => {
+  const eq = (a?: string) => !!a && a.trim().toLowerCase() === area.trim().toLowerCase();
+  return !m ? '' : eq(m.firstPreference) ? '1ª preferência atendida' : eq(m.secondPreference) ? '2ª preferência atendida' : 'fora das preferências';
+};
+
 function eligibleFor(unit: Unit, magistrates: Magistrate[], matches: Match[], current?: Match) {
   const taken = new Set(matches.filter(x => x.id !== current?.id).map(x => x.magistrateId));
   const list: Eligible[] = magistrates
@@ -374,7 +380,7 @@ function UnitDetail({ unit, magistrates, matches, busy, onLink, onUnlink }: {
               const mag = magistrates.find(m => m.id === match.magistrateId);
               return (
                 <div key={match.id} className="flex items-center justify-between gap-3 bg-ok-soft text-ok rounded-md px-3 py-2.5 text-sm">
-                  <span><strong>{mag?.name || 'magistrado removido'}</strong> · {match.assignedArea} · <strong>{match.workType}</strong></span>
+                  <span><strong>{mag?.name || 'magistrado removido'}</strong> · {match.assignedArea} · <strong>{match.workType}</strong> · {prefLabel(mag, match.assignedArea)}</span>
                   <button className="btn-secondary btn-sm shrink-0" disabled={busy} onClick={() => onUnlink(match.id)}>Desfazer</button>
                 </div>
               );
@@ -471,6 +477,7 @@ function LinkSlot({ unit, magistrates, matches, match, busy, onSave, onUnlink }:
         </div>
       </div>
       {sel && effective && <WorkTypeWarnings unit={unit} mag={sel.m} workType={effective} />}
+      {sel && sel.rank > 0 && <p className="text-[11px] text-ok mt-1.5">Atende a {sel.rank}ª preferência do magistrado: {sel.area}.</p>}
       {sel && sel.rank === 0 && <p className="text-[11px] text-warn mt-1.5">Área fora das preferências do magistrado; será registrada como {sel.area}.</p>}
     </div>
   );
@@ -692,6 +699,10 @@ function PanelAdmin({ run, confirm, onChanged }: {
           empty={data.rows.length === 0 ? 'Nenhuma vinculação vigente.' : 'Nenhum resultado para o filtro escolhido.'} cols={[
             { id: 'name', label: 'Magistrado(a)', sort: r => r.name, tdClass: 'font-medium', render: r => r.name },
             { id: 'area', label: 'Área de atuação', optional: true, sort: r => r.area, tdClass: 'text-muted', render: r => r.area },
+            { id: 'pref', label: 'Preferência atendida', optional: true, sort: r => r.preference || 9, render: r => <>
+              <Badge tone={r.preference === 1 ? 'ok' : r.preference === 2 ? 'info' : 'warn'}>{r.preference === 1 ? '1ª preferência' : r.preference === 2 ? '2ª preferência' : 'Fora das preferências'}</Badge>
+              <div className="text-[11px] text-muted mt-1 leading-snug">1ª: {r.firstPreference || '—'}{r.secondPreference ? <><br />2ª: {r.secondPreference}</> : null}</div>
+            </> },
             { id: 'unit', label: 'Unidade', sort: r => fullUnitName({ unitName: r.unit, comarca: r.comarca, separator: r.separator }), render: r => <>
               {fullUnitName({ unitName: r.unit, comarca: r.comarca, separator: r.separator })}
               {r.note && <div className="text-xs text-muted">Obs.: {r.note}</div>}

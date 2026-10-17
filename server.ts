@@ -1404,9 +1404,14 @@ async function startServer() {
   const cleanCell = (t: string) => t.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
 
   /** Uma designação vigente: vinculação real de qualquer edição. Vale até que seja registrada a desistência. */
-  interface PanelRow { id: string; editionId: string; editionTitle: string; magistrateId: string; unitId: string; name: string; area: string; unit: string; comarca?: string; separator?: string; workType?: string; startDate?: string; note?: string }
+  interface PanelRow { id: string; editionId: string; editionTitle: string; magistrateId: string; unitId: string; name: string; area: string; unit: string; comarca?: string; separator?: string; workType?: string; startDate?: string; note?: string; firstPreference?: string; secondPreference?: string; /** qual preferência do magistrado a designação atende (0 = nenhuma) */ preference?: 0 | 1 | 2 }
 
   /** Tabela única com as designações vigentes de TODAS as edições (as de edições anteriores continuam valendo até a desistência). */
+  const preferenceMet = (mag: Magistrate, area: string): 0 | 1 | 2 =>
+    mag.firstPreference && norm(mag.firstPreference) === norm(area) ? 1 : mag.secondPreference && norm(mag.secondPreference) === norm(area) ? 2 : 0;
+  const preferenceText = (r: { preference?: number; firstPreference?: string }) =>
+    r.preference === 1 ? '1ª preferência' : r.preference === 2 ? '2ª preferência' : r.firstPreference ? 'Fora das preferências' : '—';
+
   function panelRows(): PanelRow[] {
     const seen = new Map<string, PanelRow>();
     for (const mt of matches) {
@@ -1414,7 +1419,7 @@ async function startServer() {
       const un = units.find((u) => u.id === mt.unitId);
       if (!mag || !un || mag.status === 'Desistente' || mag.status === 'Excluído' || isHeaderRow(mag.name, mt.assignedArea, un.unitName)) continue;
       const k = `${panelKey({ name: mag.name, area: mt.assignedArea, unit: un.unitName })}|${mt.editionId}`;
-      if (!seen.has(k)) seen.set(k, { id: mt.id, editionId: mt.editionId, editionTitle: editionById(mt.editionId)?.title ?? '', magistrateId: mag.id, unitId: un.id, name: mag.name, area: mt.assignedArea, unit: un.unitName, comarca: un.comarca, separator: un.separator, workType: mt.workType, startDate: mt.startDate, note: mt.note });
+      if (!seen.has(k)) seen.set(k, { id: mt.id, editionId: mt.editionId, editionTitle: editionById(mt.editionId)?.title ?? '', magistrateId: mag.id, unitId: un.id, name: mag.name, area: mt.assignedArea, unit: un.unitName, comarca: un.comarca, separator: un.separator, workType: mt.workType, startDate: mt.startDate, note: mt.note, firstPreference: mag.firstPreference, secondPreference: mag.secondPreference, preference: preferenceMet(mag, mt.assignedArea) });
     }
     return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR') || a.unit.localeCompare(b.unit, 'pt-BR'));
   }
@@ -1837,10 +1842,10 @@ async function startServer() {
       .sort((a, b) => a.area.localeCompare(b.area, 'pt-BR') || a.name.localeCompare(b.name, 'pt-BR'))
       .map((r) => ({
         'Magistrado(a)': r.name, 'Área de atuação': r.area, 'Unidade': unitLabel(r), 'Comarca': r.comarca ?? '',
-        'Atuação': r.workType ?? '', 'A partir de': r.startDate ? r.startDate.split('-').reverse().join('/') : '', 'Edição': r.editionTitle, 'Observação': r.note ?? '',
+        'Preferência atendida': preferenceText(r), '1ª preferência': r.firstPreference ?? '', '2ª preferência': r.secondPreference ?? '', 'Atuação': r.workType ?? '', 'A partir de': r.startDate ? r.startDate.split('-').reverse().join('/') : '', 'Edição': r.editionTitle, 'Observação': r.note ?? '',
       }));
-    const sheet = XLSX.utils.json_to_sheet(data, { header: ['Magistrado(a)', 'Área de atuação', 'Unidade', 'Comarca', 'Atuação', 'A partir de', 'Edição', 'Observação'] });
-    sheet['!cols'] = [{ wch: 34 }, { wch: 26 }, { wch: 56 }, { wch: 22 }, { wch: 12 }, { wch: 12 }, { wch: 28 }, { wch: 30 }];
+    const sheet = XLSX.utils.json_to_sheet(data, { header: ['Magistrado(a)', 'Área de atuação', 'Preferência atendida', '1ª preferência', '2ª preferência', 'Unidade', 'Comarca', 'Atuação', 'A partir de', 'Edição', 'Observação'] });
+    sheet['!cols'] = [{ wch: 34 }, { wch: 26 }, { wch: 20 }, { wch: 24 }, { wch: 24 }, { wch: 56 }, { wch: 22 }, { wch: 12 }, { wch: 12 }, { wch: 28 }, { wch: 30 }];
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, sheet, 'Designações');
     const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
@@ -1971,7 +1976,7 @@ async function startServer() {
         if (i > 0) doc.moveDown(1.6); // quebra de linha entre as áreas
         const magistrados = new Set(list.map((r) => r.name.toLowerCase())).size;
         table([{ label: 'Nº', w: 38, align: 'center' }, { label: 'Magistrado(a)', w: 180 }, { label: 'Unidade designada', w: W - 280 }, { label: 'Atuação', w: 62 }],
-          [{ sep: area, count: `${magistrados} magistrados` }, ...list.map((r, k): Row => [String(k + 1), r.name, unitCell(r), acting(r.workType)])], { boldFirst: 1 });
+          [{ sep: area, count: `${magistrados} magistrados` }, ...list.map((r, k): Row => [String(k + 1), `${r.name}\n${preferenceText(r)} atendida`.replace('Fora das preferências atendida', 'Fora das preferências'), unitCell(r), acting(r.workType)])], { boldFirst: 1 });
       });
     } else {
     section('1', 'Designações vigentes', 'Classificadas por área de atuação e, dentro de cada área, em ordem alfabética. Permanecem válidas até o registro da desistência.');
@@ -1983,7 +1988,7 @@ async function startServer() {
         const list = rows.filter((r) => r.area.trim() === area).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR') || a.unit.localeCompare(b.unit, 'pt-BR'));
         const magistrados = new Set(list.map((r) => r.name.toLowerCase())).size;
         data.push({ sep: area, count: `${magistrados} magistrados` });
-        list.forEach((r) => data.push([String(++n), r.name, unitCell(r), acting(r.workType)]));
+        list.forEach((r) => data.push([String(++n), `${r.name}\n${preferenceText(r)} atendida`.replace('Fora das preferências atendida', 'Fora das preferências'), unitCell(r), acting(r.workType)]));
       });
       table([{ label: 'Nº', w: 38, align: 'center' }, { label: 'Magistrado(a)', w: 180 }, { label: 'Unidade designada', w: W - 280 }, { label: 'Atuação', w: 62 }], data, { boldFirst: 1 });
     }
