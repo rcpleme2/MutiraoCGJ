@@ -2194,10 +2194,13 @@ async function startServer() {
       const fold = personKey; // ignora acentos, caixa, pontuação e tratamentos (Dr., Dra., Juiz...)
       const wanted = fold(q);
       if (wanted.split(' ').length < 2 || wanted.length < 6) return res.status(400).json({ error: 'Informe o nome completo do magistrado.' });
-      const active = panelRows().some((r) => fold(r.name) === wanted);
+      const mine = panelRows().filter((r) => fold(r.name) === wanted);
+      const active = mine.length > 0;
       const revoked = withdrawals.some((w) => !w.endedAt && fold(w.name) === wanted);
       const situation = active ? 'ativa' : revoked ? 'revogada' : 'nao_consta';
-      return res.json({ situation });
+      // Vinculação ativa: informa também o eixo de atuação (área) e a unidade de designação — nada além disso
+      const designations = mine.map((r) => ({ area: r.area, unit: fullUnitName({ unitName: r.unit, comarca: r.comarca, separator: r.separator }) }));
+      return res.json({ situation, ...(active ? { designations } : {}) });
     }
     const raw = req.body?.email;
     const emailQuery = typeof raw === 'string' ? raw.trim().toLowerCase().slice(0, 200) : '';

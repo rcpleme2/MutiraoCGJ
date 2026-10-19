@@ -98,13 +98,15 @@ function AppInner() {
   // Consulta pelo nome completo: só informa a situação no painel de vinculações
   const [personName, setPersonName] = useState('');
   const [nameResult, setNameResult] = useState<'ativa' | 'revogada' | 'nao_consta' | null>(null);
+  const [designations, setDesignations] = useState<{ area: string; unit: string }[]>([]);
   const [nameError, setNameError] = useState('');
   const [nameBusy, setNameBusy] = useState(false);
   const consultName = async (e: React.FormEvent) => {
     e.preventDefault();
-    setNameError(''); setNameResult(null); setNameBusy(true);
+    setNameError(''); setNameResult(null); setDesignations([]); setNameBusy(true);
     try {
-      setNameResult((await api<{ situation: 'ativa' | 'revogada' | 'nao_consta' }>('/status', { method: 'POST', json: { name: personName } })).situation);
+      const r = await api<{ situation: 'ativa' | 'revogada' | 'nao_consta'; designations?: { area: string; unit: string }[] }>('/status', { method: 'POST', json: { name: personName } });
+      setNameResult(r.situation); setDesignations(r.designations ?? []);
     } catch (err: any) {
       setNameError(err.message);
     } finally {
@@ -317,7 +319,17 @@ function AppInner() {
                 <button className="btn-primary" disabled={nameBusy}>{nameBusy ? 'Buscando…' : 'Consultar'}</button>
               </form>
               {nameError && <div className="mt-4"><Notice tone="danger">{nameError}</Notice></div>}
-              {nameResult === 'ativa' && <div className="mt-4"><Notice tone="ok"><strong>Vinculação ativa.</strong></Notice></div>}
+              {nameResult === 'ativa' && (
+                <div className="mt-4 space-y-2">
+                  <Notice tone="ok"><strong>Vinculação ativa.</strong></Notice>
+                  {designations.map((d, i) => (
+                    <div key={i} className="rounded-md border border-line px-4 py-3 text-sm space-y-0.5">
+                      <div><span className="text-muted">Eixo de atuação:</span> <strong className="text-ink">{d.area}</strong></div>
+                      <div><span className="text-muted">Designado(a) para:</span> <strong className="text-ink">{d.unit}</strong></div>
+                    </div>
+                  ))}
+                </div>
+              )}
               {nameResult === 'revogada' && <div className="mt-4"><Notice tone="danger"><strong>Vinculação revogada por desistência.</strong></Notice></div>}
               {nameResult === 'nao_consta' && <div className="mt-4"><div className="rounded-md px-4 py-3 text-sm bg-paper text-muted border border-line">Não consta vinculação ativa nem revogada para o nome informado.</div></div>}
             </div>
