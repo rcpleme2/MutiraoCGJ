@@ -162,7 +162,7 @@ function AppInner() {
         <ErrorBoundary key={tab}>
         {tab === 'home' && (
           <section className="max-w-3xl mx-auto">
-            {edition ? (
+            {edition && open ? (
               <>
                 <div className="flex items-center gap-3 mb-5">
                   <Badge tone={open ? 'ok' : regState === 'not_yet' ? 'warn' : 'neutral'}>{{ open: 'Inscrições abertas', not_yet: 'Inscrições ainda não abertas', ended: 'Prazo de inscrições encerrado', paused: 'Inscrições suspensas', closed: 'Inscrições encerradas' }[regState]}</Badge>
@@ -174,7 +174,10 @@ function AppInner() {
             ) : (
               <>
                 <h1 className="text-4xl font-semibold text-navy mb-5">Mutirão de Julgamento</h1>
-                <p className="text-muted text-lg mb-10">Não há edição com inscrições vigentes no momento.</p>
+                <p className="text-muted text-lg mb-10">
+                  Não há nenhum edital de inscrição aberto no momento.
+                  {edition && regState === 'not_yet' && <span className="block text-base mt-2">As próximas inscrições abrem em {formatDate(edition.openingDate)}.</span>}
+                </p>
               </>
             )}
             <div className="grid sm:grid-cols-3 gap-4">
