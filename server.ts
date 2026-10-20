@@ -1097,14 +1097,30 @@ async function startServer() {
     if (!rateLimited(`faillog:${ip}`, 5, 10 * 60_000)) log(null, 'Sistema', 'Acesso', `Falha de autenticação do administrador: ${what}.`);
     res.locals.persist = true; // esta resposta é 4xx, mas o registro precisa ser gravado
   };
-  const openSession = (res: express.Response, how: string, user: AdminUser | null) => {
+  // "Lembrar este dispositivo": dispensa o código do autenticador por 30 dias (a senha continua sendo pedida).
+  // O comprovante é assinado com o segredo do autenticador, então redefinir o 2FA invalida todos os dispositivos lembrados.
+  const DEVICE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+  const deviceSig = (secret: string, userId: string | null, exp: number) =>
+    crypto.createHmac('sha256', secret).update(`device|${userId ?? 'shared'}|${exp}`).digest('hex');
+  const issueDeviceToken = (secret: string, userId: string | null) => {
+    const exp = Date.now() + DEVICE_TTL_MS;
+    return `${exp}.${deviceSig(secret, userId, exp)}`;
+  };
+  const deviceTrusted = (token: unknown, secret: string, userId: string | null) => {
+    if (typeof token !== 'string') return false;
+    const m = /^(\d{13})\.([0-9a-f]{64})$/.exec(token);
+    if (!m || Number(m[1]) < Date.now()) return false;
+    const expected = Buffer.from(deviceSig(secret, userId, Number(m[1])));
+    return crypto.timingSafeEqual(expected, Buffer.from(m[2]));
+  };
+  const openSession = (res: express.Response, how: string, user: AdminUser | null, extra: Record<string, unknown> = {}) => {
     const token = crypto.randomBytes(24).toString('hex');
     const name = user ? user.name : 'Senha compartilhada';
     sessions.set(token, { exp: Date.now() + SESSION_TTL_MS, userId: user?.id ?? null, name, role: user?.role ?? 'admin' });
     const store = reqCtx.getStore(); if (store) store.user = name;
     if (user) user.lastLoginAt = new Date().toISOString();
     log(null, 'Administração', 'Acesso', `Acesso ao painel administrativo (${how}).`);
-    res.json({ success: true, token });
+    res.json({ success: true, token, ...extra });
   };
 
   // Tela de login: indica se já existem usuários individuais (pede e-mail) ou se vale a senha compartilhada
@@ -1136,6 +1152,9 @@ async function startServer() {
     }
     const challenge = crypto.randomBytes(24).toString('hex');
     const secret = user ? user.totpSecret : adminTotpSecret;
+    if (secret && deviceTrusted(req.body?.deviceToken, secret, user?.id ?? null)) {
+      return openSession(res, `${user ? 'e-mail e senha' : 'senha compartilhada'} em dispositivo lembrado`, user);
+    }
     if (secret) {
       challenges.set(challenge, { exp: Date.now() + 5 * 60_000, tries: 0, userId: user?.id ?? null });
       return res.json({ success: true, step: 'totp', challenge });
@@ -1166,13 +1185,15 @@ async function startServer() {
       return res.status(401).json({ success: false, message: 'Código incorreto.' });
     }
     challenges.delete(String(req.body.challenge));
+    const extra = req.body?.remember === true ? { deviceToken: issueDeviceToken(secret, user?.id ?? null) } : {};
+    const remembered = extra.deviceToken ? '; dispositivo lembrado por 30 dias' : '';
     if (ch.pendingSecret) {
       if (user) user.totpSecret = ch.pendingSecret; else adminTotpSecret = ch.pendingSecret;
       const store = reqCtx.getStore(); if (store && user) store.user = user.name;
       log(null, 'Administração', 'Acesso', `Autenticação em dois fatores configurada${user ? ` para ${user.name}` : ''}.`);
-      return openSession(res, 'primeiro acesso com cadastro do autenticador', user);
+      return openSession(res, `primeiro acesso com cadastro do autenticador${remembered}`, user, extra);
     }
-    openSession(res, user ? 'e-mail, senha e código de verificação' : 'senha compartilhada e código de verificação', user);
+    openSession(res, `${user ? 'e-mail, senha e código de verificação' : 'senha compartilhada e código de verificação'}${remembered}`, user, extra);
   });
 
   app.post('/api/admin/logout', (req, res) => {

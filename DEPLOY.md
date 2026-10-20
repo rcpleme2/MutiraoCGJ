@@ -96,6 +96,10 @@ autenticador (Google Authenticator, Microsoft Authenticator etc.) e digite o có
 exige senha + código. **Quem tiver a senha primeiro cadastra o autenticador**, então faça esse primeiro acesso logo
 após publicar.
 
+Na tela do código há a opção **"Lembrar este dispositivo por 30 dias"**: marcada, os próximos acessos naquele navegador
+pedem só a senha, e o código volta a ser exigido depois de 30 dias. Redefinir o autenticador (variável abaixo ou
+"Redefinir autenticador" em Usuários) invalida todos os dispositivos lembrados daquela conta.
+
 Perdeu o celular? Defina `RESET_ADMIN_2FA=true` (`gcloud run services update ... --update-env-vars=RESET_ADMIN_2FA=true`),
 entre novamente (será pedido novo cadastro) e **remova a variável** em seguida.
 

@@ -1408,6 +1408,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   // Etapa 2 do login (código do aplicativo autenticador) ou cadastro do aplicativo no primeiro acesso
   const [loginStep, setLoginStep] = useState<null | { kind: 'totp' | 'enroll'; challenge: string; secret?: string; qrSvg?: string }>(null);
   const [totpCode, setTotpCode] = useState('');
+  const [rememberDevice, setRememberDevice] = useState(false);
   const [loginEmail, setLoginEmail] = useState('');
   const [loginMode, setLoginMode] = useState<{ users: boolean; shared: boolean }>({ users: false, shared: true });
   const [me, setMe] = useState<{ name: string; role: 'admin' | 'gestor' | 'consulta'; shared: boolean; users: boolean } | null>(null);
@@ -1506,13 +1507,18 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
     e.preventDefault();
     setLoginError('');
     try {
+      const account = loginEmail.trim().toLowerCase() || 'shared';
+      const devices = readPref<Record<string, string>>('mutirao-devices', {});
       if (!loginStep) {
-        const r = await api<{ step: 'totp' | 'enroll'; challenge: string; secret?: string; qrSvg?: string }>('/admin/login', { method: 'POST', json: { email: loginEmail.trim(), password } });
+        const r = await api<{ token?: string; step: 'totp' | 'enroll'; challenge: string; secret?: string; qrSvg?: string }>('/admin/login', { method: 'POST', json: { email: loginEmail.trim(), password, deviceToken: devices[account] } });
         setPassword('');
+        if (r.token) { setToken(r.token); setAuthed(true); return; } // dispositivo lembrado: dispensa o código
         setLoginStep({ kind: r.step, challenge: r.challenge, secret: r.secret, qrSvg: r.qrSvg });
         setTotpCode('');
       } else {
-        const r = await api<{ token: string }>('/admin/login/verify', { method: 'POST', json: { challenge: loginStep.challenge, code: totpCode } });
+        const r = await api<{ token: string; deviceToken?: string }>('/admin/login/verify', { method: 'POST', json: { challenge: loginStep.challenge, code: totpCode, remember: rememberDevice } });
+        if (r.deviceToken) writePref('mutirao-devices', { ...devices, [account]: r.deviceToken });
+        else if (devices[account]) { delete devices[account]; writePref('mutirao-devices', devices); }
         setToken(r.token); setLoginStep(null); setTotpCode(''); setAuthed(true);
       }
     } catch (err: any) {
@@ -1558,6 +1564,12 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
               <input inputMode="numeric" pattern="\d{6}" maxLength={6} required autoFocus autoComplete="one-time-code" className="input tracking-[0.4em] text-center font-mono"
                 value={totpCode} onChange={e => setTotpCode(e.target.value.replace(/\D/g, ''))} />
             </Field>
+          )}
+          {loginStep && (
+            <label className="flex items-start gap-2 text-sm text-ink">
+              <input type="checkbox" className="mt-0.5" checked={rememberDevice} onChange={e => setRememberDevice(e.target.checked)} />
+              <span>Lembrar este dispositivo por 30 dias <span className="block text-xs text-muted">Nos próximos acessos, só a senha será pedida. Não marque em computador compartilhado.</span></span>
+            </label>
           )}
           <button className="btn-primary w-full"><Unlock className="w-4 h-4" /> {loginStep ? (loginStep.kind === 'enroll' ? 'Ativar e entrar' : 'Verificar e entrar') : 'Continuar'}</button>
           {loginStep && <button type="button" className="btn-ghost w-full" onClick={() => { setLoginStep(null); setLoginError(''); }}>Voltar</button>}
