@@ -64,6 +64,8 @@ interface Magistrate {
   excludedAt?: string;
   excludedBy?: string;
   statusBeforeExclusion?: MagistrateStatus;
+  /** Designações que o magistrado tinha quando foi excluído (as vinculações são desfeitas na exclusão) */
+  excludedFrom?: { editionId: string; area: string; unit: string; workType?: string }[];
   createdAt: string;
   status: MagistrateStatus;
 }
@@ -1054,6 +1056,11 @@ async function startServer() {
     }
     if (publicRead || login) return next();
     // Chamada do Cloud Scheduler: autenticada pelo token próprio, conferido na rota
+    // Leitura pelo Qlik Sense (REST Connector): autenticada pela chave BI_TOKEN, conferida na rota
+    if (req.method === 'GET' && req.path === '/bi/designacoes') {
+      if (rateLimited(`bi:${ip}`, 60, 60 * 60_000)) return res.status(429).json({ error: 'Muitas chamadas.' });
+      return next();
+    }
     if (req.method === 'POST' && req.path === '/backup/auto') {
       if (rateLimited(`autobackup:${ip}`, 10, 60 * 60_000)) return res.status(429).json({ error: 'Muitas chamadas.' });
       return next();
@@ -1889,6 +1896,65 @@ async function startServer() {
     res.send(buffer);
   });
 
+  // ---------- Integração com o Qlik Sense (somente leitura, chave própria em BI_TOKEN) ----------
+  // Tabela única com as designações: ativas, desistentes e excluídas. Sem e-mail, IP ou motivos.
+  const BI_TOKEN = process.env.BI_TOKEN || '';
+  let lastBiLog = 0;
+  const brDate = (d?: string) => {
+    if (!d) return '';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(d)) return d.split('-').reverse().join('/');
+    const t = new Date(d);
+    return Number.isNaN(t.getTime()) ? '' : t.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+  };
+  app.get('/api/bi/designacoes', (req, res) => {
+    if (!BI_TOKEN) return res.status(503).json({ error: 'Integração não configurada (BI_TOKEN).' });
+    const given = Buffer.from(String(req.header('x-bi-token') ?? ''));
+    const expected = Buffer.from(BI_TOKEN);
+    if (given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) return res.status(401).json({ error: 'Não autorizado.' });
+
+    const title = (id: string) => editionById(id)?.title ?? '';
+    const rows: Record<string, string>[] = [];
+    for (const r of panelRows()) {
+      const unit = unitLabel(r);
+      // Alteração mais recente que levou a esta designação (unidade e área atuais)
+      const tr = transfers.filter((t) => t.magistrateId === r.magistrateId && norm(t.toUnit) === norm(unit) && norm(t.toArea ?? t.area) === norm(r.area))
+        .sort((a, b) => b.effectiveDate.localeCompare(a.effectiveDate) || b.createdAt.localeCompare(a.createdAt))[0];
+      const unitChanged = !!tr && norm(tr.fromUnit) !== norm(tr.toUnit);
+      const areaChanged = !!tr && !!tr.toArea && norm(tr.toArea) !== norm(tr.area);
+      const mt = matches.find((m) => m.id === r.id);
+      rows.push({
+        edicao: r.editionTitle, magistrado: r.name, area: r.area, unidade: unit, atuacao: r.workType ?? '', situacao: 'Ativo',
+        data: brDate(tr && (unitChanged || areaChanged) ? tr.effectiveDate : r.startDate ?? mt?.createdAt),
+        alteracao: unitChanged && areaChanged ? 'Unidade e área' : unitChanged ? 'Unidade' : areaChanged ? 'Área' : '',
+        unidade_anterior: unitChanged ? tr.fromUnit : '', area_anterior: areaChanged ? tr.area : '',
+      });
+    }
+    for (const w of withdrawals) {
+      if (w.endedAt) continue;
+      rows.push({ edicao: title(w.editionId), magistrado: w.name, area: w.area, unidade: w.unit, atuacao: '', situacao: 'Desistente', data: brDate(w.requestDate ?? w.createdAt), alteracao: '', unidade_anterior: '', area_anterior: '' });
+    }
+    for (const m of magistrates) {
+      if (m.status !== 'Excluído') continue;
+      const held = m.excludedFrom?.length ? m.excludedFrom : [{ editionId: m.editionId, area: '', unit: '', workType: '' }];
+      for (const h of held) rows.push({ edicao: title(h.editionId), magistrado: m.name, area: h.area, unidade: h.unit, atuacao: h.workType ?? '', situacao: 'Excluído', data: brDate(m.excludedAt), alteracao: '', unidade_anterior: '', area_anterior: '' });
+    }
+
+    console.log(JSON.stringify({ severity: 'INFO', message: `Designações lidas pela integração BI (${rows.length} linhas)`, audit: { category: 'Exportação', ip: clientIp(req) } }));
+    if (Date.now() - lastBiLog > 6 * 60 * 60_000) {
+      lastBiLog = Date.now();
+      log(null, 'Sistema', 'Exportação', `Dados das designações lidos pelo Qlik (${rows.length} linha(s)).`);
+      saveState().catch(() => {}); // requisição GET: o registro é gravado à parte
+    }
+    res.setHeader('Cache-Control', 'no-store');
+    if (req.query.formato === 'csv') {
+      const cols = ['edicao', 'magistrado', 'area', 'unidade', 'atuacao', 'situacao', 'data', 'alteracao', 'unidade_anterior', 'area_anterior'];
+      const csv = '\ufeff' + [cols.join(';'), ...rows.map((r) => cols.map((c) => csvCell(r[c])).join(';'))].join('\r\n') + '\r\n';
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      return res.send(csv);
+    }
+    res.json(rows);
+  });
+
   // Relatório em PDF: designações vigentes (total e por área), alterações de vinculação e desistentes.
   app.get('/api/panel/report.pdf', (req, res) => {
     const byArea = req.query.por === 'area'; // versão só com as designações, uma área por bloco
@@ -2449,6 +2515,11 @@ async function startServer() {
     const reason = freeText(req.body?.reason, 1000);
     const sei = typeof req.body?.sei === 'string' ? cleanCell(req.body.sei).slice(0, 100) : '';
     if (reason.length < 5) return res.status(400).json({ error: 'Informe o motivo da exclusão.' });
+    const held = matches.filter((m) => m.magistrateId === mag.id).map((m) => {
+      const un = units.find((u) => u.id === m.unitId);
+      return { editionId: m.editionId, area: m.assignedArea, unit: un ? fullUnitName(un) : '', workType: m.workType };
+    });
+    mag.excludedFrom = held.length ? held : undefined;
     matches.filter((m) => m.magistrateId === mag.id).forEach((m) => undoMatch(m.id, 'Vinculação desfeita por exclusão do magistrado'));
     mag.statusBeforeExclusion = mag.status === 'Atribuído' ? 'Lista de Espera' : mag.status;
     mag.status = 'Excluído';
@@ -2467,7 +2538,7 @@ async function startServer() {
     if (!mag || mag.status !== 'Excluído') return res.status(404).json({ error: 'Magistrado excluído não encontrado.' });
     mag.status = mag.statusBeforeExclusion && mag.statusBeforeExclusion !== 'Excluído' ? mag.statusBeforeExclusion : 'Lista de Espera';
     log(mag.editionId, 'Administração', 'Magistrado', `Exclusão de ${mag.name} desfeita (motivo registrado: ${mag.exclusionReason ?? '—'}). Status: ${mag.status}.`);
-    mag.exclusionReason = undefined; mag.exclusionSei = undefined; mag.excludedAt = undefined; mag.excludedBy = undefined; mag.statusBeforeExclusion = undefined;
+    mag.exclusionReason = undefined; mag.exclusionSei = undefined; mag.excludedAt = undefined; mag.excludedBy = undefined; mag.statusBeforeExclusion = undefined; mag.excludedFrom = undefined;
     res.json({ success: true, magistrate: mag });
   });
 

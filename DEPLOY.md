@@ -150,6 +150,7 @@ curl -s "https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(d
 | `ALLOW_SHARED_PASSWORD` | `true` reativa a senha compartilhada mesmo com usuários cadastrados (emergência; remova depois) | — |
 | `BACKUP_BUCKET` | Bucket do Cloud Storage para o backup automático diário | — |
 | `BACKUP_CRON_TOKEN` | Token que o Cloud Scheduler envia para disparar o backup (use Secret Manager) | — |
+| `BI_TOKEN` | Chave que o Qlik Sense envia para ler as designações (use Secret Manager) | — |
 
 Exemplo: `gcloud run services update mutirao-cgj --region southamerica-east1 --update-env-vars=SIGNUP_MAX_PER_IP=100`.
 
@@ -210,6 +211,51 @@ gcloud scheduler jobs run mutirao-backup-diario --location=southamerica-east1   
 
 Depois do teste, confira a cópia em *Administração → Backup → Backup automático diário*. Por ali também se baixa ou
 restaura qualquer cópia. Se o backup falhar ou atrasar mais de 36 horas, o painel mostra um aviso.
+
+## Integração com o Qlik Sense
+
+O endereço `GET /api/bi/designacoes` entrega, só para quem tiver a chave `BI_TOKEN` (cabeçalho `x-bi-token`), uma
+tabela única com as designações:
+
+- **Colunas:** `edicao`, `magistrado`, `area`, `unidade`, `atuacao`, `situacao` (Ativo / Desistente / Excluído),
+  `data` (DD/MM/AAAA), `alteracao` (Unidade / Área / Unidade e área), `unidade_anterior` e `area_anterior`.
+- **O que não vai:** e-mail, IP e motivos.
+- **Formato:** JSON por padrão; `?formato=csv` entrega CSV com `;`.
+
+**1. Criar a chave**
+
+```bash
+printf "%s" "$(openssl rand -hex 32)" | gcloud secrets create BI_TOKEN --data-file=-
+gcloud secrets add-iam-policy-binding BI_TOKEN --member="serviceAccount:$SA" --role="roles/secretmanager.secretAccessor"
+gcloud run services update mutirao-cgj --region southamerica-east1 --update-secrets=BI_TOKEN=BI_TOKEN:latest
+gcloud secrets versions access latest --secret=BI_TOKEN   # mostra a chave, para cadastrar no Qlik
+```
+
+**2. No Qlik Sense Enterprise**
+
+1. No *Editor de carga de dados*, vá em **Criar nova conexão → REST**.
+2. Preencha a conexão:
+   - URL: `https://<endereço do site>/api/bi/designacoes`
+   - Método: GET
+   - Em *Query headers*: nome `x-bi-token`, valor = a chave.
+3. Em **Selecionar dados**, marque `root` para gerar o script.
+4. Converta a data no script:
+
+   ```
+   Designacoes:
+   LOAD edicao, magistrado, area, unidade, atuacao, situacao, Date#(data, 'DD/MM/YYYY') as data,
+        alteracao, unidade_anterior, area_anterior;
+   SQL SELECT ... FROM JSON (wrap on) "root";
+   ```
+
+5. No QMC, agende a recarga da aplicação (por exemplo, todo dia de manhã).
+
+**3. Rede, chave e registro**
+
+- **Rede:** o servidor do Qlik precisa acessar o endereço do site por HTTPS. Se o proxy ou o firewall do TJPR bloquear,
+  a TI deve liberar.
+- **Trocar a chave:** crie uma nova versão do segredo, publique o serviço de novo e atualize a conexão no Qlik.
+- **Registro:** cada leitura fica no log do Cloud Run. No Registro do sistema entra uma linha a cada 6 horas, no máximo.
 
 ## Rodar localmente
 ```bash
