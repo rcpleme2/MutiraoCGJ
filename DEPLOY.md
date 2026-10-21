@@ -4,6 +4,9 @@ O sistema roda em **uma única instância** (o estado fica em memória e é grav
 por isso o serviço usa `--max-instances=1`. O servidor só é publicado dentro da imagem (`server-dist/`); a pasta pública
 (`dist/`) contém apenas o site.
 
+**Serviço de produção:** `mutiraocgj`, região **`europe-west1`**, publicado automaticamente a cada commit em `main`.
+Não crie outro serviço com o mesmo projeto: ele usaria o mesmo Firestore e poderia sobrescrever os dados.
+
 ## 1. Preparar o projeto Google Cloud (uma vez)
 
 No [Cloud Shell](https://shell.cloud.google.com), com o projeto selecionado. Atenção: use o **ID** do projeto
@@ -44,10 +47,10 @@ gcloud iam service-accounts add-iam-policy-binding $SA \
 Aplique a conta ao serviço já existente (não derruba o site; cria uma nova revisão):
 
 ```bash
-gcloud run services update mutirao-cgj --region southamerica-east1 --service-account="$SA"
+gcloud run services update mutiraocgj --region europe-west1 --service-account="$SA"
 ```
 
-**Como conferir:** `gcloud run services describe mutirao-cgj --region southamerica-east1 --format='value(spec.template.spec.serviceAccountName)'`
+**Como conferir:** `gcloud run services describe mutiraocgj --region europe-west1 --format='value(spec.template.spec.serviceAccountName)'`
 deve mostrar `mutirao-run@...`. Depois faça uma inscrição de teste e confirme em *Firestore → Dados* que ela foi gravada
 (se o Firestore recusar, o painel mostra "Falha ao gravar os dados").
 
@@ -65,19 +68,19 @@ for s in mutirao-admin-password mutirao-gemini-key; do
   gcloud secrets add-iam-policy-binding $s --member="serviceAccount:$SA" --role="roles/secretmanager.secretAccessor"
 done
 
-gcloud run services update mutirao-cgj --region southamerica-east1 \
+gcloud run services update mutiraocgj --region europe-west1 \
   --remove-env-vars=ADMIN_PASSWORD,GEMINI_API_KEY \
   --update-secrets=ADMIN_PASSWORD=mutirao-admin-password:latest,GEMINI_API_KEY=mutirao-gemini-key:latest
 ```
 
 Para trocar a senha: `printf '%s' 'NOVA' | gcloud secrets versions add mutirao-admin-password --data-file=-` e publique
-uma nova revisão (`gcloud run services update mutirao-cgj --region southamerica-east1 --update-env-vars=REFRESH=$(date +%s)`).
+uma nova revisão (`gcloud run services update mutiraocgj --region europe-west1 --update-env-vars=REFRESH=$(date +%s)`).
 A senha **só** é definida por `ADMIN_PASSWORD`; o painel não permite alterá-la.
 
 ## 4. Publicar
 
 ```bash
-gcloud run deploy mutirao-cgj --source . --region southamerica-east1 \
+gcloud run deploy mutiraocgj --source . --region europe-west1 \
   --allow-unauthenticated --max-instances=1 --service-account="$SA" \
   --set-secrets=ADMIN_PASSWORD=mutirao-admin-password:latest
 ```
@@ -152,7 +155,7 @@ curl -s "https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(d
 | `BACKUP_CRON_TOKEN` | Token que o Cloud Scheduler envia para disparar o backup (use Secret Manager) | — |
 | `BI_TOKEN` | Chave que o Qlik Sense envia para ler as designações (use Secret Manager) | — |
 
-Exemplo: `gcloud run services update mutirao-cgj --region southamerica-east1 --update-env-vars=SIGNUP_MAX_PER_IP=100`.
+Exemplo: `gcloud run services update mutiraocgj --region europe-west1 --update-env-vars=SIGNUP_MAX_PER_IP=100`.
 
 ## 8. Regras de funcionamento
 
@@ -198,10 +201,10 @@ gcloud storage buckets add-iam-policy-binding gs://$BUCKET --member="serviceAcco
 TOKEN=$(openssl rand -hex 32)
 printf "%s" "$TOKEN" | gcloud secrets create BACKUP_CRON_TOKEN --data-file=-
 gcloud secrets add-iam-policy-binding BACKUP_CRON_TOKEN --member="serviceAccount:$SA" --role="roles/secretmanager.secretAccessor"
-gcloud run services update mutirao-cgj --region southamerica-east1 \
+gcloud run services update mutiraocgj --region europe-west1 \
   --update-env-vars=BACKUP_BUCKET=$BUCKET --update-secrets=BACKUP_CRON_TOKEN=BACKUP_CRON_TOKEN:latest
 
-URL=$(gcloud run services describe mutirao-cgj --region southamerica-east1 --format='value(status.url)')
+URL=$(gcloud run services describe mutiraocgj --region europe-west1 --format='value(status.url)')
 gcloud services enable cloudscheduler.googleapis.com
 gcloud scheduler jobs create http mutirao-backup-diario --location=southamerica-east1 \
   --schedule="0 3 * * *" --time-zone="America/Sao_Paulo" \
@@ -226,19 +229,19 @@ tabela única com as designações:
 
 ```bash
 # Conta de serviço que o site usa de fato (vazio = conta padrão do Compute)
-SA=$(gcloud run services describe mutirao-cgj --region southamerica-east1 --format='value(spec.template.spec.serviceAccountName)')
+SA=$(gcloud run services describe mutiraocgj --region europe-west1 --format='value(spec.template.spec.serviceAccountName)')
 [ -z "$SA" ] && SA="$(gcloud projects describe $(gcloud config get-value project) --format='value(projectNumber)')-compute@developer.gserviceaccount.com"
 echo "$SA"
 printf "%s" "$(openssl rand -hex 32)" | gcloud secrets create BI_TOKEN --data-file=-
 gcloud secrets add-iam-policy-binding BI_TOKEN --member="serviceAccount:$SA" --role="roles/secretmanager.secretAccessor"
-gcloud run services update mutirao-cgj --region southamerica-east1 --update-secrets=BI_TOKEN=BI_TOKEN:latest
+gcloud run services update mutiraocgj --region europe-west1 --update-secrets=BI_TOKEN=BI_TOKEN:latest
 gcloud secrets versions access latest --secret=BI_TOKEN; echo   # mostra a chave, para cadastrar no Qlik
 ```
 
 Teste (rode cada linha separadamente; o esperado é JSON e `HTTP 200`):
 
 ```bash
-URL=$(gcloud run services describe mutirao-cgj --region southamerica-east1 --format='value(status.url)')
+URL=$(gcloud run services describe mutiraocgj --region europe-west1 --format='value(status.url)')
 curl -s -w "\nHTTP %{http_code}\n" -H "x-bi-token: COLE_A_CHAVE" "$URL/api/bi/designacoes" | tail -c 400
 ```
 
