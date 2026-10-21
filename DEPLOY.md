@@ -220,7 +220,7 @@ restaura qualquer cópia. Se o backup falhar ou atrasar mais de 36 horas, o pain
 O endereço `GET /api/bi/designacoes` entrega, só para quem tiver a chave `BI_TOKEN` (cabeçalho `x-bi-token`), uma
 tabela única com as designações:
 
-- **Colunas:** `edicao`, `magistrado`, `area`, `unidade`, `atuacao`, `situacao` (Ativo / Desistente / Excluído),
+- **Colunas:** `edicao`, `magistrado`, `area`, `unidade`, `comarca`, `atuacao`, `situacao` (Ativo / Desistente / Excluído),
   `data` (DD/MM/AAAA), `alteracao` (Unidade / Área / Unidade e área), `unidade_anterior` e `area_anterior`.
 - **O que não vai:** e-mail, IP e motivos.
 - **Formato:** JSON por padrão; `?formato=csv` entrega CSV com `;`.
@@ -260,7 +260,7 @@ curl -s -w "\nHTTP %{http_code}\n" -H "x-bi-token: COLE_A_CHAVE" "$URL/api/bi/de
 
    ```
    Designacoes:
-   LOAD edicao, magistrado, area, unidade, atuacao, situacao, Date#(data, 'DD/MM/YYYY') as data,
+   LOAD edicao, magistrado, area, unidade, comarca, atuacao, situacao, Date#(data, 'DD/MM/YYYY') as data,
         alteracao, unidade_anterior, area_anterior;
    SQL SELECT ... FROM JSON (wrap on) "root";
    ```

@@ -1913,6 +1913,8 @@ async function startServer() {
     if (given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) return res.status(401).json({ error: 'Não autorizado.' });
 
     const title = (id: string) => editionById(id)?.title ?? '';
+    // Comarca pela lista oficial: a da inscrição/catálogo quando houver; senão, a citada no nome da unidade
+    const comarcaOf = (unit: string, hint?: string) => (unit || hint ? canonicalComarca(hint) ?? comarcaInText(unit) ?? hint ?? '' : '');
     const rows: Record<string, string>[] = [];
     for (const r of panelRows()) {
       const unit = unitLabel(r);
@@ -1923,7 +1925,7 @@ async function startServer() {
       const areaChanged = !!tr && !!tr.toArea && norm(tr.toArea) !== norm(tr.area);
       const mt = matches.find((m) => m.id === r.id);
       rows.push({
-        edicao: r.editionTitle, magistrado: r.name, area: r.area, unidade: unit, atuacao: r.workType ?? '', situacao: 'Ativo',
+        edicao: r.editionTitle, magistrado: r.name, area: r.area, unidade: unit, comarca: comarcaOf(unit, catalogById(units.find((u) => u.id === r.unitId)?.catalogId)?.comarca ?? r.comarca), atuacao: r.workType ?? '', situacao: 'Ativo',
         data: brDate(tr && (unitChanged || areaChanged) ? tr.effectiveDate : r.startDate ?? mt?.createdAt),
         alteracao: unitChanged && areaChanged ? 'Unidade e área' : unitChanged ? 'Unidade' : areaChanged ? 'Área' : '',
         unidade_anterior: unitChanged ? tr.fromUnit : '', area_anterior: areaChanged ? tr.area : '',
@@ -1931,12 +1933,12 @@ async function startServer() {
     }
     for (const w of withdrawals) {
       if (w.endedAt) continue;
-      rows.push({ edicao: title(w.editionId), magistrado: w.name, area: w.area, unidade: w.unit, atuacao: '', situacao: 'Desistente', data: brDate(w.requestDate ?? w.createdAt), alteracao: '', unidade_anterior: '', area_anterior: '' });
+      rows.push({ edicao: title(w.editionId), magistrado: w.name, area: w.area, unidade: w.unit, comarca: comarcaOf(w.unit), atuacao: '', situacao: 'Desistente', data: brDate(w.requestDate ?? w.createdAt), alteracao: '', unidade_anterior: '', area_anterior: '' });
     }
     for (const m of magistrates) {
       if (m.status !== 'Excluído') continue;
       const held = m.excludedFrom?.length ? m.excludedFrom : [{ editionId: m.editionId, area: '', unit: '', workType: '' }];
-      for (const h of held) rows.push({ edicao: title(h.editionId), magistrado: m.name, area: h.area, unidade: h.unit, atuacao: h.workType ?? '', situacao: 'Excluído', data: brDate(m.excludedAt), alteracao: '', unidade_anterior: '', area_anterior: '' });
+      for (const h of held) rows.push({ edicao: title(h.editionId), magistrado: m.name, area: h.area, unidade: h.unit, comarca: comarcaOf(h.unit), atuacao: h.workType ?? '', situacao: 'Excluído', data: brDate(m.excludedAt), alteracao: '', unidade_anterior: '', area_anterior: '' });
     }
 
     console.log(JSON.stringify({ severity: 'INFO', message: `Designações lidas pela integração BI (${rows.length} linhas)`, audit: { category: 'Exportação', ip: clientIp(req) } }));
@@ -1947,7 +1949,7 @@ async function startServer() {
     }
     res.setHeader('Cache-Control', 'no-store');
     if (req.query.formato === 'csv') {
-      const cols = ['edicao', 'magistrado', 'area', 'unidade', 'atuacao', 'situacao', 'data', 'alteracao', 'unidade_anterior', 'area_anterior'];
+      const cols = ['edicao', 'magistrado', 'area', 'unidade', 'comarca', 'atuacao', 'situacao', 'data', 'alteracao', 'unidade_anterior', 'area_anterior'];
       const csv = '\ufeff' + [cols.join(';'), ...rows.map((r) => cols.map((c) => csvCell(r[c])).join(';'))].join('\r\n') + '\r\n';
       res.setHeader('Content-Type', 'text/csv; charset=utf-8');
       return res.send(csv);
