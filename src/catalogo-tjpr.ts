@@ -5,7 +5,7 @@
  *
  * Cada unidade é guardada sem o final "DE <COMARCA>": o nome oficial é remontado como "<UNIDADE> DE <COMARCA>".
  * Entradas [nome, separador] (seções judiciárias) usam outro separador: "<NOME> – <COMARCA>".
- * Para atualizar a lista, substitua este arquivo (os ids são derivados de comarca + unidade e continuam estáveis).
+ * Esta é só a lista inicial: depois da primeira edição em "Comarcas e unidades" (painel), vale a lista gravada no banco.
  */
 export interface CatalogUnit { id: string; comarca: string; unitName: string; separator: string; label: string }
 
@@ -1109,25 +1109,48 @@ const RAW: Record<string, (string | [string, string])[]> = {
   ],
 };
 
-const slug = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[ªº°]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+export const slug = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[ªº°]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
 /** Separador entre unidade e comarca no nome oficial */
 export const CATALOG_SEPARATOR = 'DE';
 
-export const CATALOG: CatalogUnit[] = Object.entries(RAW).flatMap(([comarca, list]) =>
+/** Registro gravado de uma unidade da lista (o rótulo é remontado). */
+export interface CatalogRecord { id: string; comarca: string; unitName: string; separator: string }
+
+/** Lista embutida (planilha original): ponto de partida enquanto a lista não for editada pela administração. */
+export const BUILTIN_COMARCAS: string[] = Object.keys(RAW);
+export const BUILTIN_UNITS: CatalogRecord[] = Object.entries(RAW).flatMap(([comarca, list]) =>
   list.map((entry) => {
     const [unitName, separator] = Array.isArray(entry) ? entry : [entry, CATALOG_SEPARATOR];
-    return { id: `${slug(comarca)}--${slug(unitName)}`, comarca, unitName, separator, label: `${unitName} ${separator} ${comarca}` };
+    return { id: `${slug(comarca)}--${slug(unitName)}`, comarca, unitName, separator };
   }));
 
-export const COMARCAS: string[] = Object.keys(RAW);
+const fold = (t: string) => t.normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/\s+/g, ' ').trim();
+const labelOf = (r: CatalogRecord) => `${r.unitName} ${r.separator} ${r.comarca}`;
 
-const BY_ID = new Map(CATALOG.map((u) => [u.id, u]));
+// A lista vigente pode ser trocada em execução (edição pelo painel): os importadores enxergam sempre a versão atual.
+export let CATALOG: CatalogUnit[] = [];
+export let COMARCAS: string[] = [];
+/** Muda a cada troca da lista (para quem guarda dados derivados dela) */
+export let catalogVersion = 0;
+let BY_ID = new Map<string, CatalogUnit>();
+let COMARCA_BY_FOLD = new Map<string, string>();
+
+/** Troca a lista vigente. Comarcas sem unidades também são mantidas. */
+export function setCatalog(comarcas: string[], units: CatalogRecord[]) {
+  const sort = (a: string, b: string) => a.localeCompare(b, 'pt-BR');
+  COMARCAS = [...new Set([...comarcas, ...units.map((u) => u.comarca)])].sort(sort);
+  CATALOG = units.map((u) => ({ id: u.id, comarca: u.comarca, unitName: u.unitName, separator: u.separator || CATALOG_SEPARATOR, label: labelOf({ ...u, separator: u.separator || CATALOG_SEPARATOR }) }))
+    .sort((a, b) => sort(a.comarca, b.comarca) || sort(a.unitName, b.unitName));
+  BY_ID = new Map(CATALOG.map((u) => [u.id, u]));
+  COMARCA_BY_FOLD = new Map(COMARCAS.map((c) => [fold(c), c]));
+  catalogVersion++;
+}
+setCatalog(BUILTIN_COMARCAS, BUILTIN_UNITS);
+
 export const catalogById = (id: unknown): CatalogUnit | undefined => (typeof id === 'string' ? BY_ID.get(id) : undefined);
 export const unitsOfComarca = (comarca: string): CatalogUnit[] => CATALOG.filter((u) => u.comarca === comarca);
-export const isComarca = (c: unknown): c is string => typeof c === 'string' && Object.prototype.hasOwnProperty.call(RAW, c);
-const fold = (t: string) => t.normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/\s+/g, ' ').trim();
-const COMARCA_BY_FOLD = new Map(COMARCAS.map((c) => [fold(c), c]));
+export const isComarca = (c: unknown): c is string => typeof c === 'string' && COMARCAS.includes(c);
 /** Comarca da lista correspondente ao texto informado (sem diferença de acento/caixa), ou undefined. */
 export const canonicalComarca = (c: unknown): string | undefined => (typeof c === 'string' && c.trim() ? COMARCA_BY_FOLD.get(fold(c)) : undefined);
 

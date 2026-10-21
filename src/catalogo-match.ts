@@ -2,7 +2,7 @@
  * Aproximação de nomes digitados livremente ("1a vara civel de curitiba", "JEC Londrina"...) às unidades do catálogo oficial.
  * Usada na conciliação ("Padronizar nomes"), na importação de planilha do painel e na detecção de atuação na mesma vara.
  */
-import { CATALOG, COMARCAS, type CatalogUnit } from './catalogo-tjpr';
+import { CATALOG, COMARCAS, catalogVersion, type CatalogUnit } from './catalogo-tjpr';
 
 const ORDINAL_WORDS: Record<string, string> = {
   PRIMEIRA: '1', PRIMEIRO: '1', SEGUNDA: '2', SEGUNDO: '2', TERCEIRA: '3', TERCEIRO: '3', QUARTA: '4', QUARTO: '4',
@@ -30,14 +30,23 @@ export function tokens(text: string): string[] {
   }).filter((w) => !STOP.has(w));
 }
 
-const COMARCA_FOLDED = COMARCAS.map((c) => ({ c, f: ` ${fold(c).replace(/[^A-Z0-9]+/g, ' ').trim()} ` })).sort((a, b) => b.f.length - a.f.length);
+// Dados derivados da lista, refeitos quando ela muda (edição pelo painel)
+let builtFor = -1;
+let COMARCA_FOLDED: { c: string; f: string }[] = [];
+let PREPARED: { u: CatalogUnit; tk: Set<string>; comarcaTk: Set<string> }[] = [];
+function prepare() {
+  if (builtFor === catalogVersion) return;
+  builtFor = catalogVersion;
+  COMARCA_FOLDED = COMARCAS.map((c) => ({ c, f: ` ${fold(c).replace(/[^A-Z0-9]+/g, ' ').trim()} ` })).sort((a, b) => b.f.length - a.f.length);
+  PREPARED = CATALOG.map((u) => ({ u, tk: new Set(tokens(u.unitName)), comarcaTk: new Set(tokens(u.comarca)) }));
+}
 /** Comarca citada no texto (a de nome mais longo, para não confundir "CAMPO LARGO" com "LARGO"). */
 export function comarcaInText(text: string): string | undefined {
+  prepare();
   const t = ` ${fold(text).replace(/[^A-Z0-9]+/g, ' ').trim()} `;
   return COMARCA_FOLDED.find((x) => t.includes(x.f))?.c;
 }
 
-const PREPARED = CATALOG.map((u) => ({ u, tk: new Set(tokens(u.unitName)), comarcaTk: new Set(tokens(u.comarca)) }));
 
 export interface CatalogSuggestion { id: string; label: string; comarca: string; score: number }
 
@@ -46,6 +55,7 @@ export interface CatalogSuggestion { id: string; label: string; comarca: string;
  * score de 0 a 1: ≥ 0,85 alta confiança; ≥ 0,6 média.
  */
 export function suggestCatalog(text: string, comarcaHint?: string, limit = 3): CatalogSuggestion[] {
+  prepare();
   const comarca = comarcaHint || comarcaInText(text);
   const words = tokens(text);
   if (!words.length) return [];

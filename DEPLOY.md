@@ -167,7 +167,10 @@ Exemplo: `gcloud run services update mutiraocgj --region europe-west1 --update-e
   designações (total e por área) e os desistentes. Publicamente, só a *Consulta pelo nome completo* (em Consultar Status).
 - **Lista oficial de comarcas e unidades:** `src/catalogo-tjpr.ts` (163 comarcas e 771 unidades da planilha da
   coordenação). Nos formulários escolhe-se a comarca e depois a unidade daquela comarca; "Outra" permite digitar e marca o
-  registro como "a padronizar". Para atualizar a lista, substitua o arquivo e publique.
+  registro como "a padronizar". A lista é mantida em *Administração → Comarcas e unidades*: incluir, renomear e apagar.
+  Ao renomear (unidade ou comarca), as inscrições de unidade, as lotações e os nomes do painel passam a usar o novo nome;
+  unidade (ou comarca) com magistrado vinculado não pode ser apagada. Depois da primeira edição, a lista fica gravada no
+  banco (coleções `mutirao_catalog` e `mutirao_comarcas`) e entra no backup; o arquivo passa a ser só a lista inicial.
 - **Padronizar nomes:** *Administração → Padronizar nomes* sugere a unidade oficial para os registros digitados ou
   importados (aplicação individual ou em lote, com fusão de inscrições repetidas). A mesma tela padroniza nomes de
   magistrados em MAIÚSCULAS e mostra possíveis duplicidades. Mesmo nome = mesma pessoa; nomes parecidos pedem confirmação.

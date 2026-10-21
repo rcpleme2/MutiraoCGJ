@@ -1,3 +1,5 @@
+import { setCatalog } from './catalogo-tjpr';
+
 const TOKEN_KEY = 'mutirao-admin-token';
 
 let memoryToken = '';
@@ -42,4 +44,10 @@ export async function download(path: string, fallbackName: string) {
   a.download = name;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+/** Carrega a lista vigente de comarcas e unidades (editável pelo painel) e avisa as telas para redesenhar. */
+export async function reloadCatalog() {
+  const r = await api<{ comarcas: string[]; units: { id: string; comarca: string; unitName: string; separator: string }[] }>('/catalog');
+  if (Array.isArray(r.comarcas) && Array.isArray(r.units)) { setCatalog(r.comarcas, r.units); window.dispatchEvent(new Event('catalog-changed')); }
 }

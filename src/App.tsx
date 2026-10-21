@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Scale, UserCheck, Building2, ShieldCheck, Search, ArrowRight, Menu, X, ChevronDown, HelpCircle } from 'lucide-react';
-import { api } from './api';
+import { api, reloadCatalog } from './api';
 import { Edition, FaqItem, Magistrate, Unit } from './types';
 import { Badge, FeedbackProvider, Notice, formatDate, magistrateTone } from './ui';
 import { MagistrateForm, UnitForm } from './Forms';
@@ -50,6 +50,14 @@ function AppInner() {
     api<FaqItem[]>('/faq').then(setFaq).catch(() => {});
     return api<Edition | null>('/settings').then(setEdition).catch(() => setLoadError(true));
   };
+  // Lista de comarcas e unidades vigente: ao chegar (ou ao ser editada no painel), redesenha as telas
+  const [, setCatalogVersion] = useState(0);
+  useEffect(() => {
+    const bump = () => setCatalogVersion((v) => v + 1);
+    window.addEventListener('catalog-changed', bump);
+    reloadCatalog().catch(() => { /* fica a lista embutida */ });
+    return () => window.removeEventListener('catalog-changed', bump);
+  }, []);
   useEffect(() => {
     loadEdition();
     // Atualiza a situação das inscrições (abre/encerra por data) sem exigir que a pessoa recarregue a página

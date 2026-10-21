@@ -10,7 +10,7 @@ import { Storage } from '@google-cloud/storage';
 import QRCode from 'qrcode';
 import PDFDocument from 'pdfkit';
 import { AsyncLocalStorage } from 'async_hooks';
-import { catalogById, canonicalComarca, fullUnitName, CATALOG_SEPARATOR } from './src/catalogo-tjpr';
+import { catalogById, canonicalComarca, fullUnitName, CATALOG_SEPARATOR, CATALOG, COMARCAS, BUILTIN_COMARCAS, BUILTIN_UNITS, setCatalog, slug, type CatalogRecord } from './src/catalogo-tjpr';
 import { comarcaInText, resolveCatalog, suggestCatalog, tokens as nameTokens } from './src/catalogo-match';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -390,6 +390,20 @@ interface Transfer { id: string; editionId: string; magistrateId: string; name: 
 let transfers: Transfer[] = [];
 /** Pares de nomes parecidos que a administração indicou NÃO serem a mesma pessoa (chave "nomeA|nomeB") */
 let dupDismissed: string[] = [];
+/** Lista oficial de comarcas e unidades, editável pelo painel. Vazia = ainda não editada: vale a lista embutida. */
+let catalogUnits: CatalogRecord[] = [];
+let catalogComarcas: { id: string; name: string }[] = [];
+/** Ativa a lista gravada (ou a embutida, se nunca foi editada) */
+function applyCatalog() {
+  if (!catalogUnits.length && !catalogComarcas.length) { setCatalog(BUILTIN_COMARCAS, BUILTIN_UNITS); return; }
+  setCatalog(catalogComarcas.map((c) => c.name), catalogUnits);
+}
+/** Antes da primeira edição, copia a lista embutida para o estado (passa a ser gravada no banco). */
+function materializeCatalog() {
+  if (catalogUnits.length || catalogComarcas.length) return;
+  catalogUnits = BUILTIN_UNITS.map((u) => ({ ...u }));
+  catalogComarcas = BUILTIN_COMARCAS.map((name) => ({ id: slug(name), name }));
+}
 /** Resultado do último backup automático (exibido na aba Backup e no painel) */
 let lastAutoBackup: { at: string; ok: boolean; name?: string; size?: number; error?: string } | null = null;
 
@@ -714,6 +728,7 @@ const metaJson = () => JSON.stringify({ activeEditionId, adminTotpSecret, dupDis
 
 const collectionsNow = (): Record<string, { id: string }[]> => ({
   editions, magistrates, units, matches, log: activityLog, faq, panel: panelEntries, withdrawals, transfers, admins,
+  catalog: catalogUnits, comarcas: catalogComarcas,
 });
 
 async function loadState() {
@@ -734,7 +749,10 @@ async function loadState() {
       withdrawals = raw.withdrawals ?? [];
       transfers = raw.transfers ?? [];
       admins = raw.admins ?? [];
+      catalogUnits = raw.catalog ?? [];
+      catalogComarcas = raw.comarcas ?? [];
     } catch { /* primeira execução: usa os dados iniciais */ }
+    applyCatalog();
     return;
   }
 
@@ -772,6 +790,9 @@ async function loadState() {
   withdrawals = loaded.withdrawals as Withdrawal[];
   transfers = loaded.transfers as Transfer[];
   admins = loaded.admins as AdminUser[];
+  catalogUnits = loaded.catalog as CatalogRecord[];
+  catalogComarcas = loaded.comarcas as { id: string; name: string }[];
+  applyCatalog();
   lastMeta = metaJson();
 }
 
@@ -780,7 +801,7 @@ async function persist() {
     fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
     fs.writeFileSync(
       DATA_FILE,
-      JSON.stringify({ editions, activeEditionId, magistrates, units, matches, activityLog, faq, adminTotpSecret, panel: panelEntries, withdrawals, transfers, dupDismissed, admins, lastAutoBackup }),
+      JSON.stringify({ editions, activeEditionId, magistrates, units, matches, activityLog, faq, adminTotpSecret, panel: panelEntries, withdrawals, transfers, dupDismissed, admins, lastAutoBackup, catalog: catalogUnits, comarcas: catalogComarcas }),
     );
     return;
   }
@@ -1020,7 +1041,7 @@ async function startServer() {
     const session = sessionOf(req);
     const admin = !!session;
     if (session) { const store = reqCtx.getStore(); if (store) store.user = session.name; }
-    const publicRead = (req.method === 'GET' && ['/settings', '/faq', '/admin/login-mode'].includes(req.path)) || (req.method === 'POST' && req.path === '/status');
+    const publicRead = (req.method === 'GET' && ['/settings', '/faq', '/admin/login-mode', '/catalog'].includes(req.path)) || (req.method === 'POST' && req.path === '/status');
     const publicSignup = req.method === 'POST' && (req.path === '/magistrates' || req.path === '/units');
     const login = req.method === 'POST' && (req.path === '/admin/login' || req.path === '/admin/login/verify');
 
@@ -1896,6 +1917,162 @@ async function startServer() {
     res.send(buffer);
   });
 
+  // ---------- Comarcas e unidades (lista oficial, editável) ----------
+  // Lista vigente: pública, usada nos formulários de inscrição
+  app.get('/api/catalog', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ comarcas: COMARCAS, units: CATALOG.map(({ id, comarca, unitName, separator }) => ({ id, comarca, unitName, separator })) });
+  });
+
+  const upper = (t: string) => t.replace(/\s+/g, ' ').trim().toLocaleUpperCase('pt-BR');
+  const fold = (t: string) => norm(t).toUpperCase();
+  /** Inscrição de unidade que corresponde a esta unidade da lista (pelo vínculo ou, se digitada, pelo nome completo) */
+  const isSameUnit = (u: Unit, c: { id: string; label: string }) => (u.catalogId ? u.catalogId === c.id : norm(fullUnitName(u)) === norm(c.label));
+  /** Magistrados com designação vigente na unidade da lista (bloqueiam a exclusão) */
+  const linkedTo = (c: { id: string; label: string }) => {
+    const names = new Set<string>();
+    for (const mt of matches) {
+      const un = units.find((u) => u.id === mt.unitId);
+      const mag = magistrates.find((m) => m.id === mt.magistrateId);
+      if (un && mag && mag.status !== 'Desistente' && mag.status !== 'Excluído' && isSameUnit(un, c)) names.add(mag.name);
+    }
+    return [...names];
+  };
+  const usageOf = (c: { id: string; label: string }) => ({
+    linked: linkedTo(c),
+    registrations: units.filter((u) => isSameUnit(u, c)).length,
+    lotacao: magistrates.filter((m) => m.locationCatalogId === c.id).length,
+  });
+  app.get('/api/catalog/usage', (_req, res) => {
+    const out: Record<string, ReturnType<typeof usageOf>> = {};
+    for (const c of CATALOG) { const u = usageOf(c); if (u.linked.length || u.registrations || u.lotacao) out[c.id] = u; }
+    res.json(out);
+  });
+
+  /** Troca, nos registros já gravados, o nome antigo da unidade pelo novo (inscrições, lotações e textos do painel). */
+  function cascadeUnit(old: { id: string; label: string; unitName: string; comarca: string; separator: string }, next: CatalogRecord) {
+    const label = catalogById(next.id)?.label ?? `${next.unitName} ${next.separator} ${next.comarca}`;
+    const olds = new Set([norm(old.label), norm(fullUnitName(old))]);
+    const swap = (t: string) => (olds.has(norm(t)) ? label : t);
+    let changed = 0;
+    for (const u of units) if (isSameUnit(u, old)) { u.unitName = next.unitName; u.comarca = next.comarca; u.separator = next.separator; u.catalogId = next.id; changed++; }
+    for (const m of magistrates) {
+      if (m.locationCatalogId === old.id) { m.currentLocation = label; m.locationComarca = next.comarca; changed++; }
+      m.excludedFrom?.forEach((h) => { h.unit = swap(h.unit); });
+    }
+    panelEntries.forEach((e) => { e.unit = swap(e.unit); });
+    withdrawals.forEach((w) => { w.unit = swap(w.unit); });
+    transfers.forEach((t) => { t.fromUnit = swap(t.fromUnit); t.toUnit = swap(t.toUnit); });
+    return changed;
+  }
+  /** Ao apagar: as inscrições e lotações mantêm o nome como texto, sem o vínculo com a lista */
+  function detachUnit(c: { id: string; label: string }) {
+    for (const u of units) if (u.catalogId === c.id) u.catalogId = undefined;
+    for (const m of magistrates) if (m.locationCatalogId === c.id) m.locationCatalogId = undefined;
+  }
+  const findComarca = (name: unknown) => (typeof name === 'string' ? catalogComarcas.find((c) => fold(c.name) === fold(name)) : undefined);
+  const uniqueId = (base: string, taken: Set<string>) => { let id = base, n = 2; while (taken.has(id)) id = `${base}-${n++}`; return id; };
+  const readSeparator = (v: unknown) => (typeof v === 'string' && /^(DE|DA|DO|DOS|DAS|–|-)$/.test(v.trim().toUpperCase()) ? v.trim().toUpperCase().replace('-', '–') : CATALOG_SEPARATOR);
+
+  app.post('/api/catalog/comarcas', (req, res) => {
+    const name = upper(String(req.body?.name ?? '')).slice(0, 120);
+    if (name.length < 2) return res.status(400).json({ error: 'Informe o nome da comarca.' });
+    materializeCatalog();
+    if (findComarca(name)) return res.status(409).json({ error: 'Esta comarca já existe.' });
+    catalogComarcas.push({ id: uniqueId(slug(name), new Set(catalogComarcas.map((c) => c.id))), name });
+    applyCatalog();
+    log(null, 'Administração', 'Conteúdo', `Comarca incluída na lista oficial: ${name}.`);
+    res.status(201).json({ success: true });
+  });
+
+  app.put('/api/catalog/comarcas/:name', (req, res) => {
+    materializeCatalog();
+    const c = findComarca(req.params.name);
+    if (!c) return res.status(404).json({ error: 'Comarca não encontrada.' });
+    const name = upper(String(req.body?.name ?? '')).slice(0, 120);
+    if (name.length < 2) return res.status(400).json({ error: 'Informe o novo nome da comarca.' });
+    const other = findComarca(name);
+    if (other && other !== c) return res.status(409).json({ error: 'Já existe uma comarca com este nome.' });
+    const oldName = c.name;
+    const olds = catalogUnits.filter((u) => u.comarca === oldName).map((u) => ({ ...catalogById(u.id)! }));
+    c.name = name;
+    catalogUnits.forEach((u) => { if (u.comarca === oldName) u.comarca = name; });
+    applyCatalog();
+    let changed = 0;
+    for (const o of olds) changed += cascadeUnit(o, catalogUnits.find((u) => u.id === o.id)!);
+    // Inscrições digitadas ("Outra") que citam a comarca antiga
+    for (const u of units) if (!u.catalogId && fold(u.comarca ?? '') === fold(oldName)) { u.comarca = name; changed++; }
+    for (const m of magistrates) if (m.locationComarca && fold(m.locationComarca) === fold(oldName)) { m.locationComarca = name; }
+    log(null, 'Administração', 'Conteúdo', `Comarca renomeada na lista oficial: ${oldName} → ${name} (${olds.length} unidade(s); ${changed} registro(s) atualizados).`);
+    res.json({ success: true, changed });
+  });
+
+  app.delete('/api/catalog/comarcas/:name', (req, res) => {
+    materializeCatalog();
+    const c = findComarca(req.params.name);
+    if (!c) return res.status(404).json({ error: 'Comarca não encontrada.' });
+    const list = CATALOG.filter((u) => u.comarca === c.name);
+    const blocked = list.map((u) => ({ u, names: linkedTo(u) })).filter((x) => x.names.length);
+    if (blocked.length) {
+      return res.status(409).json({ error: `Não é possível apagar: há magistrado(s) vinculado(s) em ${blocked.length} unidade(s) desta comarca (${blocked.slice(0, 3).map((x) => `${x.u.unitName}: ${x.names.join(', ')}`).join('; ')}${blocked.length > 3 ? '…' : ''}).` });
+    }
+    list.forEach(detachUnit);
+    catalogUnits = catalogUnits.filter((u) => u.comarca !== c.name);
+    catalogComarcas = catalogComarcas.filter((x) => x !== c);
+    applyCatalog();
+    log(null, 'Administração', 'Conteúdo', `Comarca apagada da lista oficial: ${c.name} (com ${list.length} unidade(s)).`);
+    res.json({ success: true });
+  });
+
+  /** Valida comarca e nome da unidade; devolve o registro (sem id) ou erro */
+  const readUnit = (b: any, selfId?: string): { error: string } | { value: Omit<CatalogRecord, 'id'> } => {
+    const com = findComarca(b?.comarca);
+    if (!com) return { error: 'Escolha uma comarca da lista.' };
+    const unitName = upper(String(b?.unitName ?? '')).slice(0, 300);
+    if (unitName.length < 3) return { error: 'Informe o nome da unidade.' };
+    if (catalogUnits.some((u) => u.id !== selfId && u.comarca === com.name && fold(u.unitName) === fold(unitName))) return { error: 'Esta unidade já existe nesta comarca.' };
+    return { value: { comarca: com.name, unitName, separator: readSeparator(b?.separator) } };
+  };
+
+  app.post('/api/catalog/units', (req, res) => {
+    materializeCatalog();
+    const r = readUnit(req.body);
+    if ('error' in r) return res.status(400).json(r);
+    const id = uniqueId(`${slug(r.value.comarca)}--${slug(r.value.unitName)}`, new Set(catalogUnits.map((u) => u.id)));
+    catalogUnits.push({ id, ...r.value });
+    applyCatalog();
+    log(null, 'Administração', 'Conteúdo', `Unidade incluída na lista oficial: ${catalogById(id)?.label}.`);
+    res.status(201).json({ success: true, id });
+  });
+
+  app.put('/api/catalog/units/:id', (req, res) => {
+    materializeCatalog();
+    const rec = catalogUnits.find((u) => u.id === req.params.id);
+    const old = catalogById(req.params.id);
+    if (!rec || !old) return res.status(404).json({ error: 'Unidade não encontrada.' });
+    const r = readUnit({ comarca: req.body?.comarca ?? rec.comarca, unitName: req.body?.unitName ?? rec.unitName, separator: req.body?.separator ?? rec.separator }, rec.id);
+    if ('error' in r) return res.status(400).json(r);
+    const before = { ...old };
+    Object.assign(rec, r.value);
+    applyCatalog();
+    const changed = cascadeUnit(before, rec);
+    log(null, 'Administração', 'Conteúdo', `Unidade alterada na lista oficial: ${before.label} → ${catalogById(rec.id)?.label} (${changed} registro(s) atualizados).`);
+    res.json({ success: true, changed });
+  });
+
+  app.delete('/api/catalog/units/:id', (req, res) => {
+    materializeCatalog();
+    const c = catalogById(req.params.id);
+    if (!c) return res.status(404).json({ error: 'Unidade não encontrada.' });
+    const names = linkedTo(c);
+    if (names.length) return res.status(409).json({ error: `Não é possível apagar: ${names.length === 1 ? 'há magistrado vinculado' : `há ${names.length} magistrados vinculados`} a esta unidade (${names.slice(0, 5).join(', ')}${names.length > 5 ? '…' : ''}). Altere ou desfaça a vinculação antes.` });
+    detachUnit(c);
+    catalogUnits = catalogUnits.filter((u) => u.id !== c.id);
+    applyCatalog();
+    log(null, 'Administração', 'Conteúdo', `Unidade apagada da lista oficial: ${c.label}.`);
+    res.json({ success: true });
+  });
+
   // ---------- Integração com o Qlik Sense (somente leitura, chave própria em BI_TOKEN) ----------
   // Tabela única com as designações: ativas, desistentes e excluídas. Sem e-mail, IP ou motivos.
   const BI_TOKEN = process.env.BI_TOKEN || '';
@@ -2141,6 +2318,7 @@ async function startServer() {
   const backupJson = () => JSON.stringify({
     app: BACKUP_APP, version: 1, exportedAt: new Date().toISOString(), activeEditionId,
     editions, magistrates, units, matches, faq, withdrawals, transfers, log: activityLog,
+    catalog: catalogUnits, comarcas: catalogComarcas,
   });
 
   // ---------- Backup automático diário ----------
@@ -2240,6 +2418,13 @@ async function startServer() {
     const before = { editions: editions.length, magistrates: magistrates.length, units: units.length, matches: matches.length };
     editions = eds; magistrates = mags; units = uns; matches = mts; faq = fq; withdrawals = wds; transfers = trs; panelEntries = [];
     activeEditionId = edIds.has(d.activeEditionId) ? d.activeEditionId : eds[0].id;
+    // Lista de comarcas e unidades: só é trocada se o backup a trouxer (backups antigos mantêm a atual)
+    const cat = arr('catalog'), cms = arr('comarcas');
+    if (cat && cms && (cat.length || cms.length) && cat.every((u) => typeof u.comarca === 'string' && typeof u.unitName === 'string') && cms.every((c) => typeof c.name === 'string')) {
+      catalogUnits = cat.map((u) => ({ id: u.id, comarca: u.comarca, unitName: u.unitName, separator: typeof u.separator === 'string' ? u.separator : CATALOG_SEPARATOR }));
+      catalogComarcas = cms.map((c) => ({ id: c.id, name: c.name }));
+      applyCatalog();
+    }
     const have = new Set(activityLog.map((l) => l.id));
     activityLog = [...activityLog, ...lg.filter((l) => !have.has(l.id) && typeof l.timestamp === 'string')].sort((x, y) => y.timestamp.localeCompare(x.timestamp));
     normalizeLegacy();
