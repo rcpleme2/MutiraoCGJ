@@ -225,11 +225,25 @@ tabela única com as designações:
 **1. Criar a chave**
 
 ```bash
+# Conta de serviço que o site usa de fato (vazio = conta padrão do Compute)
+SA=$(gcloud run services describe mutirao-cgj --region southamerica-east1 --format='value(spec.template.spec.serviceAccountName)')
+[ -z "$SA" ] && SA="$(gcloud projects describe $(gcloud config get-value project) --format='value(projectNumber)')-compute@developer.gserviceaccount.com"
+echo "$SA"
 printf "%s" "$(openssl rand -hex 32)" | gcloud secrets create BI_TOKEN --data-file=-
 gcloud secrets add-iam-policy-binding BI_TOKEN --member="serviceAccount:$SA" --role="roles/secretmanager.secretAccessor"
 gcloud run services update mutirao-cgj --region southamerica-east1 --update-secrets=BI_TOKEN=BI_TOKEN:latest
-gcloud secrets versions access latest --secret=BI_TOKEN   # mostra a chave, para cadastrar no Qlik
+gcloud secrets versions access latest --secret=BI_TOKEN; echo   # mostra a chave, para cadastrar no Qlik
 ```
+
+Teste (rode cada linha separadamente; o esperado é JSON e `HTTP 200`):
+
+```bash
+URL=$(gcloud run services describe mutirao-cgj --region southamerica-east1 --format='value(status.url)')
+curl -s -w "\nHTTP %{http_code}\n" -H "x-bi-token: COLE_A_CHAVE" "$URL/api/bi/designacoes" | tail -c 400
+```
+
+`401` = chave diferente da que o serviço carregou (rode de novo o `gcloud run services update ... --update-secrets`);
+`503` = a chave não chegou ao serviço.
 
 **2. No Qlik Sense Enterprise**
 
