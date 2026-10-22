@@ -2160,7 +2160,7 @@ async function startServer() {
     return reportArtCache.get(name)!;
   };
 
-  // Relatório em PDF: designações vigentes (total e por área), alterações de vinculação e desistentes.
+  // Relatório em PDF: designações vigentes (total e por área), alterações de vinculação, desistentes e excluídos.
   app.get('/api/panel/report.pdf', (req, res) => {
     const byArea = req.query.por === 'area'; // versão só com as designações, uma área por bloco
     const onlyAreas = typeof req.query.areas === 'string' && req.query.areas ? new Set(req.query.areas.split('|').map((a) => norm(a))) : null;
@@ -2168,6 +2168,9 @@ async function startServer() {
     if (req.query.edition && !ed) return res.status(404).json({ error: 'Edição não encontrada.' });
     const rows = panelRows().filter((r) => (!ed || r.editionId === ed.id) && (!byArea || !onlyAreas || onlyAreas.has(norm(r.area))));
     const drops = withdrawals.filter((w) => !ed || w.editionId === ed.id).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+    // Excluídos pela administração (de qualquer situação), com as designações que tinham na data da exclusão
+    const excluded = magistrates.filter((m) => m.status === 'Excluído' && (!ed || m.editionId === ed.id || m.excludedFrom?.some((h) => h.editionId === ed.id)))
+      .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
     const moves = transfers.filter((x) => !ed || x.editionId === ed.id).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR') || a.effectiveDate.localeCompare(b.effectiveDate));
     const areas = [...new Set(rows.map((r) => r.area.trim()))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
     const tz = 'America/Sao_Paulo';
@@ -2294,7 +2297,7 @@ async function startServer() {
 
     // Resumo em números, no padrão das tabelas do modelo
     if (!byArea) {
-      const stats = [['Designações vigentes', rows.length], ['Áreas de atuação', areas.length], ['Alterações de vinculação', moves.length], ['Desistentes', drops.length]] as const;
+      const stats = [['Designações vigentes', rows.length], ['Áreas de atuação', areas.length], ['Alterações de vinculação', moves.length], ['Desistentes', drops.length], ['Excluídos', excluded.length]] as const;
       doc.y += 8;
       need(90);
       const cw = W / stats.length, sy = doc.y;
@@ -2302,11 +2305,11 @@ async function startServer() {
       doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(8).text('RESUMO', L, sy + 8.5, { width: W, align: 'center', lineBreak: false });
       stats.forEach(([label, n], i) => {
         const x = L + i * cw;
-        cellBox(x, sy + 24, cw, 54, CELL);
-        doc.fillColor(TEAL).font('Helvetica-Bold').fontSize(18).text(String(n), x, sy + 33, { width: cw, align: 'center', lineBreak: false });
-        doc.fillColor(INK).font('Helvetica-Bold').fontSize(7.6).text(t(label), x + PAD, sy + 58, { width: cw - 2 * PAD, align: 'center', lineBreak: false });
+        cellBox(x, sy + 24, cw, 62, CELL);
+        doc.fillColor(TEAL).font('Helvetica-Bold').fontSize(18).text(String(n), x, sy + 32, { width: cw, align: 'center', lineBreak: false });
+        doc.fillColor(INK).font('Helvetica-Bold').fontSize(7.6).text(t(label), x + PAD, sy + 56, { width: cw - 2 * PAD, align: 'center', lineGap: 1 });
       });
-      doc.y = sy + 78 + 12;
+      doc.y = sy + 86 + 12;
     }
 
     // ---------- 1. Designações vigentes (por área e em ordem alfabética) ----------
@@ -2346,6 +2349,18 @@ async function startServer() {
       else table([{ label: 'Magistrado(a)', w: 95 }, { label: 'Área e unidade', w: 100 }, { label: 'Processo SEI', w: 100 }, { label: 'Pedido', w: 62 }, { label: 'Situação', w: W - 357 }],
         drops.map((w) => [w.name, `${w.area}\n${w.unit}`, w.sei || 'A informar', w.requestDate ? dmy(w.requestDate) : 'A informar',
           w.endedAt ? `Apenas no período, até ${day(w.endedAt)}` : 'Em vigor']));
+
+      // ---------- 4. Excluídos ----------
+      section('4. Excluídos', 'Magistrados excluídos pela administração, com as designações que tinham na data da exclusão (desfeitas com ela), o processo SEI e o motivo registrado.');
+      if (excluded.length === 0) empty('Nenhuma exclusão registrada.');
+      else table([{ label: 'Magistrado(a)', w: 100 }, { label: 'Designação na exclusão', w: 130 }, { label: 'Processo SEI', w: 95 }, { label: 'Motivo', w: W - 325 }],
+        excluded.map((m) => {
+          const held = (m.excludedFrom ?? []).filter((h) => !ed || h.editionId === ed.id);
+          return [m.name,
+            held.length ? held.map((h) => `${h.unit}${h.area ? `\nÁrea: ${h.area}` : ''}`).join('\n') : 'Sem designação vigente',
+            `${m.exclusionSei || 'A informar'}${m.excludedAt ? `\nExcluído em ${day(m.excludedAt)}` : ''}`,
+            m.exclusionReason || '—'];
+        }));
     }
 
     // ---------- Rodapé TJPR (páginas internas) e contracapa ----------
