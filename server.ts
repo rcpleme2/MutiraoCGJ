@@ -2150,6 +2150,16 @@ async function startServer() {
     res.json(rows);
   });
 
+  // Arte da capa e da contracapa do modelo de relatório do TJPR (assets/relatorio); sem o arquivo, usa fundo azul-marinho.
+  const reportArtCache = new Map<string, Buffer | null>();
+  const reportArt = (name: 'capa' | 'contracapa') => {
+    if (!reportArtCache.has(name)) {
+      const file = path.join(process.cwd(), 'assets', 'relatorio', `${name}.jpg`);
+      reportArtCache.set(name, fs.existsSync(file) ? fs.readFileSync(file) : null);
+    }
+    return reportArtCache.get(name)!;
+  };
+
   // Relatório em PDF: designações vigentes (total e por área), alterações de vinculação e desistentes.
   app.get('/api/panel/report.pdf', (req, res) => {
     const byArea = req.query.por === 'area'; // versão só com as designações, uma área por bloco
@@ -2170,152 +2180,187 @@ async function startServer() {
     // A fonte padrão do PDF cobre o alfabeto latino; troca o que estiver fora dele para não gerar lixo.
     const t = (x: string) => x.replace(/[^\n -~ -ÿ–—‘’“”…•]/g, '?');
 
-    const doc = new PDFDocument({ size: 'A4', margins: { top: 62, bottom: 62, left: 54, right: 54 }, bufferPages: true,
-      info: { Title: 'Relatório de Designações — Mutirão de Julgamento', Author: 'Mutirão de Julgamento' } });
+    // Diagramação do modelo de relatório do TJPR: capa e contracapa institucionais, margens do modelo,
+    // títulos em verde-azulado, tabelas com cabeçalho azul-marinho e células cinza separadas por filetes brancos.
+    const doc = new PDFDocument({ size: 'A4', margins: { top: 85, bottom: 85, left: 85, right: 85 }, bufferPages: true,
+      info: { Title: 'Relatório de Designações — Mutirão de Julgamento', Author: 'Tribunal de Justiça do Estado do Paraná' } });
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename=${byArea ? 'designacoes-por-area-' : 'relatorio-designacoes-'}${new Date().toISOString().slice(0, 10)}.pdf`);
     doc.pipe(res);
 
-    // Identidade: documento institucional sóbrio, alinhado à esquerda, uma só família (Helvetica) e um único acento azul-aço.
-    const INK = '#1d232b', SLATE = '#4a5460', MUTED = '#7a838e', HAIR = '#dadee3', BAND = '#eff2f5', ACCENT = '#52698a';
+    // Cores e tamanhos dos estilos do modelo (Título 1/2/3, Parágrafo normal, Tabela, Rodapé TJPR)
+    const NAVY = '#123040', TEAL = '#128588', GREEN = '#4aad99', GRAY = '#5f615f', CELL = '#e9e9e9', FOOT = '#123141', INK = '#000000';
+    const reportTitle = byArea ? 'Designações por área de atuação' : 'Relatório de designações';
     const L = doc.page.margins.left;
     const W = doc.page.width - L - doc.page.margins.right;
     const limit = () => doc.page.height - doc.page.margins.bottom;
     const need = (h: number) => { if (doc.y + h > limit()) doc.addPage(); };
+    const fullPage = (img: Buffer | null) => {
+      if (img) doc.image(img, 0, 0, { width: doc.page.width, height: doc.page.height });
+      else doc.rect(0, 0, doc.page.width, doc.page.height).fill(NAVY);
+    };
+
+    // ---------- Capa: título e subtítulo à direita do filete da arte ----------
+    fullPage(reportArt('capa'));
+    {
+      const bx = L + 238, bw = 215, mid = 409 + 51;
+      const sub = t(`Mutirão de Julgamento${ed ? `\n${ed.title}` : ''}`);
+      doc.font('Helvetica-Bold').fontSize(24);
+      const th = doc.heightOfString(t(reportTitle), { width: bw });
+      doc.font('Helvetica').fontSize(15);
+      const sh = doc.heightOfString(sub, { width: bw });
+      const y0 = mid - (th + 8 + sh) / 2;
+      doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(24).text(t(reportTitle), bx, y0, { width: bw });
+      doc.font('Helvetica').fontSize(15).text(sub, bx, y0 + th + 8, { width: bw });
+    }
+    doc.addPage();
 
     type Col = { label: string; w: number; align?: 'left' | 'right' | 'center' };
+    const PAD = 5.6, GAP = 1; // margem interna das células e meio filete branco entre elas
+    const cellBox = (x: number, y: number, w: number, h: number, fill: string) => doc.rect(x + GAP, y + GAP, w - 2 * GAP, h - 2 * GAP).fill(fill);
+    // Texto da célula: a 1ª linha em negrito (Tabela texto TJPR), as complementares em regular
+    const cellParts = (c: string) => { const [head, ...rest] = t(c).split('\n'); return { head, rest: rest.join('\n') }; };
+    const cellHeight = (c: string, w: number) => {
+      const { head, rest } = cellParts(c);
+      let h = doc.font('Helvetica-Bold').fontSize(9).heightOfString(head || ' ', { width: w - 2 * PAD, lineGap: 1.5 });
+      if (rest) h += 1 + doc.font('Helvetica').fontSize(8.2).heightOfString(rest, { width: w - 2 * PAD, lineGap: 1.5 });
+      return h;
+    };
     const drawHead = (cols: Col[]) => {
-      const y = doc.y;
-      doc.fillColor(MUTED).font('Helvetica-Bold').fontSize(7.6);
+      const y = doc.y, h = 24;
       let x = L;
-      cols.forEach((c) => { doc.text(t(c.label), x + 6, y + 2, { width: c.w - 12, align: c.align ?? 'left', lineBreak: false }); x += c.w; });
-      doc.moveTo(L, y + 16).lineTo(L + W, y + 16).lineWidth(0.8).strokeColor(INK).stroke();
-      doc.y = y + 16;
+      cols.forEach((c) => {
+        cellBox(x, y, c.w, h, NAVY);
+        doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(8).text(t(c.label).toUpperCase(), x + PAD, y + 8.5, { width: c.w - 2 * PAD, align: c.align ?? 'center', lineBreak: false });
+        x += c.w;
+      });
+      doc.y = y + h;
     };
     type Row = string[] | { sep: string; count: string };
-    const table = (cols: Col[], data: Row[], opts: { boldFirst?: number } = {}) => {
-      need(70);
+    const rowHeight = (cols: Col[], r: string[]) => Math.max(...r.map((c, k) => cellHeight(c, cols[k].w))) + 2 * PAD + 2;
+    const table = (cols: Col[], data: Row[]) => {
+      // o cabeçalho não fica sozinho no pé da página: vai junto com a 1ª linha (ou com a faixa e a linha seguinte)
+      const first = data[0], second = data[1];
+      need(24 + (!first ? 0 : Array.isArray(first) ? rowHeight(cols, first) : 24 + (Array.isArray(second) ? rowHeight(cols, second) : 0)));
       drawHead(cols);
       data.forEach((r, idx) => {
-        if (!Array.isArray(r)) { // faixa da área de atuação: tom claro, filete lateral e a quantidade de magistrados
-          if (idx > 0) doc.y += 16; // respiro entre uma área e a seguinte
-          if (doc.y + 28 + 44 > limit()) { doc.addPage(); drawHead(cols); }
-          const y = doc.y + 4;
-          doc.rect(L, y, W, 26).fill(BAND);
-          doc.rect(L, y, 3, 26).fill(ACCENT);
-          doc.fillColor(INK).font('Helvetica-Bold').fontSize(10).text(t(r.sep), L + 14, y + 8, { width: W - 140, lineBreak: false });
-          doc.fillColor(SLATE).font('Helvetica').fontSize(8).text(t(r.count), L + W - 120, y + 9, { width: 112, align: 'right', lineBreak: false });
-          doc.y = y + 26;
+        if (!Array.isArray(r)) { // faixa da área de atuação, de ponta a ponta, com a quantidade de magistrados
+          const next = data[idx + 1];
+          if (doc.y + 24 + (Array.isArray(next) ? rowHeight(cols, next) : 0) > limit()) { doc.addPage(); drawHead(cols); }
+          const y = doc.y;
+          cellBox(L, y, W, 24, TEAL);
+          doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(9).text(t(r.sep).toUpperCase(), L + PAD + 2, y + 8, { width: W - 130, lineBreak: false });
+          doc.font('Helvetica').fontSize(8).text(t(r.count), L + W - 120, y + 8.5, { width: 120 - PAD - 2, align: 'right', lineBreak: false });
+          doc.y = y + 24;
           return;
         }
-        const h = Math.max(...r.map((c, k) => { doc.font(k === (opts.boldFirst ?? -1) ? 'Helvetica-Bold' : 'Helvetica').fontSize(9); return doc.heightOfString(t(c), { width: cols[k].w - 12, lineGap: 2 }); })) + 14;
+        const h = rowHeight(cols, r);
         if (doc.y + h > limit()) { doc.addPage(); drawHead(cols); }
         const y = doc.y;
         let x = L;
         r.forEach((c, k) => {
-          const first = k === (opts.boldFirst ?? -1);
-          doc.fillColor(k === 0 && cols[0].label === 'Nº' ? MUTED : INK).font(first ? 'Helvetica-Bold' : 'Helvetica').fontSize(9)
-            .text(t(c), x + 6, y + 7, { width: cols[k].w - 12, align: cols[k].align ?? 'left', lineGap: 2 });
+          cellBox(x, y, cols[k].w, h, CELL);
+          const { head, rest } = cellParts(c);
+          const opts = { width: cols[k].w - 2 * PAD, align: cols[k].align ?? 'left', lineGap: 1.5 } as const;
+          doc.fillColor(INK).font('Helvetica-Bold').fontSize(9).text(head, x + PAD, y + PAD + 1, opts);
+          if (rest) doc.fillColor(GRAY).font('Helvetica').fontSize(8.2).text(rest, x + PAD, doc.y + 1, opts);
           x += cols[k].w;
         });
-        doc.moveTo(L, y + h).lineTo(L + W, y + h).lineWidth(0.4).strokeColor(HAIR).stroke();
         doc.y = y + h;
       });
-      doc.moveDown(1.2);
+      doc.y += 18;
     };
-    const section = (_num: string, title: string, note?: string) => {
-      need(90);
-      doc.y += 14;
-      doc.fillColor(INK).font('Helvetica-Bold').fontSize(13).text(t(title), L, doc.y, { width: W });
-      if (note) doc.fillColor(SLATE).font('Helvetica').fontSize(8.6).text(t(note), L, doc.y + 3, { width: Math.min(W, 420), lineGap: 2 });
-      doc.y += 12;
+    const paragraph = (text: string) => {
+      doc.fillColor(INK).font('Helvetica').fontSize(10.5).text(t(text), L, doc.y, { width: W, align: 'justify', indent: 20, lineGap: 4 });
+      doc.y += 8;
     };
-    const empty = (msg: string) => { doc.fillColor(MUTED).font('Helvetica-Oblique').fontSize(9).text(msg, L, doc.y, { width: W }); doc.moveDown(1); };
+    const section = (title: string, note?: string) => {
+      need(110);
+      doc.y += 10;
+      doc.fillColor(GREEN).font('Helvetica-Bold').fontSize(14).text(t(title), L, doc.y, { width: W });
+      doc.y += 6;
+      if (note) paragraph(note);
+      doc.y += 4;
+    };
+    const empty = (msg: string) => { doc.fillColor(GRAY).font('Helvetica-Oblique').fontSize(10).text(msg, L, doc.y, { width: W }); doc.y += 18; };
     const countOf = (list: { name: string }[]) => { const n = new Set(list.map((r) => r.name.toLowerCase())).size; return `${n} ${n === 1 ? 'magistrado' : 'magistrados'}`; };
 
-    // ---------- Cabeçalho (alinhado à esquerda) ----------
-    doc.fillColor(MUTED).font('Helvetica').fontSize(8.4).text('Tribunal de Justiça do Estado do Paraná  |  Corregedoria-Geral da Justiça', L, doc.y, { width: W });
-    doc.y += 16;
-    doc.fillColor(INK).font('Helvetica-Bold').fontSize(24).text(byArea ? 'Designações por área de atuação' : 'Relatório de designações', L, doc.y, { width: W });
+    // ---------- Abertura (Título 1 TJPR) ----------
+    doc.fillColor(TEAL).font('Helvetica-Bold').fontSize(18).text(t(reportTitle).toUpperCase(), L, doc.y, { width: W });
     doc.y += 4;
-    doc.fillColor(SLATE).font('Helvetica').fontSize(11.5).text(t(`Mutirão de Julgamento${ed ? `  |  ${ed.title}` : ''}`), L, doc.y, { width: W });
-    doc.y += 10;
-    doc.moveTo(L, doc.y).lineTo(L + W, doc.y).lineWidth(1).strokeColor(INK).stroke();
-    doc.fillColor(MUTED).font('Helvetica').fontSize(8).text(`Emitido em ${stamp} (horário de Brasília)`, L, doc.y + 7, { width: W });
-    doc.y += 30;
+    doc.fillColor(GRAY).font('Helvetica-Bold').fontSize(12).text(t(`Mutirão de Julgamento${ed ? ` — ${ed.title}` : ''}`), L, doc.y, { width: W });
+    doc.y += 12;
+    paragraph(`Corregedoria-Geral da Justiça do Tribunal de Justiça do Estado do Paraná. Documento de uso restrito da administração, emitido em ${stamp} (horário de Brasília).`);
 
-    // Resumo em uma linha de números, sem caixas
+    // Resumo em números, no padrão das tabelas do modelo
     if (!byArea) {
-      const stats = [['designações vigentes', rows.length], ['áreas de atuação', areas.length], ['alterações de vinculação', moves.length], ['desistentes', drops.length]] as const;
+      const stats = [['Designações vigentes', rows.length], ['Áreas de atuação', areas.length], ['Alterações de vinculação', moves.length], ['Desistentes', drops.length]] as const;
+      doc.y += 8;
+      need(90);
       const cw = W / stats.length, sy = doc.y;
+      cellBox(L, sy, W, 24, NAVY);
+      doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(8).text('RESUMO', L, sy + 8.5, { width: W, align: 'center', lineBreak: false });
       stats.forEach(([label, n], i) => {
         const x = L + i * cw;
-        if (i > 0) doc.moveTo(x - 8, sy + 2).lineTo(x - 8, sy + 34).lineWidth(0.4).strokeColor(HAIR).stroke();
-        doc.fillColor(INK).font('Helvetica-Bold').fontSize(20).text(String(n), x, sy, { width: cw - 16, lineBreak: false });
-        doc.fillColor(SLATE).font('Helvetica').fontSize(8).text(t(label), x, sy + 25, { width: cw - 16, lineBreak: false });
+        cellBox(x, sy + 24, cw, 54, CELL);
+        doc.fillColor(TEAL).font('Helvetica-Bold').fontSize(18).text(String(n), x, sy + 33, { width: cw, align: 'center', lineBreak: false });
+        doc.fillColor(INK).font('Helvetica-Bold').fontSize(7.6).text(t(label), x + PAD, sy + 58, { width: cw - 2 * PAD, align: 'center', lineBreak: false });
       });
-      doc.y = sy + 44;
+      doc.y = sy + 78 + 12;
     }
 
-    // ---------- 1. Designações vigentes (tabela única, por área e em ordem alfabética) ----------
+    // ---------- 1. Designações vigentes (por área e em ordem alfabética) ----------
+    const desigCols: Col[] = [{ label: 'Nº', w: 30, align: 'center' }, { label: 'Magistrado(a)', w: 135 }, { label: 'Unidade designada', w: W - 225 }, { label: 'Atuação', w: 60 }];
     if (byArea) {
-      section('', 'Designações vigentes', 'Classificadas por área de atuação e, dentro de cada área, em ordem alfabética.');
+      section('Designações vigentes', 'Classificadas por área de atuação e, dentro de cada área, em ordem alfabética.');
       if (rows.length === 0) empty('Nenhuma designação vigente.');
-      areas.forEach((area, i) => {
-        const list = rows.filter((r) => r.area.trim() === area).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR') || a.unit.localeCompare(b.unit, 'pt-BR'));
-        table([{ label: 'Nº', w: 38, align: 'center' }, { label: 'Magistrado(a)', w: 180 }, { label: 'Unidade designada', w: W - 280 }, { label: 'Atuação', w: 62 }],
-          [{ sep: area, count: countOf(list) }, ...list.map((r, k): Row => [String(k + 1), r.name, unitCell(r), acting(r.workType)])], { boldFirst: 1 });
-      });
-    } else {
-    section('1', 'Designações vigentes', 'Classificadas por área de atuação e, dentro de cada área, em ordem alfabética. Permanecem válidas até o registro da desistência.');
-    if (rows.length === 0) empty('Nenhuma designação vigente.');
-    else {
-      const data: Row[] = [];
-      let n = 0;
       areas.forEach((area) => {
         const list = rows.filter((r) => r.area.trim() === area).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR') || a.unit.localeCompare(b.unit, 'pt-BR'));
-        const magistrados = new Set(list.map((r) => r.name.toLowerCase())).size;
-        data.push({ sep: area, count: countOf(list) });
-        list.forEach((r) => data.push([String(++n), r.name, unitCell(r), acting(r.workType)]));
+        table(desigCols, [{ sep: area, count: countOf(list) }, ...list.map((r, k): Row => [String(k + 1), r.name, unitCell(r), acting(r.workType)])]);
       });
-      table([{ label: 'Nº', w: 38, align: 'center' }, { label: 'Magistrado(a)', w: 180 }, { label: 'Unidade designada', w: W - 280 }, { label: 'Atuação', w: 62 }], data, { boldFirst: 1 });
+    } else {
+      section('1. Designações vigentes', 'Classificadas por área de atuação e, dentro de cada área, em ordem alfabética. Permanecem válidas até o registro da desistência.');
+      if (rows.length === 0) empty('Nenhuma designação vigente.');
+      else {
+        const data: Row[] = [];
+        let n = 0;
+        areas.forEach((area) => {
+          const list = rows.filter((r) => r.area.trim() === area).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR') || a.unit.localeCompare(b.unit, 'pt-BR'));
+          data.push({ sep: area, count: countOf(list) });
+          list.forEach((r) => data.push([String(++n), r.name, unitCell(r), acting(r.workType)]));
+        });
+        table(desigCols, data);
+      }
+
+      // ---------- 2. Alterações ----------
+      section('2. Alterações de vinculação', 'Alterações de vara e/ou de área de atuação. A vinculação anterior vale até o dia anterior à data informada; a nova vale a partir dela.');
+      if (moves.length === 0) empty('Nenhuma alteração de vinculação registrada.');
+      else table([{ label: 'Magistrado(a)', w: 105 }, { label: 'Vinculação anterior', w: (W - 105) / 2 }, { label: 'Nova vinculação', w: (W - 105) / 2 }],
+        moves.map((m) => [m.name,
+          `${m.fromUnit}\nÁrea: ${m.area || '—'} · ${acting(m.fromWorkType)} · até ${dmy(dayBefore(m.effectiveDate))}`,
+          `${m.toUnit}\nÁrea: ${m.toArea || m.area || '—'}${m.toArea && m.toArea.trim() !== m.area.trim() ? ' (alterada)' : ''} · ${acting(m.toWorkType)} · a partir de ${dmy(m.effectiveDate)}${m.sei ? `\nSEI: ${m.sei}` : ''}`]));
+
+      // ---------- 3. Desistentes ----------
+      section('3. Desistentes', 'Magistrados que desistiram da participação, com o processo SEI e a data do pedido. Havendo nova inscrição deferida, a desistência vale apenas para o período anterior.');
+      if (drops.length === 0) empty('Nenhuma desistência registrada.');
+      else table([{ label: 'Magistrado(a)', w: 95 }, { label: 'Área e unidade', w: 100 }, { label: 'Processo SEI', w: 100 }, { label: 'Pedido', w: 62 }, { label: 'Situação', w: W - 357 }],
+        drops.map((w) => [w.name, `${w.area}\n${w.unit}`, w.sei || 'A informar', w.requestDate ? dmy(w.requestDate) : 'A informar',
+          w.endedAt ? `Apenas no período, até ${day(w.endedAt)}` : 'Em vigor']));
     }
 
-    }
-    if (!byArea) {
-    // ---------- 3. Alterações ----------
-    section('2', 'Alterações de vinculação', 'Alterações de vara e/ou de área de atuação. A vinculação anterior vale até o dia anterior à data informada; a nova vale a partir dela.');
-    if (moves.length === 0) empty('Nenhuma alteração de vinculação registrada.');
-    else table([{ label: 'Magistrado(a)', w: 120 }, { label: 'Vinculação anterior', w: (W - 120) / 2 }, { label: 'Nova vinculação', w: (W - 120) / 2 }],
-      moves.map((m) => [m.name,
-        `${m.fromUnit}\nÁrea: ${m.area || '—'} · ${acting(m.fromWorkType)} · até ${dmy(dayBefore(m.effectiveDate))}`,
-        `${m.toUnit}\nÁrea: ${m.toArea || m.area || '—'}${m.toArea && m.toArea.trim() !== m.area.trim() ? ' (alterada)' : ''} · ${acting(m.toWorkType)} · a partir de ${dmy(m.effectiveDate)}${m.sei ? `\nSEI: ${m.sei}` : ''}`]), { boldFirst: 0 });
-
-    // ---------- 4. Desistentes ----------
-    section('3', 'Desistentes', 'Magistrados que desistiram da participação, com o processo SEI e a data do pedido. Havendo nova inscrição deferida, a desistência vale apenas para o período anterior.');
-    if (drops.length === 0) empty('Nenhuma desistência registrada.');
-    else table([{ label: 'Magistrado(a)', w: 108 }, { label: 'Área e unidade', w: 108 }, { label: 'Processo SEI', w: 130 }, { label: 'Pedido', w: 62 }, { label: 'Situação', w: W - 408 }],
-      drops.map((w) => [w.name, `${w.area}\n${w.unit}`, w.sei || 'A informar', w.requestDate ? dmy(w.requestDate) : 'A informar',
-        w.endedAt ? `Apenas no período, até ${day(w.endedAt)}` : 'Em vigor']), { boldFirst: 0 });
-
-    }
-    // ---------- Cabeçalho corrido e rodapé ----------
+    // ---------- Rodapé TJPR (páginas internas) e contracapa ----------
     const range = doc.bufferedPageRange();
-    for (let i = 0; i < range.count; i++) {
+    for (let i = 1; i < range.count; i++) {
       doc.switchToPage(range.start + i);
       const m = doc.page.margins; doc.page.margins = { top: 0, bottom: 0, left: m.left, right: m.right }; // permite escrever nas margens
-      if (i > 0) {
-        doc.fillColor(MUTED).font('Helvetica').fontSize(7.6).text(t(`${byArea ? 'Designações por área de atuação' : 'Relatório de designações'}  |  Mutirão de Julgamento`), L, 30, { width: W / 2, lineBreak: false });
-        if (ed) doc.text(t(ed.title), L + W / 2, 30, { width: W / 2, align: 'right', lineBreak: false });
-        doc.moveTo(L, 44).lineTo(L + W, 44).lineWidth(0.4).strokeColor(HAIR).stroke();
-      }
-      const fy = doc.page.height - 42;
-      doc.moveTo(L, fy - 8).lineTo(L + W, fy - 8).lineWidth(0.4).strokeColor(HAIR).stroke();
-      doc.fillColor(MUTED).font('Helvetica').fontSize(7.6)
-        .text('Documento de uso restrito da administração', L, fy, { width: W / 2, lineBreak: false })
-        .text(`Página ${i + 1} de ${range.count}`, L + W / 2, fy, { width: W / 2, align: 'right', lineBreak: false });
+      const fy = doc.page.height - 50;
+      doc.fillColor(FOOT).font('Helvetica-Bold').fontSize(9)
+        .text(t(`${reportTitle}  |  Mutirão de Julgamento — CGJ/TJPR`), L, fy, { width: W - 40, lineBreak: false })
+        .text(String(i + 1), L + W - 40, fy, { width: 40, align: 'right', lineBreak: false });
       doc.page.margins = m;
     }
+    doc.addPage();
+    fullPage(reportArt('contracapa'));
     doc.end();
   });
 
