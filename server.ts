@@ -1476,6 +1476,12 @@ async function startServer() {
     return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR') || a.unit.localeCompare(b.unit, 'pt-BR'));
   }
 
+  /** Mesma pessoa: mesmo nome (sem acento, caixa e tratamentos) ou mesmo e-mail informado */
+  type Person = { key: string; email: string };
+  const personOf = (magistrateId: string, name: string): Person =>
+    ({ key: personKey(name), email: magistrates.find((m) => m.id === magistrateId)?.email?.trim().toLowerCase() ?? '' });
+  const samePerson = (a: Person, b: Person) => a.key === b.key || (!!a.email && a.email === b.email);
+
   /** Desfaz uma vinculação (o painel é calculado a partir delas, então a linha some automaticamente). */
   function undoMatch(id: string, reason = 'Vinculação desfeita') {
     const match = matches.find((m) => m.id === id);
@@ -1789,8 +1795,14 @@ async function startServer() {
   });
 
   app.get('/api/panel/admin', (_req, res) => {
+    // Duplicidade: a mesma pessoa com mais de uma designação vigente (na mesma edição ou em edições diferentes)
+    const rows = panelRows();
+    const people = rows.map((r) => personOf(r.magistrateId, r.name));
     res.json({
-      rows: panelRows(),
+      rows: rows.map((r, i) => {
+        const others = rows.filter((_, j) => j !== i && samePerson(people[i], people[j]));
+        return others.length ? { ...r, duplicates: others.map((o) => ({ editionTitle: o.editionTitle, unit: unitLabel(o), area: o.area })) } : r;
+      }),
       withdrawals: [...withdrawals].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
       transfers: [...transfers].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
       initialEdition: { id: ensureInitialEdition().id, title: INITIAL_EDITION_TITLE },
@@ -2530,12 +2542,18 @@ async function startServer() {
     const edition = req.query.edition === 'all' ? undefined : resolveEdition(req);
     // Inscrições de quem já desistiu antes (mesmo nome, sem acento/caixa) recebem a indicação, para análise do pedido de nova inscrição
     const list = req.query.edition === 'all' ? magistrates : edition ? magistrates.filter((m) => m.editionId === edition.id) : [];
+    // Quem já está vinculado e ativo em outra edição (painel de vinculações): a nova inscrição é indicada como duplicidade
+    const rows = panelRows();
+    const people = rows.map((r) => personOf(r.magistrateId, r.name));
     res.json(list.map((m0) => {
       const m = req.query.edition === 'all' ? { ...m0, editionTitle: editionById(m0.editionId)?.title ?? '' } : m0;
       const w = withdrawals.find((x) => !x.endedAt && personKey(x.name) === personKey(m.name) && !(x.magistrateIds ?? []).includes(m.id) && m.createdAt > x.createdAt);
       // Mesma pessoa (mesmo nome) inscrita mais de uma vez na mesma edição — exceto na edição inicial, onde cada designação é um registro
       const twins = editionById(m.editionId)?.isInitial ? 0 : magistrates.filter((x) => x.editionId === m.editionId && x.id !== m.id && personKey(x.name) === personKey(m.name)).length;
-      return { ...m, ...(w ? { priorWithdrawal: { sei: w.sei, requestDate: w.requestDate } } : {}), ...(twins ? { duplicateCount: twins + 1 } : {}) };
+      const me = personOf(m.id, m.name);
+      const elsewhere = rows.filter((r, i) => r.editionId !== m.editionId && r.magistrateId !== m.id && samePerson(me, people[i]))
+        .map((r) => ({ editionTitle: r.editionTitle, unit: unitLabel(r), area: r.area }));
+      return { ...m, ...(w ? { priorWithdrawal: { sei: w.sei, requestDate: w.requestDate } } : {}), ...(twins ? { duplicateCount: twins + 1 } : {}), ...(elsewhere.length ? { linkedElsewhere: elsewhere } : {}) };
     }));
   });
 

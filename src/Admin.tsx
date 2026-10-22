@@ -672,6 +672,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState('');
   const [areaFilter, setAreaFilter] = useState<string[]>([]);
+  const [onlyDup, setOnlyDup] = useState(false);
   const [dropping, setDropping] = useState<PanelRow | null>(null);
   const [editingWd, setEditingWd] = useState<Withdrawal | null>(null);
   const [excludingRow, setExcludingRow] = useState<PanelRow | null>(null);
@@ -760,7 +761,8 @@ function PanelAdmin({ run, confirm, onChanged }: {
   data.rows.forEach(r => { const k = fold(r.area.trim()); const c = areaMap.get(k); if (c) c.count++; else areaMap.set(k, { label: r.area.trim(), count: 1 }); });
   const areas = [...areaMap.entries()].sort((a, b) => a[1].label.localeCompare(b[1].label, 'pt-BR'));
   const selected = areaFilter.filter(k => areaMap.has(k));
-  const rows = data.rows.filter(r => (selected.length === 0 || selected.includes(fold(r.area.trim()))) && (!term || fold(`${r.name} ${r.area} ${r.unit} ${r.comarca ?? ''} ${r.postit ?? ''}`).includes(term)));
+  const dupCount = data.rows.filter(r => r.duplicates).length;
+  const rows = data.rows.filter(r => (!onlyDup || r.duplicates) && (selected.length === 0 || selected.includes(fold(r.area.trim()))) && (!term || fold(`${r.name} ${r.area} ${r.unit} ${r.comarca ?? ''} ${r.postit ?? ''}`).includes(term)));
 
   return (
     <div className="space-y-6">
@@ -777,7 +779,15 @@ function PanelAdmin({ run, confirm, onChanged }: {
       <div className="card overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-3 p-4 border-b border-line">
           <h4 className="font-semibold text-navy">Vinculações vigentes <span className="text-muted font-normal">({data.rows.length})</span></h4>
-          <input className="input max-w-xs" type="search" placeholder="Buscar por nome, área ou unidade" aria-label="Buscar no painel" value={query} onChange={e => setQuery(e.target.value)} />
+          <div className="flex flex-wrap items-center gap-2">
+            {dupCount > 0 && (
+              <button type="button" aria-pressed={onlyDup} onClick={() => setOnlyDup(!onlyDup)}
+                className={`px-3 py-1.5 rounded-full text-xs border transition-colors ${onlyDup ? 'bg-danger text-white border-danger' : 'bg-surface text-danger border-line hover:border-danger'}`}>
+                Duplicidades ({dupCount})
+              </button>
+            )}
+            <input className="input max-w-xs" type="search" placeholder="Buscar por nome, área ou unidade" aria-label="Buscar no painel" value={query} onChange={e => setQuery(e.target.value)} />
+          </div>
         </div>
         {areas.length > 1 && (
           <div className="p-4 border-b border-line" role="group" aria-label="Filtrar por área de atuação">
@@ -800,7 +810,13 @@ function PanelAdmin({ run, confirm, onChanged }: {
         )}
         <SmartTable bare id="painel" rows={rows} rowKey={r => r.id} defaultSort={{ key: 'name', dir: 'asc' }}
           empty={data.rows.length === 0 ? 'Nenhuma vinculação vigente.' : 'Nenhum resultado para o filtro escolhido.'} cols={[
-            { id: 'name', label: 'Magistrado(a)', sort: r => r.name, tdClass: 'font-medium', render: r => r.name },
+            { id: 'name', label: 'Magistrado(a)', sort: r => r.name, tdClass: 'font-medium', render: r => <>
+              {r.name}
+              {r.duplicates && <div className="text-[11px] font-normal text-danger mt-0.5 leading-snug" title={r.duplicates.map(d => `${d.editionTitle} — ${d.unit} (${d.area})`).join('\n')}>
+                ◦ Duplicidade: {r.duplicates.length + 1} vinculações vigentes
+                {r.duplicates.map((d, i) => <div key={i} className="text-muted">também em {d.unit} ({d.area}) · {d.editionTitle}</div>)}
+              </div>}
+            </> },
             { id: 'area', label: 'Área de atuação', optional: true, filter: r => r.area, sort: r => r.area, tdClass: 'text-muted', render: r => r.area },
             { id: 'pref', label: 'Preferência atendida', optional: true, filter: r => (r.preference === 1 ? '1ª preferência' : r.preference === 2 ? '2ª preferência' : 'Fora das preferências'), sort: r => r.preference || 9, render: r => <>
               <Badge tone={r.preference === 1 ? 'ok' : r.preference === 2 ? 'info' : 'warn'}>{r.preference === 1 ? '1ª preferência' : r.preference === 2 ? '2ª preferência' : 'Fora das preferências'}</Badge>
@@ -2044,6 +2060,10 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
               <div className="font-medium">{m.name}</div>
               {viewAll && <div className="text-[11px] text-bronze">{m.editionTitle}</div>}
               {m.duplicateCount && <div className="text-[11px] text-danger mt-0.5">◦ Mesmo nome inscrito {m.duplicateCount} vezes nesta edição</div>}
+              {m.linkedElsewhere && <div className="text-[11px] text-danger mt-0.5 leading-snug">
+                ◦ Duplicidade: já vinculado(a) e ativo(a) em outra edição
+                {m.linkedElsewhere.map((l, i) => <div key={i} className="text-muted">{l.unit} ({l.area}) · {l.editionTitle}</div>)}
+              </div>}
               {m.priorWithdrawal && <div className="text-[11px] text-warn mt-0.5">Já desistiu antes (SEI {m.priorWithdrawal.sei || 'não informado'}{m.priorWithdrawal.requestDate ? `, pedido em ${m.priorWithdrawal.requestDate.split('-').reverse().join('/')}` : ''}). Se deferida esta inscrição, a desistência passa a valer só para o período anterior.</div>}
             </> },
             { id: 'email', label: 'E-mail', optional: true, hidden: true, sort: m => m.email, render: m => <span className="text-xs text-muted break-all">{m.email || '—'}</span> },

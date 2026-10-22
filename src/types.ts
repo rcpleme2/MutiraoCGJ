@@ -58,6 +58,8 @@ export interface Magistrate {
   priorWithdrawal?: { sei: string; requestDate?: string };
   /** Inscrições com o mesmo nome nesta edição (mesma pessoa) */
   duplicateCount?: number;
+  /** Mesma pessoa já vinculada e ativa em outra edição (painel de vinculações) */
+  linkedElsewhere?: { editionTitle: string; unit: string; area: string }[];
   editionTitle?: string;
   match?: (Match & { unit?: Unit | null }) | null;
 }
@@ -132,6 +134,6 @@ export interface FaqItem {
   updatedAt?: string;
 }
 
-export interface PanelRow { id: string; editionId: string; editionTitle: string; magistrateId: string; unitId: string; startDate?: string; note?: string; postit?: string; postitUpdatedAt?: string; name: string; area: string; unit: string; comarca?: string; separator?: string; workType?: string; firstPreference?: string; secondPreference?: string; preference?: 0 | 1 | 2 }
+export interface PanelRow { id: string; editionId: string; editionTitle: string; magistrateId: string; unitId: string; startDate?: string; note?: string; postit?: string; postitUpdatedAt?: string; name: string; area: string; unit: string; comarca?: string; separator?: string; workType?: string; firstPreference?: string; secondPreference?: string; preference?: 0 | 1 | 2; /** outras designações vigentes da mesma pessoa */ duplicates?: { editionTitle: string; unit: string; area: string }[] }
 export interface Withdrawal { id: string; editionId: string; name: string; area: string; unit: string; sei: string; requestDate?: string; endedAt?: string; createdAt: string }
 export interface Transfer { id: string; editionId: string; magistrateId: string; name: string; area: string; toArea?: string; sei?: string; fromUnit: string; toUnit: string; fromWorkType: string; toWorkType: string; effectiveDate: string; createdAt: string }
