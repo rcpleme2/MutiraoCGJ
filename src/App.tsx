@@ -308,11 +308,19 @@ function AppInner() {
                             <div className="font-serif font-semibold text-navy">{u.unitName}</div>
                             <div className="text-xs text-muted">{u.editionTitle} · {u.comarca} · {u.judgeName}</div>
                           </div>
-                          <Badge tone={u.selection === 'Rejeitada' ? 'danger' : u.selection === 'Em análise' ? 'neutral' : u.status === 'Atendida' ? 'ok' : 'warn'}>
-                            {u.selection === 'Rejeitada' ? 'Rejeitada' : u.selection === 'Em análise' ? 'Em análise' : u.status}
-                          </Badge>
+                          <div className="shrink-0 self-start"><Badge tone={u.selection === 'Rejeitada' ? 'danger' : u.selection === 'Em análise' ? 'neutral' : u.status === 'Atendida' ? 'ok' : 'warn'}>
+                            {u.selection === 'Rejeitada' ? (u.linksElsewhere?.length ? 'Rejeitada nesta edição' : 'Rejeitada') : u.selection === 'Em análise' ? 'Em análise' : u.status}
+                          </Badge></div>
                         </div>
                         <div className="text-xs text-muted">Áreas: <span className="text-ink">{u.areas.join(', ')}</span> · Auxílio: <span className="text-ink">{u.supportNeeded}</span></div>
+                        {u.linksElsewhere && u.linksElsewhere.length > 0 && (
+                          <div className="bg-ok-soft text-ok text-sm rounded-md px-3 py-2.5 space-y-1">
+                            <div>O pedido desta edição foi rejeitado, mas a unidade mantém {u.linksElsewhere.length === 1 ? 'vinculação ativa' : 'vinculações ativas'} de outra edição:</div>
+                            {u.linksElsewhere.map((l, i) => (
+                              <div key={i}>· <strong>{l.editionTitle}</strong> — {l.area}{l.startDate ? ` (a partir de ${l.startDate.split('-').reverse().join('/')})` : ''}</div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>

@@ -89,6 +89,8 @@ export interface Unit {
   carriedToEditionId?: string;
   carriedFromEditionId?: string;
   editionTitle?: string;
+  /** Consulta pública: designações vigentes da mesma unidade em outras edições (quando o pedido desta foi rejeitado) */
+  linksElsewhere?: { editionTitle: string; area: string; startDate?: string }[];
 }
 
 export interface Match {

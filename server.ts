@@ -1512,12 +1512,10 @@ async function startServer() {
    * (designações vigentes de todas as edições), se já há magistrado atuando na comarca e/ou na mesma vara.
    * As vinculações da própria unidade não contam.
    */
-  app.get('/api/panel/presence', (_req, res) => {
-    const rows = panelRows();
-    const unitOf = new Map(units.map((u) => [u.id, u]));
-    // Unidade oficial e comarca de cada inscrição: pelo catálogo; para nomes digitados, pela melhor correspondência inequívoca
+  /** Unidade oficial e comarca de cada inscrição: pelo catálogo; para nomes digitados, pela melhor correspondência inequívoca */
+  function unitResolver() {
     const idOf = new Map<string, string | undefined>(), comarcaOfMap = new Map<string, string>();
-    const resolve = (x: Unit) => {
+    return (x: Unit) => {
       if (!idOf.has(x.id)) {
         const full = fullUnitName(x);
         const id = x.catalogId ?? resolveCatalog(full, canonicalComarca(x.comarca))?.id;
@@ -1526,6 +1524,13 @@ async function startServer() {
       }
       return { id: idOf.get(x.id), comarca: comarcaOfMap.get(x.id) ?? '', full: norm(fullUnitName(x)) };
     };
+  }
+  const sameUnit = (a: { id?: string; full: string }, b: { id?: string; full: string }) => (a.id && b.id ? a.id === b.id : a.full === b.full);
+
+  app.get('/api/panel/presence', (_req, res) => {
+    const rows = panelRows();
+    const unitOf = new Map(units.map((u) => [u.id, u]));
+    const resolve = unitResolver();
     const out: Record<string, { comarca: string; inComarca: { name: string; unit: string }[]; inUnit: { name: string; unit: string }[] }> = {};
     for (const u of units) {
       if (editionById(u.editionId)?.isInitial) continue;
@@ -1536,9 +1541,8 @@ async function startServer() {
         const ru = unitOf.get(r.unitId);
         if (!ru) continue;
         const other = resolve(ru);
-        const sameUnit = me.id && other.id ? me.id === other.id : me.full === other.full;
         const item = { name: r.name, unit: fullUnitName(ru) };
-        if (sameUnit) inUnit.push(item);
+        if (sameUnit(me, other)) inUnit.push(item);
         else if (me.comarca && norm(other.comarca) === norm(me.comarca)) inComarca.push(item);
       }
       if (inComarca.length || inUnit.length) out[u.id] = { comarca: me.comarca, inComarca, inUnit };
@@ -2566,6 +2570,20 @@ async function startServer() {
     }
 
     const titleOf = (id: string) => editionById(id)?.title || '';
+    // Pedido rejeitado numa edição não apaga a designação que a mesma unidade tenha em outra edição: ela é informada à parte.
+    const rejected = matchedUnits.filter((u) => u.selection === 'Rejeitada');
+    const linksElsewhere = new Map<string, { editionTitle: string; area: string; startDate?: string }[]>();
+    if (rejected.length) {
+      const rows = panelRows();
+      const unitOf = new Map(units.map((u) => [u.id, u]));
+      const resolve = unitResolver();
+      for (const u of rejected) {
+        const me = resolve(u);
+        const list = rows.filter((r) => r.editionId !== u.editionId && unitOf.has(r.unitId) && sameUnit(me, resolve(unitOf.get(r.unitId)!)))
+          .map((r) => ({ editionTitle: r.editionTitle, area: r.area, ...(r.startDate ? { startDate: r.startDate } : {}) }));
+        if (list.length) linksElsewhere.set(u.id, list);
+      }
+    }
 
     res.json({
       magistrates: matchedMagistrates.map((mag) => {
@@ -2597,6 +2615,7 @@ async function startServer() {
         selection: u.selection,
         createdAt: u.createdAt,
         editionTitle: titleOf(u.editionId),
+        ...(linksElsewhere.has(u.id) ? { linksElsewhere: linksElsewhere.get(u.id) } : {}),
       })),
     });
   });
