@@ -122,6 +122,9 @@ interface Match {
   startDate?: string;
   /** Observação da designação (ex.: segunda vara citada na planilha original, "acervo cível") */
   note?: string;
+  /** Observação livre da administração, no estilo post-it, exibida no painel de vinculações */
+  postit?: string;
+  postitUpdatedAt?: string;
   status: 'Vinculado' | 'Concluído';
   createdAt: string;
 }
@@ -1453,7 +1456,7 @@ async function startServer() {
   const cleanCell = (t: string) => t.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
 
   /** Uma designação vigente: vinculação real de qualquer edição. Vale até que seja registrada a desistência. */
-  interface PanelRow { id: string; editionId: string; editionTitle: string; magistrateId: string; unitId: string; name: string; area: string; unit: string; comarca?: string; separator?: string; workType?: string; startDate?: string; note?: string; firstPreference?: string; secondPreference?: string; /** qual preferência do magistrado a designação atende (0 = nenhuma) */ preference?: 0 | 1 | 2 }
+  interface PanelRow { id: string; editionId: string; editionTitle: string; magistrateId: string; unitId: string; name: string; area: string; unit: string; comarca?: string; separator?: string; workType?: string; startDate?: string; note?: string; postit?: string; postitUpdatedAt?: string; firstPreference?: string; secondPreference?: string; /** qual preferência do magistrado a designação atende (0 = nenhuma) */ preference?: 0 | 1 | 2 }
 
   /** Tabela única com as designações vigentes de TODAS as edições (as de edições anteriores continuam valendo até a desistência). */
   const preferenceMet = (mag: Magistrate, area: string): 0 | 1 | 2 =>
@@ -1468,7 +1471,7 @@ async function startServer() {
       const un = units.find((u) => u.id === mt.unitId);
       if (!mag || !un || mag.status === 'Desistente' || mag.status === 'Excluído' || isHeaderRow(mag.name, mt.assignedArea, un.unitName)) continue;
       const k = `${panelKey({ name: mag.name, area: mt.assignedArea, unit: un.unitName })}|${mt.editionId}`;
-      if (!seen.has(k)) seen.set(k, { id: mt.id, editionId: mt.editionId, editionTitle: editionById(mt.editionId)?.title ?? '', magistrateId: mag.id, unitId: un.id, name: mag.name, area: mt.assignedArea, unit: un.unitName, comarca: un.comarca, separator: un.separator, workType: mt.workType, startDate: mt.startDate, note: mt.note, firstPreference: mag.firstPreference, secondPreference: mag.secondPreference, preference: preferenceMet(mag, mt.assignedArea) });
+      if (!seen.has(k)) seen.set(k, { id: mt.id, editionId: mt.editionId, editionTitle: editionById(mt.editionId)?.title ?? '', magistrateId: mag.id, unitId: un.id, name: mag.name, area: mt.assignedArea, unit: un.unitName, comarca: un.comarca, separator: un.separator, workType: mt.workType, startDate: mt.startDate, note: mt.note, postit: mt.postit, postitUpdatedAt: mt.postitUpdatedAt, firstPreference: mag.firstPreference, secondPreference: mag.secondPreference, preference: preferenceMet(mag, mt.assignedArea) });
     }
     return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR') || a.unit.localeCompare(b.unit, 'pt-BR'));
   }
@@ -1838,6 +1841,19 @@ async function startServer() {
   app.delete('/api/panel/rows/:id', (req, res) => {
     if (!matches.some((m) => m.id === req.params.id)) return res.status(404).json({ error: 'Vinculação não encontrada.' });
     undoMatch(req.params.id, 'Vinculação desfeita pelo painel');
+    res.json({ success: true });
+  });
+
+  // Observação (post-it) de uma designação do painel; texto vazio apaga.
+  app.put('/api/panel/rows/:id/postit', (req, res) => {
+    const match = matches.find((m) => m.id === req.params.id);
+    if (!match) return res.status(404).json({ error: 'Vinculação não encontrada.' });
+    const text = typeof req.body?.text === 'string' ? req.body.text.replace(/\r\n?/g, '\n').replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, ' ').trim() : '';
+    if (text.length > 1000) return res.status(400).json({ error: 'A observação pode ter no máximo 1.000 caracteres.' });
+    if ((match.postit ?? '') === text) return res.json({ success: true });
+    if (text) { match.postit = text; match.postitUpdatedAt = new Date().toISOString(); }
+    else { delete match.postit; delete match.postitUpdatedAt; }
+    log(match.editionId, 'Administração', 'Vinculação', `Observação ${text ? 'registrada' : 'apagada'} no painel: ${describeMatch(match)}.`);
     res.json({ success: true });
   });
 

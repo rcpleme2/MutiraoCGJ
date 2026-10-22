@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Lock, Unlock, Plus, Trash2, Check, Pencil, Download, Sparkles, LogOut, Radio, Archive, RotateCcw, ChevronDown, ChevronRight, X, ArrowUp, ArrowDown, ArrowUpDown, Filter } from 'lucide-react';
+import { Lock, Unlock, Plus, Trash2, Check, Pencil, Download, Sparkles, LogOut, Radio, Archive, RotateCcw, ChevronDown, ChevronRight, X, ArrowUp, ArrowDown, ArrowUpDown, Filter, StickyNote } from 'lucide-react';
 import { api, download, getToken, reloadCatalog, setToken } from './api';
 import { PREFERENCE_AREAS, Edition, FaqItem, LogEntry, Magistrate, Match, PanelRow, Transfer, Unit, Withdrawal, WorkType, WORK_TYPES } from './types';
 import { CATALOG, COMARCAS, canonicalComarca, catalogById, fullUnitName, unitsOfComarca, type CatalogUnit } from './catalogo-tjpr';
@@ -627,6 +627,42 @@ type RunFn = <T,>(fn: () => Promise<T>, okMessage?: string) => Promise<T | undef
 interface PanelAdminData { rows: PanelRow[]; withdrawals: Withdrawal[]; transfers: Transfer[]; initialEdition: { id: string; title: string } }
 interface PanelPreview { total: number; duplicates: number; errorCount: number; errors: { line: number; message: string }[]; preview: { name: string; area: string; unit: string }[] }
 
+/** Observação no estilo post-it de uma designação do painel: clique para escrever ou editar; texto vazio apaga. */
+function PostIt({ row, run, onSaved }: { row: PanelRow; run: RunFn; onSaved: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState(row.postit ?? '');
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    setSaving(true);
+    const r = await run(() => api(`/panel/rows/${row.id}/postit`, { method: 'PUT', json: { text } }), text.trim() ? 'Observação salva.' : 'Observação apagada.');
+    setSaving(false);
+    if (r) { setEditing(false); onSaved(); }
+  };
+  if (editing) return (
+    <div className="w-56 rounded-sm bg-amber-100 border border-amber-300 shadow-md p-2 -rotate-1">
+      <textarea autoFocus rows={4} maxLength={1000} value={text} onChange={e => setText(e.target.value)} aria-label={`Observação sobre ${row.name}`}
+        onKeyDown={e => { if (e.key === 'Escape') { setEditing(false); setText(row.postit ?? ''); } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) save(); }}
+        className="w-full bg-transparent text-xs text-amber-950 placeholder:text-amber-700/60 resize-y outline-none" placeholder="Escreva uma observação…" />
+      <div className="flex justify-end gap-1 mt-1">
+        <button className="text-[11px] px-2 py-0.5 rounded text-amber-900 hover:bg-amber-200" onClick={() => { setEditing(false); setText(row.postit ?? ''); }}>Cancelar</button>
+        <button className="text-[11px] px-2 py-0.5 rounded bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-50" disabled={saving} onClick={save}>Salvar</button>
+      </div>
+    </div>
+  );
+  if (!row.postit) return (
+    <button className="inline-flex items-center gap-1 text-[11px] text-muted hover:text-amber-700" title="Adicionar observação" onClick={() => { setText(''); setEditing(true); }}>
+      <StickyNote className="w-3.5 h-3.5" /> Observação
+    </button>
+  );
+  return (
+    <button className="block w-56 text-left rounded-sm bg-amber-100 border border-amber-300 shadow-sm hover:shadow-md p-2 -rotate-1 hover:rotate-0 transition" title="Clique para editar a observação"
+      onClick={() => { setText(row.postit ?? ''); setEditing(true); }}>
+      <span className="block text-xs text-amber-950 whitespace-pre-wrap break-words">{row.postit}</span>
+      {row.postitUpdatedAt && <span className="block text-[10px] text-amber-700/80 mt-1">{formatDateTime(row.postitUpdatedAt)}</span>}
+    </button>
+  );
+}
+
 function PanelAdmin({ run, confirm, onChanged }: {
   run: RunFn; confirm: (m: string, label?: string) => Promise<boolean>; onChanged: () => void;
 }) {
@@ -724,7 +760,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
   data.rows.forEach(r => { const k = fold(r.area.trim()); const c = areaMap.get(k); if (c) c.count++; else areaMap.set(k, { label: r.area.trim(), count: 1 }); });
   const areas = [...areaMap.entries()].sort((a, b) => a[1].label.localeCompare(b[1].label, 'pt-BR'));
   const selected = areaFilter.filter(k => areaMap.has(k));
-  const rows = data.rows.filter(r => (selected.length === 0 || selected.includes(fold(r.area.trim()))) && (!term || fold(`${r.name} ${r.area} ${r.unit} ${r.comarca ?? ''}`).includes(term)));
+  const rows = data.rows.filter(r => (selected.length === 0 || selected.includes(fold(r.area.trim()))) && (!term || fold(`${r.name} ${r.area} ${r.unit} ${r.comarca ?? ''} ${r.postit ?? ''}`).includes(term)));
 
   return (
     <div className="space-y-6">
@@ -778,6 +814,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
             { id: 'comarca', label: 'Comarca', optional: true, hidden: true, sort: r => r.comarca ?? '', filter: r => r.comarca ?? '', tdClass: 'text-xs', render: r => r.comarca || '—' },
             { id: 'work', label: 'Atuação', optional: true, filter: r => r.workType ?? '', sort: r => r.workType ?? '', tdClass: 'text-xs', render: r => (r.workType === 'Audiência' ? 'Audiências' : r.workType === 'Sentença' ? 'Sentença' : r.workType) },
             { id: 'edition', label: 'Edição', optional: true, sort: r => r.editionTitle, filter: r => r.editionTitle, tdClass: 'text-xs text-muted', render: r => r.editionTitle },
+            { id: 'postit', label: 'Observações', optional: true, sort: r => r.postit ?? '', filter: r => (r.postit ? 'Com observação' : 'Sem observação'), render: r => <PostIt key={`${r.id}:${r.postit ?? ''}`} row={r} run={run} onSaved={load} /> },
             { id: 'actions', label: '', align: 'right', render: r => (
               <div className="flex flex-wrap justify-end gap-1">
                 <button className="btn-secondary btn-sm" onClick={() => openMove(r)}>Alterar vara/área</button>
