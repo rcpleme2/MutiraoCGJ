@@ -228,6 +228,14 @@ tabela única com as designações:
 - **O que não vai:** e-mail, IP e motivos.
 - **Formato:** JSON por padrão; `?formato=csv` entrega CSV com `;`.
 
+O endereço `GET /api/bi/periodos` (mesma chave) entrega o **histórico de atuação**: um período por magistrado e unidade.
+
+- **Colunas:** `edicao`, `magistrado`, `area`, `unidade`, `comarca`, `atuacao`, `inicio` e `fim` (DD/MM/AAAA; `fim` vazio =
+  em curso), `dias`, `situacao` (Em curso / Encerrado) e `encerramento` (Alteração de vinculação / Desistência / Exclusão).
+- **Regras das datas:** o início é o da vinculação ou, sem data própria, o da edição (campo *Início da atuação* no cadastro
+  da edição; Vinculações iniciais = 15/06/2026). A alteração de vara/área encerra o período na véspera da nova vigência; a
+  desistência, no último dia do mês do pedido; a exclusão, na data do registro.
+
 **1. Criar a chave**
 
 ```bash

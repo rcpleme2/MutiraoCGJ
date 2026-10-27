@@ -27,6 +27,8 @@ export interface Edition {
   createdAt: string;
   isActive: boolean;
   isInitial?: boolean;
+  /** Início da atuação dos magistrados vinculados nesta edição (AAAA-MM-DD) */
+  startDate?: string;
   /** Situação real das inscrições (servidor): chave manual + janela de datas em horário de Brasília */
   registration?: { state: 'open' | 'not_yet' | 'ended' | 'paused' | 'closed'; message: string };
   stats?: EditionStats;
@@ -134,6 +136,8 @@ export interface FaqItem {
   updatedAt?: string;
 }
 
-export interface PanelRow { id: string; editionId: string; editionTitle: string; magistrateId: string; unitId: string; startDate?: string; note?: string; postit?: string; postitUpdatedAt?: string; name: string; area: string; unit: string; comarca?: string; separator?: string; workType?: string; firstPreference?: string; secondPreference?: string; preference?: 0 | 1 | 2; /** outras designações vigentes da mesma pessoa */ duplicates?: { editionTitle: string; unit: string; area: string }[] }
+export interface PanelRow { id: string; editionId: string; editionTitle: string; magistrateId: string; unitId: string; startDate?: string; /** início efetivo (o da vinculação ou o da edição) */ since?: string; note?: string; postit?: string; postitUpdatedAt?: string; name: string; area: string; unit: string; comarca?: string; separator?: string; workType?: string; firstPreference?: string; secondPreference?: string; preference?: 0 | 1 | 2; /** outras designações vigentes da mesma pessoa */ duplicates?: { editionTitle: string; unit: string; area: string }[] }
 export interface Withdrawal { id: string; editionId: string; name: string; area: string; unit: string; sei: string; requestDate?: string; endedAt?: string; createdAt: string }
+/** Período de atuação de um magistrado numa unidade (sem fim = em curso) */
+export interface ActingPeriod { id: string; name: string; editionId: string; editionTitle: string; area: string; unit: string; workType: string; start?: string; end?: string; endReason: '' | 'Alteração de vinculação' | 'Desistência' | 'Exclusão'; sei?: string }
 export interface Transfer { id: string; editionId: string; magistrateId: string; name: string; area: string; toArea?: string; sei?: string; fromUnit: string; toUnit: string; fromWorkType: string; toWorkType: string; effectiveDate: string; createdAt: string }

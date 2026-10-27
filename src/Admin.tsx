@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Lock, Unlock, Plus, Trash2, Check, Pencil, Download, Sparkles, LogOut, Radio, Archive, RotateCcw, ChevronDown, ChevronRight, X, ArrowUp, ArrowDown, ArrowUpDown, Filter, StickyNote } from 'lucide-react';
 import { api, download, getToken, reloadCatalog, setToken } from './api';
-import { PREFERENCE_AREAS, Edition, FaqItem, LogEntry, Magistrate, Match, PanelRow, Transfer, Unit, Withdrawal, WorkType, WORK_TYPES } from './types';
+import { PREFERENCE_AREAS, ActingPeriod, Edition, FaqItem, LogEntry, Magistrate, Match, PanelRow, Transfer, Unit, Withdrawal, WorkType, WORK_TYPES } from './types';
 import { CATALOG, COMARCAS, canonicalComarca, catalogById, fullUnitName, unitsOfComarca, type CatalogUnit } from './catalogo-tjpr';
 import { Badge, EmptyRow, Field, Modal, Notice, formatDate, formatDateTime, magistrateTone, useFeedback } from './ui';
 import { MagistrateForm, UnitForm } from './Forms';
@@ -308,6 +308,7 @@ function EditionForm({ initial, onSubmit }: { initial?: Edition; onSubmit: (v: a
     closingDate: initial ? toLocalInput(initial.closingDate) : '',
     isRegistrationOpen: initial?.isRegistrationOpen ?? true,
     activate: !initial,
+    startDate: initial?.startDate ?? '',
   });
   return (
     <form className="space-y-4" onSubmit={e => { e.preventDefault(); onSubmit(f); }}>
@@ -321,6 +322,9 @@ function EditionForm({ initial, onSubmit }: { initial?: Edition; onSubmit: (v: a
         <Field label="Abertura (horário de Brasília)"><input required type="datetime-local" className="input" value={f.openingDate} onChange={e => setF({ ...f, openingDate: e.target.value })} /></Field>
         <Field label="Encerramento (horário de Brasília)"><input required type="datetime-local" className="input" value={f.closingDate} onChange={e => setF({ ...f, closingDate: e.target.value })} /></Field>
       </div>
+      <Field label="Início da atuação dos magistrados (vale para as vinculações sem data própria)">
+        <input type="date" className="input" value={f.startDate} onChange={e => setF({ ...f, startDate: e.target.value })} />
+      </Field>
       {initial ? (
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={f.isRegistrationOpen} onChange={e => setF({ ...f, isRegistrationOpen: e.target.checked })} /> Inscrições públicas habilitadas <span className="text-muted">(as datas acima também precisam estar vigentes)</span></label>
       ) : (
@@ -624,7 +628,10 @@ function FaqForm({ initial, onSubmit }: { initial?: FaqItem; onSubmit: (v: { que
 
 /* ---------- Painel de vinculações (restrito): tabela única, desistências e relatório em PDF ---------- */
 type RunFn = <T,>(fn: () => Promise<T>, okMessage?: string) => Promise<T | undefined>;
-interface PanelAdminData { rows: PanelRow[]; withdrawals: Withdrawal[]; transfers: Transfer[]; initialEdition: { id: string; title: string } }
+interface PanelAdminData { rows: PanelRow[]; withdrawals: Withdrawal[]; transfers: Transfer[]; periods: ActingPeriod[]; initialEdition: { id: string; title: string } }
+const dmy = (ymd: string) => ymd.split('-').reverse().join('/');
+/** Desistência: a atuação vai até o último dia do mês do pedido */
+const monthEnd = (ymd: string) => new Date(Date.UTC(Number(ymd.slice(0, 4)), Number(ymd.slice(5, 7)), 0)).toISOString().slice(0, 10);
 interface PanelPreview { total: number; duplicates: number; errorCount: number; errors: { line: number; message: string }[]; preview: { name: string; area: string; unit: string }[] }
 
 /** Observação no estilo post-it de uma designação do painel: clique para escrever ou editar; texto vazio apaga. */
@@ -684,6 +691,8 @@ function PanelAdmin({ run, confirm, onChanged }: {
   const [moveSei, setMoveSei] = useState('');
   const [moveDate, setMoveDate] = useState('');
   const [sei, setSei] = useState('');
+  const [startEdit, setStartEdit] = useState<{ row: PanelRow; date: string } | null>(null);
+  const [histQuery, setHistQuery] = useState('');
   const today = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Sao_Paulo' });
   const [requestDate, setRequestDate] = useState(today());
 
@@ -739,6 +748,13 @@ function PanelAdmin({ run, confirm, onChanged }: {
     const r = await run(() => api(`/matches/${moving.row.id}`, { method: 'PUT', json: body }), 'Vinculação alterada.');
     if (r) { setMoving(null); await load(); onChanged(); }
   };
+  const submitStart = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!startEdit) return;
+    const r = await run(() => api(`/matches/${startEdit.row.id}`, { method: 'PUT', json: { startDate: startEdit.date } }), 'Data de início atualizada.');
+    if (r) { setStartEdit(null); await load(); }
+  };
+  const exportPeriods = () => run(() => download('/panel/periods.xlsx', 'historico-atuacao.xlsx'));
   const undoWithdrawal = async (w: Withdrawal) => {
     if (!(await confirm(`Desfazer a desistência de ${w.name}? O magistrado volta à lista de espera; as designações anteriores não são restauradas.`, 'Desfazer desistência'))) return;
     await run(() => api(`/panel/withdrawals/${w.id}`, { method: 'DELETE' }), 'Registro de desistência desfeito.');
@@ -825,7 +841,9 @@ function PanelAdmin({ run, confirm, onChanged }: {
             { id: 'unit', label: 'Unidade', filter: r => fullUnitName({ unitName: r.unit, comarca: r.comarca, separator: r.separator }), sort: r => fullUnitName({ unitName: r.unit, comarca: r.comarca, separator: r.separator }), render: r => <>
               {fullUnitName({ unitName: r.unit, comarca: r.comarca, separator: r.separator })}
               {r.note && <div className="text-xs text-muted">Obs.: {r.note}</div>}
-              {r.startDate && <div className="text-xs text-bronze">a partir de {r.startDate.split('-').reverse().join('/')}</div>}
+              <button type="button" className="block text-xs text-bronze hover:underline" title="Corrigir a data de início da atuação" onClick={() => setStartEdit({ row: r, date: r.since ?? '' })}>
+                {r.since ? `desde ${dmy(r.since)}` : 'início a informar'} <Pencil className="w-3 h-3 inline" />
+              </button>
             </> },
             { id: 'comarca', label: 'Comarca', optional: true, hidden: true, sort: r => r.comarca ?? '', filter: r => r.comarca ?? '', tdClass: 'text-xs', render: r => r.comarca || '—' },
             { id: 'work', label: 'Atuação', optional: true, filter: r => r.workType ?? '', sort: r => r.workType ?? '', tdClass: 'text-xs', render: r => (r.workType === 'Audiência' ? 'Audiências' : r.workType === 'Sentença' ? 'Sentença' : r.workType) },
@@ -864,10 +882,36 @@ function PanelAdmin({ run, confirm, onChanged }: {
             { id: 'unit', label: 'Unidade', sort: w => w.unit, render: w => w.unit },
             { id: 'sei', label: 'SEI', sort: w => w.sei, tdClass: 'font-mono text-xs', render: w => w.sei || <span className="text-warn font-sans">A informar</span> },
             { id: 'date', label: 'Pedido em', sort: w => w.requestDate ?? '', tdClass: 'text-muted whitespace-nowrap', render: w => (w.requestDate ? w.requestDate.split('-').reverse().join('/') : <span className="text-warn">A informar</span>) },
+            { id: 'until', label: 'Atuou até', sort: w => w.requestDate ?? '', tdClass: 'text-muted whitespace-nowrap', render: w => (w.requestDate ? dmy(monthEnd(w.requestDate)) : <span className="text-warn">A informar</span>) },
             { id: 'situation', label: 'Situação', sort: w => (w.endedAt ? 1 : 0), tdClass: 'text-xs', render: w => (w.endedAt ? <span className="text-warn">Apenas no período, até {formatDate(w.endedAt)}<br />(nova inscrição deferida)</span> : <span className="text-muted">Em vigor</span>) },
             { id: 'actions', label: '', align: 'right', tdClass: 'whitespace-nowrap', render: w => <><button className="btn-secondary btn-sm mr-1" onClick={() => setEditingWd({ ...w })}><Pencil className="w-3.5 h-3.5" /> Editar</button><button className="btn-secondary btn-sm" onClick={() => undoWithdrawal(w)}><RotateCcw className="w-3.5 h-3.5" /> Desfazer</button></> },
           ]} />
         )}
+      </div>
+
+      <div className="card overflow-hidden">
+        <div className="flex flex-wrap items-center justify-between gap-3 p-4 border-b border-line">
+          <h4 className="font-semibold text-navy">Histórico de atuação <span className="text-muted font-normal">({data.periods.length} períodos)</span></h4>
+          <div className="flex flex-wrap items-center gap-2">
+            <input className="input max-w-xs" type="search" placeholder="Buscar por nome ou unidade" aria-label="Buscar no histórico" value={histQuery} onChange={e => setHistQuery(e.target.value)} />
+            <button className="btn-secondary btn-sm" onClick={exportPeriods}><Download className="w-4 h-4" /> Planilha (XLSX)</button>
+          </div>
+        </div>
+        <p className="px-4 pt-3 text-xs text-muted">Um período por magistrado e unidade. A alteração de vara/área encerra o período na véspera da nova vigência; a desistência, no último dia do mês do pedido; a exclusão, na data em que foi registrada. Sem data própria, o início é o da edição.</p>
+        {(() => {
+          const ht = fold(histQuery.trim());
+          const list = data.periods.filter(p => !ht || fold(`${p.name} ${p.unit} ${p.area}`).includes(ht));
+          return (
+            <SmartTable bare id="historico" rows={list} rowKey={p => p.id} empty={data.periods.length ? 'Nenhum resultado para a busca.' : 'Nenhum período registrado.'} defaultSort={{ key: 'name', dir: 'asc' }} cols={[
+              { id: 'name', label: 'Magistrado(a)', sort: p => `${p.name}|${p.start ?? ''}`, tdClass: 'font-medium', render: p => p.name },
+              { id: 'unit', label: 'Unidade', sort: p => p.unit, render: p => <>{p.unit}<div className="text-xs text-muted">{p.area}{p.workType ? ` · ${p.workType === 'Audiência' ? 'Audiências' : p.workType}` : ''}</div></> },
+              { id: 'edition', label: 'Edição', optional: true, sort: p => p.editionTitle, filter: p => p.editionTitle, tdClass: 'text-xs text-muted', render: p => p.editionTitle },
+              { id: 'start', label: 'Início', sort: p => p.start ?? '', tdClass: 'whitespace-nowrap', render: p => (p.start ? dmy(p.start) : <span className="text-warn">A informar</span>) },
+              { id: 'end', label: 'Fim', sort: p => p.end ?? (p.endReason ? '0' : '9'), tdClass: 'whitespace-nowrap', render: p => (p.end ? dmy(p.end) : p.endReason ? <span className="text-warn">A informar</span> : <Badge tone="ok">Em curso</Badge>) },
+              { id: 'reason', label: 'Encerramento', filter: p => p.endReason || 'Em curso', sort: p => p.endReason, tdClass: 'text-xs', render: p => <>{p.endReason || '—'}{p.sei && <div className="text-muted font-mono">SEI {p.sei}</div>}</> },
+            ]} />
+          );
+        })()}
       </div>
 
       <details className="card p-5">
@@ -965,6 +1009,21 @@ function PanelAdmin({ run, confirm, onChanged }: {
         </Modal>
       )}
 
+      {startEdit && (
+        <Modal title="Data de início da atuação" onClose={() => setStartEdit(null)}>
+          <form onSubmit={submitStart} className="space-y-4">
+            <p className="text-sm text-muted"><strong className="text-ink">{startEdit.row.name}</strong> em <strong className="text-ink">{fullUnitName({ unitName: startEdit.row.unit, comarca: startEdit.row.comarca, separator: startEdit.row.separator })}</strong>. Use para corrigir a data (ex.: substituto que começou depois). Para mudar de vara ou área, use "Alterar vara/área".</p>
+            <Field label="Atua desde (em branco = início da edição)">
+              <input className="input" type="date" autoFocus value={startEdit.date} onChange={e => setStartEdit({ ...startEdit, date: e.target.value })} />
+            </Field>
+            <div className="flex justify-end gap-2">
+              <button type="button" className="btn-ghost" onClick={() => setStartEdit(null)}>Cancelar</button>
+              <button className="btn-primary">Salvar</button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
       {excludingRow && (
         <ExcludeModal name={excludingRow.name} onClose={() => setExcludingRow(null)} onSubmit={async (reason, sei) => {
           if (await run(() => api(`/magistrates/${excludingRow.magistrateId}/exclude`, { method: 'POST', json: { reason, sei } }), 'Magistrado excluído.')) { setExcludingRow(null); await load(); onChanged(); }
@@ -981,6 +1040,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
             <Field label="Data do pedido de desistência">
               <input className="input" type="date" value={editingWd.requestDate ?? ''} onChange={e => setEditingWd({ ...editingWd, requestDate: e.target.value })} />
             </Field>
+            {editingWd.requestDate && <p className="text-xs text-muted -mt-2">Atuação até <strong className="text-ink">{dmy(monthEnd(editingWd.requestDate))}</strong>.</p>}
             <div className="flex justify-end gap-2">
               <button type="button" className="btn-ghost" onClick={() => setEditingWd(null)}>Cancelar</button>
               <button className="btn-primary">Salvar</button>
@@ -999,6 +1059,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
             <Field label="Data do pedido de desistência (pode ser informada depois)">
               <input className="input" type="date" value={requestDate} max={today()} onChange={e => setRequestDate(e.target.value)} />
             </Field>
+            {requestDate && <p className="text-xs text-muted -mt-2">A atuação fica registrada até <strong className="text-ink">{dmy(monthEnd(requestDate))}</strong> (último dia do mês do pedido).</p>}
             <div className="flex justify-end gap-2">
               <button type="button" className="btn-ghost" onClick={() => setDropping(null)}>Cancelar</button>
               <button className="btn-primary">Registrar desistência</button>
@@ -2011,7 +2072,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
           <SmartTable id="edicoes" picker={false} rows={editions} rowKey={e => e.id} empty="Nenhuma edição." defaultSort={{ key: 'created', dir: 'desc' }}
             rowClass={e => (e.id === selectedId ? 'bg-bronze-soft/40' : '')} cols={[
             { id: 'title', label: 'Edição', sort: e => e.title, render: e => <><div className="font-medium">{e.title}</div><div className="text-xs text-muted">Criada em {formatDate(e.createdAt)}</div></> },
-            { id: 'created', label: 'Período', sort: e => e.openingDate, tdClass: 'text-muted text-xs', render: e => <>{formatDate(e.openingDate)} a {formatDate(e.closingDate)}</> },
+            { id: 'created', label: 'Período', sort: e => e.openingDate, tdClass: 'text-muted text-xs', render: e => <>{formatDate(e.openingDate)} a {formatDate(e.closingDate)}<div className={e.startDate ? 'text-bronze' : 'text-warn'}>Início da atuação: {e.startDate ? dmy(e.startDate) : 'a informar'}</div></> },
             { id: 'stats', label: 'Inscritos', sort: e => e.stats?.magistrates ?? 0, tdClass: 'text-xs text-muted', render: e => <>{e.stats?.magistrates ?? 0} magistrados<br />{e.stats?.units ?? 0} unidades · {e.stats?.matches ?? 0} vínculos</> },
             { id: 'status', label: 'Situação', sort: e => e.status, tdClass: 'space-y-1', render: e => <>
               <div><Badge tone={e.status === 'Encerrada' ? 'neutral' : 'ok'}>{e.status}</Badge></div>

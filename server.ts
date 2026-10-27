@@ -36,6 +36,8 @@ interface Edition {
   createdAt: string;
   /** Edição "Vinculações iniciais": guarda as designações já existentes; aceita registros com dados em branco */
   isInitial?: boolean;
+  /** Início da atuação dos magistrados vinculados nesta edição (AAAA-MM-DD); vale para as vinculações sem data própria */
+  startDate?: string;
 }
 
 interface Magistrate {
@@ -65,7 +67,7 @@ interface Magistrate {
   excludedBy?: string;
   statusBeforeExclusion?: MagistrateStatus;
   /** Designações que o magistrado tinha quando foi excluído (as vinculações são desfeitas na exclusão) */
-  excludedFrom?: { editionId: string; area: string; unit: string; workType?: string }[];
+  excludedFrom?: { editionId: string; area: string; unit: string; workType?: string; /** início da atuação, se diferente do da edição */ startDate?: string }[];
   createdAt: string;
   status: MagistrateStatus;
 }
@@ -385,11 +387,13 @@ let faq: FaqItem[] = [];
 /** Painel de vinculações (uso restrito da administração): linhas coladas de planilha (Nome / Área / Designado Para). */
 interface PanelEntry { id: string; editionId: string; name: string; area: string; unit: string; createdAt: string }
 let panelEntries: PanelEntry[] = [];
-/** Desistências de participação, com o número do processo SEI em que constam. */
-interface Withdrawal { id: string; editionId: string; name: string; area: string; unit: string; sei: string; /** data do pedido de desistência (AAAA-MM-DD) */ requestDate?: string; magistrateIds?: string[]; /** nova inscrição deferida: a desistência vale só até esta data */ endedAt?: string; returnedMagistrateId?: string; createdAt: string }
+/** Desistências de participação, com o número do processo SEI em que constam. A atuação vai até o último dia do mês do pedido. */
+interface Withdrawal { id: string; editionId: string; name: string; area: string; unit: string; sei: string; /** data do pedido de desistência (AAAA-MM-DD) */ requestDate?: string; magistrateIds?: string[]; /** nova inscrição deferida: a desistência vale só até esta data */ endedAt?: string; returnedMagistrateId?: string;
+  /** Designações que o magistrado tinha ao desistir, uma por unidade (registros antigos não têm: usam area/unit) */
+  designations?: { editionId: string; area: string; unit: string; workType?: string; startDate?: string }[]; createdAt: string }
 let withdrawals: Withdrawal[] = [];
 /** Alteração de vinculação (troca de unidade): a vinculação antiga vale até o dia anterior à data informada; a nova, a partir dela. */
-interface Transfer { id: string; editionId: string; magistrateId: string; name: string; /** área de atuação anterior */ area: string; /** nova área de atuação (ausente em registros antigos: a área não mudou) */ toArea?: string; /** processo SEI da alteração (opcional) */ sei?: string; fromUnit: string; toUnit: string; fromWorkType: string; toWorkType: string; effectiveDate: string; createdAt: string }
+interface Transfer { id: string; editionId: string; magistrateId: string; name: string; /** início da atuação na unidade anterior, se diferente do da edição */ fromStartDate?: string; /** área de atuação anterior */ area: string; /** nova área de atuação (ausente em registros antigos: a área não mudou) */ toArea?: string; /** processo SEI da alteração (opcional) */ sei?: string; fromUnit: string; toUnit: string; fromWorkType: string; toWorkType: string; effectiveDate: string; createdAt: string }
 let transfers: Transfer[] = [];
 /** Pares de nomes parecidos que a administração indicou NÃO serem a mesma pessoa (chave "nomeA|nomeB") */
 let dupDismissed: string[] = [];
@@ -668,6 +672,12 @@ function resolveEdition(req: express.Request): Edition | undefined {
 // ---------- Janela de inscrições ----------
 // As datas das edições são horário de Brasília (sem horário de verão desde 2019); o servidor roda em UTC.
 const BRT = '-03:00';
+const isYmd = (d: unknown): d is string => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d) && !Number.isNaN(Date.parse(`${d}T00:00:00${BRT}`)) && d >= '2000-01-01';
+/** Dia anterior / último dia do mês de uma data AAAA-MM-DD */
+const ymdDayBefore = (ymd: string) => { const d = new Date(`${ymd}T00:00:00Z`); d.setUTCDate(d.getUTCDate() - 1); return d.toISOString().slice(0, 10); };
+const ymdMonthEnd = (ymd: string) => new Date(Date.UTC(Number(ymd.slice(0, 4)), Number(ymd.slice(5, 7)), 0)).toISOString().slice(0, 10);
+/** Data (AAAA-MM-DD) de um instante ISO no horário de Brasília */
+const ymdBrt = (iso: string) => new Date(iso).toLocaleDateString('sv-SE', { timeZone: 'America/Sao_Paulo' });
 type RegistrationState = 'open' | 'not_yet' | 'ended' | 'paused' | 'closed';
 function registrationState(e: Edition): RegistrationState {
   if (e.status === 'Encerrada') return 'closed';
@@ -878,6 +888,8 @@ function saveState(): Promise<boolean> {
 // ---------- Edição "Vinculações iniciais" ----------
 // Guarda as designações já existentes (importadas de planilha). Nunca é a edição vigente do portal e não recebe inscrições públicas.
 const INITIAL_EDITION_TITLE = 'Vinculações iniciais';
+/** Início da atuação das vinculações iniciais (as demais edições têm a data definida no cadastro da edição) */
+const INITIAL_START_DATE = '2026-06-15';
 const normName = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
 
 function ensureInitialEdition(): Edition {
@@ -894,6 +906,7 @@ function ensureInitialEdition(): Edition {
   }
   ed.isInitial = true;
   ed.isRegistrationOpen = false;
+  if (!ed.startDate) ed.startDate = INITIAL_START_DATE;
   return ed;
 }
 
@@ -1024,6 +1037,7 @@ async function startServer() {
   await loadState();
   normalizeLegacy();
   migratePanelEntries();
+  ensureInitialEdition();
   await saveState();
   // Perdeu o celular do autenticador? Defina RESET_ADMIN_2FA=true, publique, entre (será pedido novo cadastro) e remova a variável.
   if (process.env.RESET_ADMIN_2FA === 'true' && adminTotpSecret) {
@@ -1081,7 +1095,7 @@ async function startServer() {
     if (publicRead || login) return next();
     // Chamada do Cloud Scheduler: autenticada pelo token próprio, conferido na rota
     // Leitura pelo Qlik Sense (REST Connector): autenticada pela chave BI_TOKEN, conferida na rota
-    if (req.method === 'GET' && req.path === '/bi/designacoes') {
+    if (req.method === 'GET' && (req.path === '/bi/designacoes' || req.path === '/bi/periodos')) {
       if (rateLimited(`bi:${ip}`, 60, 60 * 60_000)) return res.status(429).json({ error: 'Muitas chamadas.' });
       return next();
     }
@@ -1312,10 +1326,11 @@ async function startServer() {
   });
 
   app.post('/api/editions', (req, res) => {
-    const { title, description, openingDate, closingDate, activate } = req.body || {};
+    const { title, description, openingDate, closingDate, activate, startDate } = req.body || {};
     if (!title || !openingDate || !closingDate) {
       return res.status(400).json({ error: 'Informe título, abertura e encerramento da edição.' });
     }
+    if (startDate && !isYmd(startDate)) return res.status(400).json({ error: 'Data de início da atuação inválida.' });
     const edition: Edition = {
       id: newId('ed'),
       title,
@@ -1325,6 +1340,7 @@ async function startServer() {
       isRegistrationOpen: true,
       status: 'Em andamento',
       createdAt: new Date().toISOString(),
+      ...(startDate ? { startDate } : {}),
     };
     editions.push(edition);
     log(edition.id, 'Administração', 'Edição', `Edição "${edition.title}" criada.`);
@@ -1343,8 +1359,13 @@ async function startServer() {
     const edition = editionById(req.params.id);
     if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
 
-    const { title, description, openingDate, closingDate, isRegistrationOpen } = req.body || {};
+    const { title, description, openingDate, closingDate, isRegistrationOpen, startDate } = req.body || {};
+    if (typeof startDate === 'string' && startDate && !isYmd(startDate)) return res.status(400).json({ error: 'Data de início da atuação inválida.' });
     const changes: string[] = [];
+    if (typeof startDate === 'string' && startDate !== (edition.startDate ?? '')) {
+      changes.push(`início da atuação para ${startDate ? startDate.split('-').reverse().join('/') : 'não informado'}`);
+      edition.startDate = startDate || undefined;
+    }
     if (title && title !== edition.title) { changes.push(`título para "${title}"`); edition.title = title; }
     if (description !== undefined && description !== edition.description) { changes.push('descrição'); edition.description = description; }
     if (openingDate && openingDate !== edition.openingDate) { changes.push('data de abertura'); edition.openingDate = openingDate; }
@@ -1456,7 +1477,7 @@ async function startServer() {
   const cleanCell = (t: string) => t.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
 
   /** Uma designação vigente: vinculação real de qualquer edição. Vale até que seja registrada a desistência. */
-  interface PanelRow { id: string; editionId: string; editionTitle: string; magistrateId: string; unitId: string; name: string; area: string; unit: string; comarca?: string; separator?: string; workType?: string; startDate?: string; note?: string; postit?: string; postitUpdatedAt?: string; firstPreference?: string; secondPreference?: string; /** qual preferência do magistrado a designação atende (0 = nenhuma) */ preference?: 0 | 1 | 2 }
+  interface PanelRow { id: string; editionId: string; editionTitle: string; magistrateId: string; unitId: string; name: string; area: string; unit: string; comarca?: string; separator?: string; workType?: string; startDate?: string; /** início efetivo da atuação: o da vinculação ou, sem ele, o da edição */ since?: string; note?: string; postit?: string; postitUpdatedAt?: string; firstPreference?: string; secondPreference?: string; /** qual preferência do magistrado a designação atende (0 = nenhuma) */ preference?: 0 | 1 | 2 }
 
   /** Tabela única com as designações vigentes de TODAS as edições (as de edições anteriores continuam valendo até a desistência). */
   const preferenceMet = (mag: Magistrate, area: string): 0 | 1 | 2 =>
@@ -1471,10 +1492,59 @@ async function startServer() {
       const un = units.find((u) => u.id === mt.unitId);
       if (!mag || !un || mag.status === 'Desistente' || mag.status === 'Excluído' || isHeaderRow(mag.name, mt.assignedArea, un.unitName)) continue;
       const k = `${panelKey({ name: mag.name, area: mt.assignedArea, unit: un.unitName })}|${mt.editionId}`;
-      if (!seen.has(k)) seen.set(k, { id: mt.id, editionId: mt.editionId, editionTitle: editionById(mt.editionId)?.title ?? '', magistrateId: mag.id, unitId: un.id, name: mag.name, area: mt.assignedArea, unit: un.unitName, comarca: un.comarca, separator: un.separator, workType: mt.workType, startDate: mt.startDate, note: mt.note, postit: mt.postit, postitUpdatedAt: mt.postitUpdatedAt, firstPreference: mag.firstPreference, secondPreference: mag.secondPreference, preference: preferenceMet(mag, mt.assignedArea) });
+      if (!seen.has(k)) seen.set(k, { id: mt.id, editionId: mt.editionId, editionTitle: editionById(mt.editionId)?.title ?? '', magistrateId: mag.id, unitId: un.id, name: mag.name, area: mt.assignedArea, unit: un.unitName, comarca: un.comarca, separator: un.separator, workType: mt.workType, startDate: mt.startDate, since: mt.startDate ?? editionById(mt.editionId)?.startDate, note: mt.note, postit: mt.postit, postitUpdatedAt: mt.postitUpdatedAt, firstPreference: mag.firstPreference, secondPreference: mag.secondPreference, preference: preferenceMet(mag, mt.assignedArea) });
     }
     return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR') || a.unit.localeCompare(b.unit, 'pt-BR'));
   }
+
+  /**
+   * Histórico de atuação: um período por magistrado e unidade, com início e fim.
+   * - em curso: as designações vigentes (início = o da vinculação ou o da edição);
+   * - encerrados por alteração de vara/área (até a véspera da nova vigência), por desistência
+   *   (até o último dia do mês do pedido) ou por exclusão (até a data da exclusão).
+   * Registros antigos sem data de início própria usam a vigência da alteração que levou o magistrado à unidade ou o início da edição.
+   */
+  interface ActingPeriod { id: string; name: string; editionId: string; editionTitle: string; area: string; unit: string; workType: string; start?: string; end?: string; endReason: '' | 'Alteração de vinculação' | 'Desistência' | 'Exclusão'; sei?: string }
+  function actingPeriods(): ActingPeriod[] {
+    const title = (id: string) => editionById(id)?.title ?? '';
+    // Início não registrado: vigência da última alteração que levou a pessoa a esta unidade (até a data final), senão o início da edição
+    const startOf = (editionId: string, explicit: string | undefined, who: { ids: string[]; name: string }, unit: string, until?: string) => {
+      if (explicit) return explicit;
+      const key = personKey(who.name);
+      const arrival = transfers.filter((t) => (who.ids.includes(t.magistrateId) || personKey(t.name) === key) && norm(t.toUnit) === norm(unit) && (!until || t.effectiveDate <= until))
+        .sort((a, b) => b.effectiveDate.localeCompare(a.effectiveDate))[0];
+      return arrival?.effectiveDate ?? editionById(editionId)?.startDate;
+    };
+    const out: ActingPeriod[] = [];
+    for (const r of panelRows()) {
+      out.push({ id: r.id, name: r.name, editionId: r.editionId, editionTitle: r.editionTitle, area: r.area, unit: unitLabel(r), workType: r.workType ?? '', start: r.since, endReason: '' });
+    }
+    for (const t of transfers) {
+      const end = ymdDayBefore(t.effectiveDate);
+      out.push({ id: `${t.id}:de`, name: t.name, editionId: t.editionId, editionTitle: title(t.editionId), area: t.area, unit: t.fromUnit, workType: t.fromWorkType,
+        start: startOf(t.editionId, t.fromStartDate, { ids: [t.magistrateId], name: t.name }, t.fromUnit, end), end, endReason: 'Alteração de vinculação', ...(t.sei ? { sei: t.sei } : {}) });
+    }
+    for (const w of withdrawals) {
+      const end = w.requestDate ? ymdMonthEnd(w.requestDate) : undefined;
+      const held = w.designations ?? [{ editionId: w.editionId, area: w.area, unit: w.unit }];
+      held.forEach((h, i) => out.push({ id: `${w.id}:${i}`, name: w.name, editionId: h.editionId, editionTitle: title(h.editionId), area: h.area, unit: h.unit, workType: h.workType ?? '',
+        start: startOf(h.editionId, h.startDate, { ids: w.magistrateIds ?? [], name: w.name }, h.unit, end), end, endReason: 'Desistência', ...(w.sei ? { sei: w.sei } : {}) }));
+    }
+    for (const m of magistrates) {
+      if (m.status !== 'Excluído' || !m.excludedFrom) continue;
+      const end = m.excludedAt ? ymdBrt(m.excludedAt) : undefined;
+      m.excludedFrom.forEach((h, i) => out.push({ id: `${m.id}:exc${i}`, name: m.name, editionId: h.editionId, editionTitle: title(h.editionId), area: h.area, unit: h.unit, workType: h.workType ?? '',
+        start: startOf(h.editionId, h.startDate, { ids: [m.id], name: m.name }, h.unit, end), end, endReason: 'Exclusão', ...(m.exclusionSei ? { sei: m.exclusionSei } : {}) }));
+    }
+    return out.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR') || (a.start ?? '').localeCompare(b.start ?? '') || (a.end ?? '9').localeCompare(b.end ?? '9'));
+  }
+  /** Dias de atuação no período (inclusive o primeiro e o último; períodos em curso contam até hoje) */
+  const periodDays = (p: { start?: string; end?: string }) => {
+    if (!p.start) return null;
+    const end = p.end ?? ymdBrt(new Date().toISOString());
+    const days = Math.round((Date.parse(`${end}T00:00:00Z`) - Date.parse(`${p.start}T00:00:00Z`)) / 86_400_000) + 1;
+    return days > 0 ? days : 0;
+  };
 
   /** Mesma pessoa: mesmo nome (sem acento, caixa e tratamentos) ou mesmo e-mail informado */
   type Person = { key: string; email: string };
@@ -1805,6 +1875,7 @@ async function startServer() {
       }),
       withdrawals: [...withdrawals].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
       transfers: [...transfers].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+      periods: actingPeriods(),
       initialEdition: { id: ensureInitialEdition().id, title: INITIAL_EDITION_TITLE },
     });
   });
@@ -1892,11 +1963,12 @@ async function startServer() {
     const record: Withdrawal = {
       id: newId('wd'), editionId: rows[0].editionId, name: rows[0].name, sei, requestDate, createdAt: new Date().toISOString(),
       area: uniq(rows.map((r) => r.area)), unit: uniq(rows.map((r) => unitLabel(r))), magistrateIds: [...new Set(rows.map((r) => r.magistrateId))],
+      designations: rows.map((r) => ({ editionId: r.editionId, area: r.area, unit: unitLabel(r), workType: r.workType ?? '', ...(r.startDate ? { startDate: r.startDate } : {}) })),
     };
     rows.forEach((r) => undoMatch(r.id, 'Vinculação desfeita por desistência'));
     record.magistrateIds!.forEach((id) => { const m = magistrates.find((x) => x.id === id); if (m) m.status = 'Desistente'; });
     withdrawals.push(record);
-    log(rows[0].editionId, 'Administração', 'Magistrado', `Desistência registrada: ${record.name} (SEI ${sei || 'não informado'}, pedido em ${dmyOf(requestDate)}). Designações retiradas: ${record.unit}.`);
+    log(rows[0].editionId, 'Administração', 'Magistrado', `Desistência registrada: ${record.name} (SEI ${sei || 'não informado'}, pedido em ${dmyOf(requestDate)}${requestDate ? `; atuação até ${dmyOf(ymdMonthEnd(requestDate))}` : ''}). Designações retiradas: ${record.unit}.`);
     res.status(201).json({ success: true, withdrawal: record });
   });
 
@@ -1935,7 +2007,7 @@ async function startServer() {
       .sort((a, b) => a.area.localeCompare(b.area, 'pt-BR') || a.name.localeCompare(b.name, 'pt-BR'))
       .map((r) => ({
         'Magistrado(a)': r.name, 'Área de atuação': r.area, 'Unidade': unitLabel(r), 'Comarca': r.comarca ?? '',
-        'Preferência atendida': preferenceText(r), '1ª preferência': r.firstPreference ?? '', '2ª preferência': r.secondPreference ?? '', 'Atuação': r.workType ?? '', 'A partir de': r.startDate ? r.startDate.split('-').reverse().join('/') : '', 'Edição': r.editionTitle, 'Observação': r.note ?? '',
+        'Preferência atendida': preferenceText(r), '1ª preferência': r.firstPreference ?? '', '2ª preferência': r.secondPreference ?? '', 'Atuação': r.workType ?? '', 'A partir de': r.since ? r.since.split('-').reverse().join('/') : '', 'Edição': r.editionTitle, 'Observação': r.note ?? '',
       }));
     const sheet = XLSX.utils.json_to_sheet(data, { header: ['Magistrado(a)', 'Área de atuação', 'Preferência atendida', '1ª preferência', '2ª preferência', 'Unidade', 'Comarca', 'Atuação', 'A partir de', 'Edição', 'Observação'] });
     sheet['!cols'] = [{ wch: 34 }, { wch: 26 }, { wch: 20 }, { wch: 24 }, { wch: 24 }, { wch: 56 }, { wch: 22 }, { wch: 12 }, { wch: 12 }, { wch: 28 }, { wch: 30 }];
@@ -1946,6 +2018,25 @@ async function startServer() {
     if (!(await saveState())) return res.status(503).json({ error: 'Não foi possível registrar a exportação. Tente novamente.' });
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename=designacoes-${new Date().toISOString().slice(0, 10)}.xlsx`);
+    res.send(buffer);
+  });
+
+  // Planilha do histórico de atuação (períodos por magistrado e unidade)
+  app.get('/api/panel/periods.xlsx', async (_req, res) => {
+    const dmy = (d?: string) => (d ? d.split('-').reverse().join('/') : '');
+    const data = actingPeriods().map((p) => ({
+      'Magistrado(a)': p.name, 'Unidade': p.unit, 'Área de atuação': p.area, 'Atuação': p.workType, 'Edição': p.editionTitle,
+      'Início': dmy(p.start), 'Fim': p.end ? dmy(p.end) : p.endReason ? 'A informar' : 'Em curso', 'Dias': periodDays(p) ?? '', 'Encerramento': p.endReason, 'SEI': p.sei ?? '',
+    }));
+    const sheet = XLSX.utils.json_to_sheet(data, { header: ['Magistrado(a)', 'Unidade', 'Área de atuação', 'Atuação', 'Edição', 'Início', 'Fim', 'Dias', 'Encerramento', 'SEI'] });
+    sheet['!cols'] = [{ wch: 34 }, { wch: 56 }, { wch: 26 }, { wch: 12 }, { wch: 28 }, { wch: 12 }, { wch: 12 }, { wch: 7 }, { wch: 22 }, { wch: 26 }];
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, 'Histórico de atuação');
+    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+    log(null, 'Administração', 'Exportação', `Planilha do histórico de atuação (XLSX) exportada: ${data.length} período(s).`);
+    if (!(await saveState())) return res.status(503).json({ error: 'Não foi possível registrar a exportação. Tente novamente.' });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename=historico-atuacao-${new Date().toISOString().slice(0, 10)}.xlsx`);
     res.send(buffer);
   });
 
@@ -2115,11 +2206,37 @@ async function startServer() {
     const t = new Date(d);
     return Number.isNaN(t.getTime()) ? '' : t.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
   };
-  app.get('/api/bi/designacoes', (req, res) => {
-    if (!BI_TOKEN) return res.status(503).json({ error: 'Integração não configurada (BI_TOKEN).' });
+  /** Confere a chave do Qlik; responde 503/401 e devolve false quando não confere */
+  const biAuthorized = (req: express.Request, res: express.Response) => {
+    if (!BI_TOKEN) { res.status(503).json({ error: 'Integração não configurada (BI_TOKEN).' }); return false; }
     const given = Buffer.from(String(req.header('x-bi-token') ?? ''));
     const expected = Buffer.from(BI_TOKEN);
-    if (given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) return res.status(401).json({ error: 'Não autorizado.' });
+    if (given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) { res.status(401).json({ error: 'Não autorizado.' }); return false; }
+    return true;
+  };
+  const sendBi = (req: express.Request, res: express.Response, rows: Record<string, string>[], cols: string[]) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (req.query.formato === 'csv') {
+      const csv = '\ufeff' + [cols.join(';'), ...rows.map((r) => cols.map((c) => csvCell(r[c])).join(';'))].join('\r\n') + '\r\n';
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      return res.send(csv);
+    }
+    res.json(rows);
+  };
+
+  // Histórico de atuação: um período por magistrado e unidade (início, fim e motivo do encerramento)
+  app.get('/api/bi/periodos', (req, res) => {
+    if (!biAuthorized(req, res)) return;
+    const rows = actingPeriods().map((p) => ({
+      edicao: p.editionTitle, magistrado: p.name, area: p.area, unidade: p.unit, comarca: comarcaInText(p.unit) ?? '', atuacao: p.workType,
+      inicio: brDate(p.start), fim: brDate(p.end), dias: String(periodDays(p) ?? ''), situacao: p.endReason ? 'Encerrado' : 'Em curso', encerramento: p.endReason,
+    }));
+    console.log(JSON.stringify({ severity: 'INFO', message: `Histórico de atuação lido pela integração BI (${rows.length} linhas)`, audit: { category: 'Exportação', ip: clientIp(req) } }));
+    sendBi(req, res, rows, ['edicao', 'magistrado', 'area', 'unidade', 'comarca', 'atuacao', 'inicio', 'fim', 'dias', 'situacao', 'encerramento']);
+  });
+
+  app.get('/api/bi/designacoes', (req, res) => {
+    if (!biAuthorized(req, res)) return;
 
     const title = (id: string) => editionById(id)?.title ?? '';
     // Comarca pela lista oficial: a da inscrição/catálogo quando houver; senão, a citada no nome da unidade
@@ -2135,7 +2252,7 @@ async function startServer() {
       const mt = matches.find((m) => m.id === r.id);
       rows.push({
         edicao: r.editionTitle, magistrado: r.name, area: r.area, unidade: unit, comarca: comarcaOf(unit, catalogById(units.find((u) => u.id === r.unitId)?.catalogId)?.comarca ?? r.comarca), atuacao: r.workType ?? '', situacao: 'Ativo',
-        data: brDate(tr && (unitChanged || areaChanged) ? tr.effectiveDate : r.startDate ?? mt?.createdAt),
+        data: brDate(tr && (unitChanged || areaChanged) ? tr.effectiveDate : r.since ?? mt?.createdAt),
         alteracao: unitChanged && areaChanged ? 'Unidade e área' : unitChanged ? 'Unidade' : areaChanged ? 'Área' : '',
         unidade_anterior: unitChanged ? tr.fromUnit : '', area_anterior: areaChanged ? tr.area : '',
       });
@@ -2156,14 +2273,7 @@ async function startServer() {
       log(null, 'Sistema', 'Exportação', `Dados das designações lidos pelo Qlik (${rows.length} linha(s)).`);
       saveState().catch(() => {}); // requisição GET: o registro é gravado à parte
     }
-    res.setHeader('Cache-Control', 'no-store');
-    if (req.query.formato === 'csv') {
-      const cols = ['edicao', 'magistrado', 'area', 'unidade', 'comarca', 'atuacao', 'situacao', 'data', 'alteracao', 'unidade_anterior', 'area_anterior'];
-      const csv = '\ufeff' + [cols.join(';'), ...rows.map((r) => cols.map((c) => csvCell(r[c])).join(';'))].join('\r\n') + '\r\n';
-      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-      return res.send(csv);
-    }
-    res.json(rows);
+    sendBi(req, res, rows, ['edicao', 'magistrado', 'area', 'unidade', 'comarca', 'atuacao', 'situacao', 'data', 'alteracao', 'unidade_anterior', 'area_anterior']);
   });
 
   // Arte da capa e da contracapa do modelo de relatório do TJPR (assets/relatorio); sem o arquivo, usa fundo azul-marinho.
@@ -2817,7 +2927,7 @@ async function startServer() {
     if (reason.length < 5) return res.status(400).json({ error: 'Informe o motivo da exclusão.' });
     const held = matches.filter((m) => m.magistrateId === mag.id).map((m) => {
       const un = units.find((u) => u.id === m.unitId);
-      return { editionId: m.editionId, area: m.assignedArea, unit: un ? fullUnitName(un) : '', workType: m.workType };
+      return { editionId: m.editionId, area: m.assignedArea, unit: un ? fullUnitName(un) : '', workType: m.workType, ...(m.startDate ? { startDate: m.startDate } : {}) };
     });
     mag.excludedFrom = held.length ? held : undefined;
     matches.filter((m) => m.magistrateId === mag.id).forEach((m) => undoMatch(m.id, 'Vinculação desfeita por exclusão do magistrado'));
@@ -3021,6 +3131,9 @@ async function startServer() {
     if (workType && !MATCH_WORK_TYPES.includes(workType)) {
       return res.status(400).json({ error: 'Modalidade inválida. Use Para audiências ou Para sentença.' });
     }
+    // Início da atuação: sem data própria, vale o início da edição
+    const startDate = req.body?.startDate;
+    if (startDate && !isYmd(startDate)) return res.status(400).json({ error: 'Data de início da atuação inválida.' });
 
     // A unidade comporta o número de magistrados definido em "vagas" (padrão 1). Sem motivo a justificar.
     const others = matches.filter((m) => m.unitId === unitId && m.magistrateId !== magistrateId).length;
@@ -3042,6 +3155,7 @@ async function startServer() {
       unitId,
       assignedArea,
       workType: workType || defaultWorkType(unit, mag),
+      ...(startDate && startDate !== editionById(mag.editionId)?.startDate ? { startDate } : {}),
       status: 'Vinculado',
       createdAt: new Date().toISOString(),
     };
@@ -3104,8 +3218,12 @@ async function startServer() {
     if (isTransfer && (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveDate) || Number.isNaN(Date.parse(`${effectiveDate}T00:00:00${BRT}`)) || effectiveDate < '2000-01-01')) {
       return res.status(400).json({ error: 'Informe a partir de quando o magistrado atuará na nova unidade.' });
     }
+    // Correção da data de início (sem alteração de vara/área): em branco volta a valer o início da edição
+    const newStart = typeof req.body?.startDate === 'string' ? req.body.startDate.trim() : null;
+    if (newStart && !isYmd(newStart)) return res.status(400).json({ error: 'Data de início da atuação inválida.' });
+    if (newStart !== null && isTransfer) return res.status(400).json({ error: 'Na alteração de vara/área, o início na nova unidade é a data de vigência.' });
     const oldUnit = units.find((u) => u.id === oldUnitId);
-    const oldWorkType = match.workType; const oldArea = match.assignedArea;
+    const oldWorkType = match.workType; const oldArea = match.assignedArea; const oldStart = match.startDate;
     if (oldMag && changedMag) oldMag.status = 'Lista de Espera';
 
     match.magistrateId = nextMag.id;
@@ -3117,14 +3235,19 @@ async function startServer() {
     nextMag.status = 'Atribuído';
     refreshUnitStatus(oldUnitId);
     refreshUnitStatus(nextUnit.id);
+    const startBefore = match.startDate;
+    if (changedMag) match.startDate = undefined; // outro magistrado: começa no início da edição, salvo data informada
+    if (newStart !== null) match.startDate = newStart && newStart !== editionById(match.editionId)?.startDate ? newStart : undefined;
     if (isTransfer) {
       match.startDate = effectiveDate;
       const label = (u?: Unit) => (u ? fullUnitName(u) : 'unidade removida');
-      transfers.push({ id: newId('tr'), editionId: match.editionId, magistrateId: nextMag.id, name: nextMag.name, area: oldArea, toArea: match.assignedArea, ...(transferSei ? { sei: transferSei } : {}), fromUnit: label(oldUnit), toUnit: label(nextUnit),
+      transfers.push({ id: newId('tr'), editionId: match.editionId, magistrateId: nextMag.id, name: nextMag.name, ...(oldStart ? { fromStartDate: oldStart } : {}), area: oldArea, toArea: match.assignedArea, ...(transferSei ? { sei: transferSei } : {}), fromUnit: label(oldUnit), toUnit: label(nextUnit),
         fromWorkType: oldWorkType, toWorkType: match.workType, effectiveDate, createdAt: new Date().toISOString() });
     }
 
-    log(match.editionId, 'Administração', 'Vinculação', `Vinculação alterada${isTransfer ? ` (${movingUnit ? 'nova unidade' : 'nova área'}${movingUnit && changingArea ? ' e nova área' : ''} a partir de ${effectiveDate.split('-').reverse().join('/')}${transferSei ? `; SEI ${transferSei}` : ''})` : ''}: de ${before} para ${describeMatch(match)}.`);
+    const startNote = !isTransfer && match.startDate !== startBefore
+      ? ` (início da atuação: ${(match.startDate ?? editionById(match.editionId)?.startDate)?.split('-').reverse().join('/') ?? 'não informado'})` : '';
+    log(match.editionId, 'Administração', 'Vinculação', `Vinculação alterada${startNote}${isTransfer ? ` (${movingUnit ? 'nova unidade' : 'nova área'}${movingUnit && changingArea ? ' e nova área' : ''} a partir de ${effectiveDate.split('-').reverse().join('/')}${transferSei ? `; SEI ${transferSei}` : ''})` : ''}: de ${before} para ${describeMatch(match)}.`);
     res.json({ success: true, match });
   });
 
