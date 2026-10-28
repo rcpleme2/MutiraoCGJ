@@ -1095,7 +1095,7 @@ async function startServer() {
     if (publicRead || login) return next();
     // Chamada do Cloud Scheduler: autenticada pelo token próprio, conferido na rota
     // Leitura pelo Qlik Sense (REST Connector): autenticada pela chave BI_TOKEN, conferida na rota
-    if (req.method === 'GET' && (req.path === '/bi/designacoes' || req.path === '/bi/periodos')) {
+    if (req.method === 'GET' && req.path === '/bi/designacoes') {
       if (rateLimited(`bi:${ip}`, 60, 60 * 60_000)) return res.status(429).json({ error: 'Muitas chamadas.' });
       return next();
     }
@@ -1504,7 +1504,7 @@ async function startServer() {
    *   (até o último dia do mês do pedido) ou por exclusão (até a data da exclusão).
    * Registros antigos sem data de início própria usam a vigência da alteração que levou o magistrado à unidade ou o início da edição.
    */
-  interface ActingPeriod { id: string; name: string; editionId: string; editionTitle: string; area: string; unit: string; workType: string; start?: string; end?: string; endReason: '' | 'Alteração de vinculação' | 'Desistência' | 'Exclusão'; sei?: string }
+  interface ActingPeriod { id: string; name: string; editionId: string; editionTitle: string; area: string; unit: string; workType: string; start?: string; end?: string; endReason: '' | 'Alteração de vinculação' | 'Desistência' | 'Exclusão'; sei?: string; /** comarca pela lista oficial (designações vigentes) */ comarca?: string }
   function actingPeriods(): ActingPeriod[] {
     const title = (id: string) => editionById(id)?.title ?? '';
     // Início não registrado: vigência da última alteração que levou a pessoa a esta unidade (até a data final), senão o início da edição
@@ -1517,7 +1517,10 @@ async function startServer() {
     };
     const out: ActingPeriod[] = [];
     for (const r of panelRows()) {
-      out.push({ id: r.id, name: r.name, editionId: r.editionId, editionTitle: r.editionTitle, area: r.area, unit: unitLabel(r), workType: r.workType ?? '', start: r.since, endReason: '' });
+      const unit = unitLabel(r);
+      const hint = catalogById(units.find((u) => u.id === r.unitId)?.catalogId)?.comarca ?? r.comarca;
+      out.push({ id: r.id, name: r.name, editionId: r.editionId, editionTitle: r.editionTitle, area: r.area, unit, workType: r.workType ?? '', start: r.since, endReason: '',
+        comarca: canonicalComarca(hint) ?? comarcaInText(unit) ?? hint ?? '' });
     }
     for (const t of transfers) {
       const end = ymdDayBefore(t.effectiveDate);
@@ -2224,56 +2227,22 @@ async function startServer() {
     res.json(rows);
   };
 
-  // Histórico de atuação: um período por magistrado e unidade (início, fim e motivo do encerramento)
-  app.get('/api/bi/periodos', (req, res) => {
-    if (!biAuthorized(req, res)) return;
-    const rows = actingPeriods().map((p) => ({
-      edicao: p.editionTitle, magistrado: p.name, area: p.area, unidade: p.unit, comarca: comarcaInText(p.unit) ?? '', atuacao: p.workType,
-      inicio: brDate(p.start), fim: brDate(p.end), dias: String(periodDays(p) ?? ''), situacao: p.endReason ? 'Encerrado' : 'Em curso', encerramento: p.endReason,
-    }));
-    console.log(JSON.stringify({ severity: 'INFO', message: `Histórico de atuação lido pela integração BI (${rows.length} linhas)`, audit: { category: 'Exportação', ip: clientIp(req) } }));
-    sendBi(req, res, rows, ['edicao', 'magistrado', 'area', 'unidade', 'comarca', 'atuacao', 'inicio', 'fim', 'dias', 'situacao', 'encerramento']);
-  });
-
+  // Designações com o histórico de atuação: um período por magistrado e unidade (início, fim e situação)
   app.get('/api/bi/designacoes', (req, res) => {
     if (!biAuthorized(req, res)) return;
-
-    const title = (id: string) => editionById(id)?.title ?? '';
-    // Comarca pela lista oficial: a da inscrição/catálogo quando houver; senão, a citada no nome da unidade
-    const comarcaOf = (unit: string, hint?: string) => (unit || hint ? canonicalComarca(hint) ?? comarcaInText(unit) ?? hint ?? '' : '');
-    const rows: Record<string, string>[] = [];
-    for (const r of panelRows()) {
-      const unit = unitLabel(r);
-      // Alteração mais recente que levou a esta designação (unidade e área atuais)
-      const tr = transfers.filter((t) => t.magistrateId === r.magistrateId && norm(t.toUnit) === norm(unit) && norm(t.toArea ?? t.area) === norm(r.area))
-        .sort((a, b) => b.effectiveDate.localeCompare(a.effectiveDate) || b.createdAt.localeCompare(a.createdAt))[0];
-      const unitChanged = !!tr && norm(tr.fromUnit) !== norm(tr.toUnit);
-      const areaChanged = !!tr && !!tr.toArea && norm(tr.toArea) !== norm(tr.area);
-      const mt = matches.find((m) => m.id === r.id);
-      rows.push({
-        edicao: r.editionTitle, magistrado: r.name, area: r.area, unidade: unit, comarca: comarcaOf(unit, catalogById(units.find((u) => u.id === r.unitId)?.catalogId)?.comarca ?? r.comarca), atuacao: r.workType ?? '', situacao: 'Ativo',
-        data: brDate(tr && (unitChanged || areaChanged) ? tr.effectiveDate : r.since ?? mt?.createdAt),
-        alteracao: unitChanged && areaChanged ? 'Unidade e área' : unitChanged ? 'Unidade' : areaChanged ? 'Área' : '',
-        unidade_anterior: unitChanged ? tr.fromUnit : '', area_anterior: areaChanged ? tr.area : '',
-      });
-    }
-    for (const w of withdrawals) {
-      if (w.endedAt) continue;
-      rows.push({ edicao: title(w.editionId), magistrado: w.name, area: w.area, unidade: w.unit, comarca: comarcaOf(w.unit), atuacao: '', situacao: 'Desistente', data: brDate(w.requestDate ?? w.createdAt), alteracao: '', unidade_anterior: '', area_anterior: '' });
-    }
-    for (const m of magistrates) {
-      if (m.status !== 'Excluído') continue;
-      const held = m.excludedFrom?.length ? m.excludedFrom : [{ editionId: m.editionId, area: '', unit: '', workType: '' }];
-      for (const h of held) rows.push({ edicao: title(h.editionId), magistrado: m.name, area: h.area, unidade: h.unit, comarca: comarcaOf(h.unit), atuacao: h.workType ?? '', situacao: 'Excluído', data: brDate(m.excludedAt), alteracao: '', unidade_anterior: '', area_anterior: '' });
-    }
-
+    const situation = { '': 'Ativo', 'Alteração de vinculação': 'Alterado', 'Desistência': 'Desistente', 'Exclusão': 'Excluído' } as const;
+    const rows = actingPeriods().map((p) => ({
+      edicao: p.editionTitle, magistrado: p.name, area: p.area, unidade: p.unit,
+      comarca: p.comarca ?? (p.unit ? canonicalComarca(comarcaInText(p.unit)) ?? comarcaInText(p.unit) ?? '' : ''), atuacao: p.workType,
+      situacao: situation[p.endReason], inicio: brDate(p.start), fim: brDate(p.end), dias: String(periodDays(p) ?? ''),
+    }));
     console.log(JSON.stringify({ severity: 'INFO', message: `Designações lidas pela integração BI (${rows.length} linhas)`, audit: { category: 'Exportação', ip: clientIp(req) } }));
     if (Date.now() - lastBiLog > 6 * 60 * 60_000) {
       lastBiLog = Date.now();
       log(null, 'Sistema', 'Exportação', `Dados das designações lidos pelo Qlik (${rows.length} linha(s)).`);
       saveState().catch(() => {}); // requisição GET: o registro é gravado à parte
     }
-    sendBi(req, res, rows, ['edicao', 'magistrado', 'area', 'unidade', 'comarca', 'atuacao', 'situacao', 'data', 'alteracao', 'unidade_anterior', 'area_anterior']);
+    sendBi(req, res, rows, ['edicao', 'magistrado', 'area', 'unidade', 'comarca', 'atuacao', 'situacao', 'inicio', 'fim', 'dias']);
   });
 
   // Arte da capa e da contracapa do modelo de relatório do TJPR (assets/relatorio); sem o arquivo, usa fundo azul-marinho.
