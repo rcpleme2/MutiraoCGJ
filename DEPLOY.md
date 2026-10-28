@@ -221,10 +221,15 @@ restaura qualquer cópia. Se o backup falhar ou atrasar mais de 36 horas, o pain
 ## Integração com o Qlik Sense
 
 O endereço `GET /api/bi/designacoes` entrega, só para quem tiver a chave `BI_TOKEN` (cabeçalho `x-bi-token`), uma
-tabela única com as designações:
+tabela única com as designações e o **histórico de atuação**: uma linha por período de um magistrado numa unidade.
 
-- **Colunas:** `edicao`, `magistrado`, `area`, `unidade`, `comarca`, `atuacao`, `situacao` (Ativo / Desistente / Excluído),
-  `data` (DD/MM/AAAA), `alteracao` (Unidade / Área / Unidade e área), `unidade_anterior` e `area_anterior`.
+- **Colunas:** `edicao`, `magistrado`, `area`, `unidade`, `comarca`, `atuacao`, `situacao`, `inicio` e `fim` (DD/MM/AAAA)
+  e `dias` (dias corridos do período, contando o primeiro e o último; período em curso conta até hoje).
+- **Situação:** `Ativo` (em curso, `fim` vazio), `Alterado` (encerrado por alteração de vara/área; a nova unidade é outra
+  linha, começando no dia seguinte), `Desistente` e `Excluído`.
+- **Regras das datas:** o início é o da vinculação ou, sem data própria, o da edição (campo *Início da atuação* no cadastro
+  da edição; Vinculações iniciais = 15/06/2026). A alteração de vara/área encerra o período na véspera da nova vigência; a
+  desistência, no último dia do mês do pedido; a exclusão, na data do registro. Data ainda não informada = campo vazio.
 - **O que não vai:** e-mail, IP e motivos.
 - **Formato:** JSON por padrão; `?formato=csv` entrega CSV com `;`.
 
@@ -263,8 +268,8 @@ curl -s -w "\nHTTP %{http_code}\n" -H "x-bi-token: COLE_A_CHAVE" "$URL/api/bi/de
 
    ```
    Designacoes:
-   LOAD edicao, magistrado, area, unidade, comarca, atuacao, situacao, Date#(data, 'DD/MM/YYYY') as data,
-        alteracao, unidade_anterior, area_anterior;
+   LOAD edicao, magistrado, area, unidade, comarca, atuacao, situacao,
+        Date#(inicio, 'DD/MM/YYYY') as inicio, Date#(fim, 'DD/MM/YYYY') as fim, Num#(dias) as dias;
    SQL SELECT ... FROM JSON (wrap on) "root";
    ```
 
