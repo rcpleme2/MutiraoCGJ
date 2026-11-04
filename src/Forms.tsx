@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Check } from 'lucide-react';
 import { Field } from './ui';
-import { Magistrate, Unit, PREFERENCE_AREAS, SUPPORT_OPTIONS, SupportNeeded } from './types';
+import { Magistrate, Unit, PREFERENCE_AREAS, SUPPORT_OPTIONS, SupportNeeded, MAGISTRATE_PERIODS, UNIT_PERIODS, supportIncludesHearings } from './types';
 import { COMARCAS, CATALOG_SEPARATOR, canonicalComarca, catalogById, fullUnitName, unitsOfComarca } from './catalogo-tjpr';
 
 /* ---------- Comarca → unidade (catálogo oficial), com a opção "Outra" ---------- */
@@ -125,12 +125,12 @@ export function MagistrateForm({
   const empty = {
     name: '', email: '', currentLocation: '',
     firstPreference: '', secondPreference: '',
-    acceptsHearings: '', status: 'Aprovado',
+    acceptsHearings: '', hearingPeriod: '', status: 'Aprovado',
   };
   const [f, setF] = useState(initial ? {
     name: initial.name, email: initial.email, currentLocation: initial.currentLocation,
     firstPreference: initial.firstPreference, secondPreference: initial.secondPreference,
-    acceptsHearings: initial.acceptsHearings ? 'sim' : 'nao', status: initial.status as string,
+    acceptsHearings: initial.acceptsHearings ? 'sim' : 'nao', hearingPeriod: (initial.acceptsHearings && initial.hearingPeriod) || '', status: initial.status as string,
   } : empty);
   const [loc, setLoc] = useState<Place>(() => initialPlace(initial?.locationCatalogId, initial?.locationComarca, initial?.currentLocation));
   const [declared, setDeclared] = useState(false);
@@ -149,9 +149,13 @@ export function MagistrateForm({
           setLocalError('Preencha a 1ª escolha e informe se aceita realizar audiências.');
           return;
         }
+        if (!relaxed && !initial && f.acceptsHearings === 'sim' && !f.hearingPeriod) {
+          setLocalError('Informe se pode auxiliar nas audiências de manhã, à tarde ou indiferentemente.');
+          return;
+        }
         setLocalError('');
         const lp = placePayload(loc);
-        const ok = await onSubmit({ ...f, locationCatalogId: lp.catalogId, locationComarca: lp.comarca, currentLocation: lp.name, acceptsHearings: f.acceptsHearings === 'sim', ...(withDeclaration ? { declaration: declared, website } : {}) });
+        const ok = await onSubmit({ ...f, locationCatalogId: lp.catalogId, locationComarca: lp.comarca, currentLocation: lp.name, acceptsHearings: f.acceptsHearings === 'sim', hearingPeriod: f.acceptsHearings === 'sim' ? f.hearingPeriod : '', ...(withDeclaration ? { declaration: declared, website } : {}) });
         if (ok && !initial) { setF(empty); setLoc(initialPlace()); setDeclared(false); }
       }}
     >
@@ -185,13 +189,22 @@ export function MagistrateForm({
       <Field label="Aceita realizar audiências?">
         <Segmented
           value={f.acceptsHearings}
-          onChange={v => { setLocalError(''); setF({ ...f, acceptsHearings: v }); }}
+          onChange={v => { setLocalError(''); setF({ ...f, acceptsHearings: v, hearingPeriod: v === 'sim' ? f.hearingPeriod : '' }); }}
           options={[
             { value: 'sim', label: 'Sim, aceito realizar audiências' },
             { value: 'nao', label: 'Não, apenas sentenças' },
           ]}
         />
       </Field>
+      {f.acceptsHearings === 'sim' && (
+        <Field label="Período em que pode auxiliar nas audiências">
+          <Segmented
+            value={f.hearingPeriod}
+            onChange={v => { setLocalError(''); setF({ ...f, hearingPeriod: v }); }}
+            options={MAGISTRATE_PERIODS}
+          />
+        </Field>
+      )}
       {withStatus && (
         <Field label="Status inicial">
           <select className="input" value={f.status} onChange={set('status')}>
@@ -263,19 +276,22 @@ export function UnitForm({
     unitName: '', judgeName: '', email: '', comarca: '', separator: 'de',
     areas: [] as string[],
     supportNeeded: 'Sentença' as SupportNeeded,
+    hearingPeriod: '' as string,
     description: '',
     slots: 1,
   };
   const [place, setPlace] = useState<Place>(() => initialPlace(initial?.catalogId, initial?.comarca, initial?.unitName, initial?.separator));
   const [f, setF] = useState(initial ? {
     unitName: initial.unitName, judgeName: initial.judgeName, email: initial.email, comarca: initial.comarca, separator: initial.separator || 'de',
-    areas: initial.areas, supportNeeded: initial.supportNeeded, description: initial.description,
+    areas: initial.areas, supportNeeded: initial.supportNeeded, hearingPeriod: (supportIncludesHearings(initial.supportNeeded) && initial.hearingPeriod) || '', description: initial.description,
     slots: initial.slots ?? 1,
   } : empty);
   const text = (k: 'unitName' | 'judgeName' | 'email' | 'comarca' | 'separator' | 'description') =>
     (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setF({ ...f, [k]: e.target.value });
 
   const [areasError, setAreasError] = useState('');
+  const [periodError, setPeriodError] = useState('');
+  const withHearings = supportIncludesHearings(f.supportNeeded);
   const toggleArea = (area: string) => {
     const has = f.areas.includes(area);
     setAreasError('');
@@ -288,7 +304,9 @@ export function UnitForm({
       onSubmit={async e => {
         e.preventDefault();
         if (f.areas.length === 0) { setAreasError('Marque ao menos uma área a ser atendida.'); return; }
+        if (!relaxed && !initial && withHearings && !f.hearingPeriod) { setPeriodError('Informe o período pretendido para o auxílio nas audiências.'); return; }
         const { slots, ...rest } = f;
+        rest.hearingPeriod = withHearings ? rest.hearingPeriod : '';
         const pp = placePayload(place);
         const placeFields = { catalogId: pp.catalogId, comarca: pp.comarca, unitName: pp.name, separator: place.separator };
         if ((await onSubmit({ ...rest, ...placeFields, ...(withSlots ? { slots } : {}), ...(withHoneypot ? { website } : {}) })) && !initial) { setF(empty); setPlace(initialPlace()); }
@@ -330,10 +348,20 @@ export function UnitForm({
       <Field label="Necessita de auxílio para">
         <Segmented
           value={f.supportNeeded}
-          onChange={v => setF({ ...f, supportNeeded: v as SupportNeeded })}
+          onChange={v => { setPeriodError(''); setF({ ...f, supportNeeded: v as SupportNeeded }); }}
           options={SUPPORT_OPTIONS.map(o => ({ value: o, label: o === 'Audiência e Sentença' ? 'Audiência e sentença' : o === 'Audiência' ? 'Audiências' : 'Sentenças' }))}
         />
       </Field>
+      {withHearings && (
+        <Field label="Período pretendido para o auxílio nas audiências">
+          <Segmented
+            value={f.hearingPeriod}
+            onChange={v => { setPeriodError(''); setF({ ...f, hearingPeriod: v }); }}
+            options={UNIT_PERIODS}
+          />
+          {periodError && <p role="alert" className="text-sm text-danger mt-2">{periodError}</p>}
+        </Field>
+      )}
       <Field label="Justificativa / detalhes da demanda">
         <textarea rows={3} className="input" value={f.description} onChange={text('description')} />
       </Field>

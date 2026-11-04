@@ -3,6 +3,24 @@ export type MagistrateStatus = 'Aguardando Conferência' | 'Aprovado' | 'Lista d
 export type SupportNeeded = 'Audiência' | 'Sentença' | 'Audiência e Sentença';
 export const SUPPORT_OPTIONS: SupportNeeded[] = ['Audiência', 'Sentença', 'Audiência e Sentença'];
 
+/** Período em que o magistrado pode auxiliar nas audiências */
+export type MagistratePeriod = 'Manhã' | 'Tarde' | 'Indiferente';
+export const MAGISTRATE_PERIODS: { value: MagistratePeriod; label: string }[] = [
+  { value: 'Manhã', label: 'De manhã' },
+  { value: 'Tarde', label: 'À tarde' },
+  { value: 'Indiferente', label: 'Indiferente (manhã ou tarde)' },
+];
+/** Período em que a unidade pretende o auxílio nas audiências */
+export type UnitPeriod = 'Manhã' | 'Expediente' | 'Indiferente';
+export const UNIT_PERIODS: { value: UnitPeriod; label: string }[] = [
+  { value: 'Manhã', label: 'Período da manhã' },
+  { value: 'Expediente', label: 'Período do expediente' },
+  { value: 'Indiferente', label: 'Indiferente' },
+];
+export const magistratePeriodLabel = (p?: string) => MAGISTRATE_PERIODS.find(o => o.value === p)?.label ?? '';
+export const unitPeriodLabel = (p?: string) => UNIT_PERIODS.find(o => o.value === p)?.label ?? '';
+export const supportIncludesHearings = (s?: string) => s === 'Audiência' || s === 'Audiência e Sentença';
+
 export type UnitSelection = 'Em análise' | 'Escolhida' | 'Rejeitada';
 export type WorkType = 'Audiência' | 'Sentença' | 'Audiência e Sentença';
 /** Atuação do magistrado na unidade: só para audiências ou só para sentença ('Audiência e Sentença' existe apenas em dados antigos) */
@@ -46,6 +64,7 @@ export interface Magistrate {
   firstPreference: string;
   secondPreference: string;
   acceptsHearings: boolean;
+  hearingPeriod?: MagistratePeriod;
   registeredIp?: string;
   declaration?: boolean;
   rejectionReason?: string;
@@ -81,6 +100,7 @@ export interface Unit {
   duplicateCount?: number;
   areas: string[];
   supportNeeded: SupportNeeded;
+  hearingPeriod?: UnitPeriod;
   description: string;
   registeredIp?: string;
   createdAt: string;

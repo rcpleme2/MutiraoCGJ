@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Scale, UserCheck, Building2, ShieldCheck, Search, ArrowRight, Menu, X, ChevronDown, HelpCircle } from 'lucide-react';
 import { api, reloadCatalog } from './api';
-import { Edition, FaqItem, Magistrate, Unit } from './types';
+import { Edition, FaqItem, Magistrate, Unit, magistratePeriodLabel, unitPeriodLabel } from './types';
 import { Badge, FeedbackProvider, Notice, formatDate, magistrateTone } from './ui';
 import { MagistrateForm, UnitForm } from './Forms';
 import Admin from './Admin';
@@ -287,7 +287,7 @@ function AppInner() {
                           <div className="bg-bronze-soft text-bronze text-sm rounded-md px-3 py-2.5">Aguardando consolidação das inscrições e vinculação a uma unidade.</div>
                         )}
                         <div className="text-xs text-muted">
-                          1ª: <span className="text-ink">{m.firstPreference}</span> · 2ª: <span className="text-ink">{m.secondPreference || '—'}</span> · Audiências: <span className="text-ink">{m.acceptsHearings ? 'aceita' : 'não aceita'}</span>
+                          1ª: <span className="text-ink">{m.firstPreference}</span> · 2ª: <span className="text-ink">{m.secondPreference || '—'}</span> · Audiências: <span className="text-ink">{m.acceptsHearings ? `aceita${m.hearingPeriod ? ` (${magistratePeriodLabel(m.hearingPeriod).toLowerCase()})` : ''}` : 'não aceita'}</span>
                         </div>
                         {m.match && (
                           <div className="bg-ok-soft text-ok text-sm rounded-md px-3 py-2.5">
@@ -312,7 +312,7 @@ function AppInner() {
                             {u.selection === 'Rejeitada' ? (u.linksElsewhere?.length ? 'Rejeitada nesta edição' : 'Rejeitada') : u.selection === 'Em análise' ? 'Em análise' : u.status}
                           </Badge></div>
                         </div>
-                        <div className="text-xs text-muted">Áreas: <span className="text-ink">{u.areas.join(', ')}</span> · Auxílio: <span className="text-ink">{u.supportNeeded}</span></div>
+                        <div className="text-xs text-muted">Áreas: <span className="text-ink">{u.areas.join(', ')}</span> · Auxílio: <span className="text-ink">{u.supportNeeded}{u.hearingPeriod ? ` (audiências: ${unitPeriodLabel(u.hearingPeriod).toLowerCase()})` : ''}</span></div>
                         {u.linksElsewhere && u.linksElsewhere.length > 0 && (
                           <div className="bg-ok-soft text-ok text-sm rounded-md px-3 py-2.5 space-y-1">
                             <div>O pedido desta edição foi rejeitado, mas a unidade mantém {u.linksElsewhere.length === 1 ? 'vinculação ativa' : 'vinculações ativas'} de outra edição:</div>
