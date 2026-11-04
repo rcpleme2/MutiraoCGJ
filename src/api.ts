@@ -4,12 +4,17 @@ const TOKEN_KEY = 'mutirao-admin-token';
 
 let memoryToken = '';
 
+/** Sessão da aba (sessionStorage) ou, com "Manter conectado", do navegador (localStorage, até 30 dias). */
 export const getToken = () => {
-  try { return sessionStorage.getItem(TOKEN_KEY) || memoryToken; } catch { return memoryToken; }
+  try { return sessionStorage.getItem(TOKEN_KEY) || localStorage.getItem(TOKEN_KEY) || memoryToken; } catch { return memoryToken; }
 };
-export const setToken = (t: string) => {
+export const setToken = (t: string, keep = false) => {
   memoryToken = t;
-  try { t ? sessionStorage.setItem(TOKEN_KEY, t) : sessionStorage.removeItem(TOKEN_KEY); } catch { /* storage indisponível */ }
+  try {
+    sessionStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(TOKEN_KEY);
+    if (t) (keep ? localStorage : sessionStorage).setItem(TOKEN_KEY, t);
+  } catch { /* storage indisponível */ }
 };
 
 export async function api<T = any>(path: string, init: RequestInit & { json?: unknown } = {}): Promise<T> {

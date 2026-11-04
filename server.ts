@@ -56,7 +56,7 @@ interface Magistrate {
   secondPreference: string;
   acceptsHearings: boolean;
   /** Período em que pode auxiliar nas audiências (só quando aceita audiências) */
-  hearingPeriod?: MagistratePeriod;
+  hearingPeriod?: HearingPeriod;
   registeredIp?: string;
   /** Declaração de regularidade (120 dias / sanção / processo administrativo) aceita na inscrição pública */
   declaration?: boolean;
@@ -75,14 +75,13 @@ interface Magistrate {
 }
 
 type UnitSelection = 'Em análise' | 'Escolhida' | 'Rejeitada';
-/** Período em que o magistrado pode auxiliar nas audiências */
-type MagistratePeriod = 'Manhã' | 'Tarde' | 'Indiferente';
-const MAGISTRATE_PERIODS: MagistratePeriod[] = ['Manhã', 'Tarde', 'Indiferente'];
-/** Período em que a unidade pretende o auxílio nas audiências */
-type UnitPeriod = 'Manhã' | 'Expediente' | 'Indiferente';
-const UNIT_PERIODS: UnitPeriod[] = ['Manhã', 'Expediente', 'Indiferente'];
-const magistratePeriodLabel = (p?: string) => (p === 'Manhã' ? 'Manhã' : p === 'Tarde' ? 'Tarde' : p === 'Indiferente' ? 'Indiferente (manhã ou tarde)' : '');
-const unitPeriodLabel = (p?: string) => (p === 'Manhã' ? 'Período da manhã' : p === 'Expediente' ? 'Período do expediente' : p === 'Indiferente' ? 'Indiferente' : '');
+/** Período das audiências, comum a magistrados e unidades ("período do expediente" = tarde) */
+type HearingPeriod = 'Manhã' | 'Tarde' | 'Indiferente';
+const HEARING_PERIODS: HearingPeriod[] = ['Manhã', 'Tarde', 'Indiferente'];
+/** Aceita também "Expediente" (gravado antes da unificação) como tarde */
+const asHearingPeriod = (v: unknown): HearingPeriod | '' | null =>
+  v == null || v === '' ? '' : v === 'Expediente' ? 'Tarde' : HEARING_PERIODS.includes(v as HearingPeriod) ? (v as HearingPeriod) : null;
+const hearingPeriodLabel = (p?: string) => (p === 'Manhã' ? 'Manhã' : p === 'Tarde' ? 'Tarde (expediente)' : p === 'Indiferente' ? 'Indiferente (manhã ou tarde)' : '');
 type WorkType = 'Audiência' | 'Sentença' | 'Audiência e Sentença';
 const WORK_TYPES: WorkType[] = ['Audiência', 'Sentença', 'Audiência e Sentença']; // auxílio pedido pela unidade
 /** Atuação do magistrado na unidade: apenas para audiências OU para sentença */
@@ -102,7 +101,7 @@ interface Unit {
   areas: string[];
   supportNeeded: 'Audiência' | 'Sentença' | 'Audiência e Sentença';
   /** Período pretendido para o auxílio nas audiências (só quando o auxílio inclui audiências) */
-  hearingPeriod?: UnitPeriod;
+  hearingPeriod?: HearingPeriod;
   description: string;
   registeredIp?: string;
   createdAt: string;
@@ -230,20 +229,33 @@ function checkPassword(pw: string, stored: string): boolean {
 /** Senha compartilhada (ADMIN_PASSWORD) só vale enquanto não há usuários, ou como recuperação com ALLOW_SHARED_PASSWORD=true. */
 const sharedPasswordAllowed = () => !admins.some((a) => a.active && a.role === 'admin') || process.env.ALLOW_SHARED_PASSWORD === 'true';
 /** Desafios do login: a senha já foi validada; falta o código do segundo fator (ou o cadastro do aplicativo). */
-const challenges = new Map<string, { exp: number; tries: number; pendingSecret?: string; userId: string | null }>();
+const challenges = new Map<string, { exp: number; tries: number; pendingSecret?: string; userId: string | null; keep?: boolean }>();
 
-// Sessões administrativas (token opaco, expira em 8h)
+// Sessões administrativas (token opaco). Duram 8h, ou 30 dias com "Manter conectado".
+// São gravadas junto com o estado (sobrevivem a reinícios do servidor) apenas pelo hash SHA-256 do token:
+// quem ler o banco não consegue reaproveitar uma sessão.
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
-interface Session { exp: number; userId: string | null; name: string; role: AdminRole }
+const KEEP_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+interface Session { id: string; exp: number; userId: string | null; name: string; role: AdminRole; createdAt: string; keep?: boolean }
 const sessions = new Map<string, Session>();
+const tokenHash = (token: string) => crypto.createHash('sha256').update(token).digest('hex');
 function sessionOf(req: express.Request): Session | undefined {
   const token = req.header('x-admin-token');
-  const s = token ? sessions.get(token) : undefined;
-  if (!token || !s) return undefined;
-  if (s.exp < Date.now()) { sessions.delete(token); return undefined; }
-  // Usuário desativado perde o acesso na hora
-  if (s.userId && !admins.some((a) => a.id === s.userId && a.active)) { sessions.delete(token); return undefined; }
+  if (!token || token.length > 200) return undefined;
+  const id = tokenHash(token);
+  const s = sessions.get(id);
+  if (!s) return undefined;
+  if (s.exp < Date.now()) { sessions.delete(id); return undefined; }
+  // Usuário desativado perde o acesso na hora; sessão da senha compartilhada cai quando ela é desativada
+  if (s.userId && !admins.some((a) => a.id === s.userId && a.active)) { sessions.delete(id); return undefined; }
+  if (!s.userId && !sharedPasswordAllowed()) { sessions.delete(id); return undefined; }
   return s;
+}
+/** Encerra as sessões de um usuário (ou da senha compartilhada), exceto a informada. Devolve quantas foram encerradas. */
+function endSessionsOf(userId: string | null, exceptId?: string) {
+  let n = 0;
+  for (const [id, s] of sessions) if (s.userId === userId && id !== exceptId) { sessions.delete(id); n++; }
+  return n;
 }
 const hasValidToken = (req: express.Request) => !!sessionOf(req);
 
@@ -578,9 +590,9 @@ function parseMagistrate(b: any, base?: Magistrate, strict = false, lenient = fa
   const hearings = pick('acceptsHearings');
   if (strict && typeof hearings !== 'boolean') return { error: 'Informe se aceita realizar audiências.' };
   // Período das audiências: só faz sentido para quem aceita audiências (vazio = não informado)
-  const periodRaw = pick('hearingPeriod') ?? '';
-  if (periodRaw !== '' && !MAGISTRATE_PERIODS.includes(periodRaw as MagistratePeriod)) return { error: 'Período para audiências inválido.' };
-  const hearingPeriod = hearings === true && periodRaw ? (periodRaw as MagistratePeriod) : undefined;
+  const period = asHearingPeriod(pick('hearingPeriod'));
+  if (period === null) return { error: 'Período para audiências inválido.' };
+  const hearingPeriod = hearings === true && period ? period : undefined;
   if (strict && hearings === true && !hearingPeriod) return { error: 'Informe se pode auxiliar nas audiências de manhã, à tarde ou indiferentemente.' };
   return { value: { name, ...(b?.name != null && rawName && rawName !== name ? { nameAsTyped: rawName } : {}), email, currentLocation, locationCatalogId: loc.value.catalogId, locationComarca: loc.value.comarca || undefined, firstPreference: first, secondPreference: second, acceptsHearings: hearings === true, hearingPeriod } };
 }
@@ -611,11 +623,11 @@ function parseUnit(b: any, base?: Unit, lenient = false, strict = false): Parsed
   }
   const support = pick('supportNeeded') ?? 'Sentença';
   if (!WORK_TYPES.includes(support as WorkType)) return { error: 'Auxílio necessário inválido.' };
-  const periodRaw = pick('hearingPeriod') ?? '';
-  if (periodRaw !== '' && !UNIT_PERIODS.includes(periodRaw as UnitPeriod)) return { error: 'Período pretendido para as audiências inválido.' };
+  const period = asHearingPeriod(pick('hearingPeriod'));
+  if (period === null) return { error: 'Período pretendido para as audiências inválido.' };
   const withHearings = support === 'Audiência' || support === 'Audiência e Sentença';
-  const hearingPeriod = withHearings && periodRaw ? (periodRaw as UnitPeriod) : undefined;
-  if (strict && withHearings && !hearingPeriod) return { error: 'Informe se o auxílio nas audiências é pretendido no período da manhã, no período do expediente ou indiferentemente.' };
+  const hearingPeriod = withHearings && period ? period : undefined;
+  if (strict && withHearings && !hearingPeriod) return { error: 'Informe se o auxílio nas audiências é pretendido no período da manhã, no período do expediente (tarde) ou indiferentemente.' };
   const slots = pick('slots') ?? 1;
   if (typeof slots !== 'number' || !Number.isInteger(slots) || slots < 1 || slots > MAX_SLOTS) return { error: `O número de magistrados a alocar deve ser um inteiro de 1 a ${MAX_SLOTS}.` };
   const description = pick('description') ?? '';
@@ -635,6 +647,7 @@ function sanitizeStoredRecords() {
     u.unitName = asText(u.unitName); u.judgeName = asText(u.judgeName); u.email = asText(u.email);
     u.comarca = asText(u.comarca); u.separator = asText(u.separator).trim() || 'de'; u.description = asText(u.description);
     u.areas = Array.isArray(u.areas) ? u.areas.map(asText) : u.areas ? [asText(u.areas)] : [];
+    if ((u.hearingPeriod as string) === 'Expediente') u.hearingPeriod = 'Tarde'; // "período do expediente" foi unificado com a tarde
   });
 }
 
@@ -762,9 +775,16 @@ let lastMeta = '';
 
 const metaJson = () => JSON.stringify({ activeEditionId, adminTotpSecret, dupDismissed, lastAutoBackup });
 
+/** Sessões ainda válidas (as expiradas não são gravadas) */
+const liveSessions = () => { const now = Date.now(); return [...sessions.values()].filter((x) => x.exp > now); };
+const loadSessions = (list: unknown) => {
+  sessions.clear();
+  if (Array.isArray(list)) for (const x of list as Session[]) if (x && typeof x.id === 'string' && typeof x.exp === 'number' && x.exp > Date.now()) sessions.set(x.id, x);
+};
+
 const collectionsNow = (): Record<string, { id: string }[]> => ({
   editions, magistrates, units, matches, log: activityLog, faq, panel: panelEntries, withdrawals, transfers, admins,
-  catalog: catalogUnits, comarcas: catalogComarcas,
+  catalog: catalogUnits, comarcas: catalogComarcas, sessions: liveSessions(),
 });
 
 async function loadState() {
@@ -787,6 +807,7 @@ async function loadState() {
       admins = raw.admins ?? [];
       catalogUnits = raw.catalog ?? [];
       catalogComarcas = raw.comarcas ?? [];
+      loadSessions(raw.sessions);
     } catch { /* primeira execução: usa os dados iniciais */ }
     applyCatalog();
     return;
@@ -828,6 +849,7 @@ async function loadState() {
   admins = loaded.admins as AdminUser[];
   catalogUnits = loaded.catalog as CatalogRecord[];
   catalogComarcas = loaded.comarcas as { id: string; name: string }[];
+  loadSessions(loaded.sessions);
   applyCatalog();
   lastMeta = metaJson();
 }
@@ -837,7 +859,7 @@ async function persist() {
     fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
     fs.writeFileSync(
       DATA_FILE,
-      JSON.stringify({ editions, activeEditionId, magistrates, units, matches, activityLog, faq, adminTotpSecret, panel: panelEntries, withdrawals, transfers, dupDismissed, admins, lastAutoBackup, catalog: catalogUnits, comarcas: catalogComarcas }),
+      JSON.stringify({ editions, activeEditionId, magistrates, units, matches, activityLog, faq, adminTotpSecret, panel: panelEntries, withdrawals, transfers, dupDismissed, admins, lastAutoBackup, catalog: catalogUnits, comarcas: catalogComarcas, sessions: liveSessions() }),
     );
     return;
   }
@@ -1129,7 +1151,7 @@ async function startServer() {
     if (session) {
       // Perfis: Consulta só lê; Gestor opera o mutirão; Administrador também gere usuários, backup e exclusões em lote
       const adminOnly = /^\/(admin\/users|backup)/.test(req.path) || /\/delete-all$/.test(req.path);
-      const selfService = req.path === '/admin/me/password' || req.path === '/admin/logout' || req.path === '/admin/me';
+      const selfService = req.path === '/admin/me/password' || req.path === '/admin/logout' || req.path === '/admin/me' || req.path === '/admin/me/sessions/end-others';
       if (adminOnly && session.role !== 'admin') return res.status(403).json({ error: 'Ação restrita ao perfil Administrador.' });
       if (session.role === 'consulta' && req.method !== 'GET' && !selfService) return res.status(403).json({ error: 'Seu perfil é somente consulta.' });
       return next();
@@ -1181,14 +1203,17 @@ async function startServer() {
     const expected = Buffer.from(deviceSig(secret, userId, Number(m[1])));
     return crypto.timingSafeEqual(expected, Buffer.from(m[2]));
   };
-  const openSession = (res: express.Response, how: string, user: AdminUser | null, extra: Record<string, unknown> = {}) => {
-    const token = crypto.randomBytes(24).toString('hex');
+  const openSession = (res: express.Response, how: string, user: AdminUser | null, keep: boolean, extra: Record<string, unknown> = {}) => {
+    const token = crypto.randomBytes(32).toString('hex');
     const name = user ? user.name : 'Senha compartilhada';
-    sessions.set(token, { exp: Date.now() + SESSION_TTL_MS, userId: user?.id ?? null, name, role: user?.role ?? 'admin' });
+    const exp = Date.now() + (keep ? KEEP_SESSION_TTL_MS : SESSION_TTL_MS);
+    const id = tokenHash(token);
+    sessions.set(id, { id, exp, userId: user?.id ?? null, name, role: user?.role ?? 'admin', createdAt: new Date().toISOString(), ...(keep ? { keep: true } : {}) });
     const store = reqCtx.getStore(); if (store) store.user = name;
     if (user) user.lastLoginAt = new Date().toISOString();
-    log(null, 'Administração', 'Acesso', `Acesso ao painel administrativo (${how}).`);
-    res.json({ success: true, token, ...extra });
+    log(null, 'Administração', 'Acesso', `Acesso ao painel administrativo (${how}${keep ? '; conectado por 30 dias' : ''}).`);
+    res.locals.persist = true; // a sessão precisa ser gravada mesmo quando aberta na etapa 1 (dispositivo lembrado)
+    res.json({ success: true, token, keep, expiresAt: new Date(exp).toISOString(), ...extra });
   };
 
   // Tela de login: indica se já existem usuários individuais (pede e-mail) ou se vale a senha compartilhada
@@ -1221,15 +1246,15 @@ async function startServer() {
     const challenge = crypto.randomBytes(24).toString('hex');
     const secret = user ? user.totpSecret : adminTotpSecret;
     if (secret && deviceTrusted(req.body?.deviceToken, secret, user?.id ?? null)) {
-      return openSession(res, `${user ? 'e-mail e senha' : 'senha compartilhada'} em dispositivo lembrado`, user);
+      return openSession(res, `${user ? 'e-mail e senha' : 'senha compartilhada'} em dispositivo lembrado`, user, req.body?.keep === true);
     }
     if (secret) {
-      challenges.set(challenge, { exp: Date.now() + 5 * 60_000, tries: 0, userId: user?.id ?? null });
+      challenges.set(challenge, { exp: Date.now() + 5 * 60_000, tries: 0, userId: user?.id ?? null, keep: req.body?.keep === true });
       return res.json({ success: true, step: 'totp', challenge });
     }
     // Primeiro acesso: cadastro do aplicativo autenticador (segredo + QR code)
     const pendingSecret = base32Encode(crypto.randomBytes(20));
-    challenges.set(challenge, { exp: Date.now() + 10 * 60_000, tries: 0, pendingSecret, userId: user?.id ?? null });
+    challenges.set(challenge, { exp: Date.now() + 10 * 60_000, tries: 0, pendingSecret, userId: user?.id ?? null, keep: req.body?.keep === true });
     const account = user ? user.email : 'Administração';
     const otpauth = `otpauth://totp/${encodeURIComponent('Mutirão CGJ')}:${encodeURIComponent(account)}?secret=${pendingSecret}&issuer=${encodeURIComponent('Mutirão CGJ')}`;
     const qrSvg = await QRCode.toString(otpauth, { type: 'svg', margin: 1, width: 200 });
@@ -1255,19 +1280,28 @@ async function startServer() {
     challenges.delete(String(req.body.challenge));
     const extra = req.body?.remember === true ? { deviceToken: issueDeviceToken(secret, user?.id ?? null) } : {};
     const remembered = extra.deviceToken ? '; dispositivo lembrado por 30 dias' : '';
+    const keep = req.body?.keep === true || ch.keep === true;
     if (ch.pendingSecret) {
       if (user) user.totpSecret = ch.pendingSecret; else adminTotpSecret = ch.pendingSecret;
       const store = reqCtx.getStore(); if (store && user) store.user = user.name;
       log(null, 'Administração', 'Acesso', `Autenticação em dois fatores configurada${user ? ` para ${user.name}` : ''}.`);
-      return openSession(res, `primeiro acesso com cadastro do autenticador${remembered}`, user, extra);
+      return openSession(res, `primeiro acesso com cadastro do autenticador${remembered}`, user, keep, extra);
     }
-    openSession(res, `${user ? 'e-mail, senha e código de verificação' : 'senha compartilhada e código de verificação'}${remembered}`, user, extra);
+    openSession(res, `${user ? 'e-mail, senha e código de verificação' : 'senha compartilhada e código de verificação'}${remembered}`, user, keep, extra);
   });
 
   app.post('/api/admin/logout', (req, res) => {
     const token = req.header('x-admin-token');
-    if (token) sessions.delete(token);
+    if (token && sessions.delete(tokenHash(token))) res.locals.persist = true;
     res.json({ success: true });
+  });
+
+  // Encerra as demais sessões abertas do próprio usuário (outros computadores e navegadores)
+  app.post('/api/admin/me/sessions/end-others', (req, res) => {
+    const s = sessionOf(req)!;
+    const n = endSessionsOf(s.userId, s.id);
+    log(null, 'Administração', 'Acesso', `${s.name} encerrou ${n} outra(s) sessão(ões) aberta(s).`);
+    res.json({ success: true, ended: n });
   });
 
   // ---------- Usuários (perfil Administrador) ----------
@@ -1277,7 +1311,8 @@ async function startServer() {
 
   app.get('/api/admin/me', (req, res) => {
     const s = sessionOf(req)!;
-    res.json({ name: s.name, role: s.role, shared: s.userId === null, users: admins.some((a) => a.active) });
+    const others = [...sessions.values()].filter((x) => x.userId === s.userId && x.id !== s.id && x.exp > Date.now()).length;
+    res.json({ name: s.name, role: s.role, shared: s.userId === null, users: admins.some((a) => a.active), sessionExpiresAt: new Date(s.exp).toISOString(), keep: s.keep === true, otherSessions: others });
   });
   app.get('/api/admin/users', (_req, res) => res.json(admins.map(publicUser)));
 
@@ -1315,6 +1350,11 @@ async function startServer() {
       if (b.password.length < 10) return res.status(400).json({ error: 'A senha precisa ter ao menos 10 caracteres.' });
       u.passwordHash = hashPassword(b.password); changes.push('senha redefinida');
     }
+    // Senha ou autenticador redefinidos, ou usuário desativado: as sessões abertas (inclusive as de 30 dias) são encerradas
+    if (changes.some((c) => c === 'senha redefinida' || c === 'desativado' || c.startsWith('autenticador'))) {
+      const n = endSessionsOf(u.id);
+      if (n) changes.push(`${n} sessão(ões) aberta(s) encerrada(s)`);
+    }
     if (changes.length) log(null, 'Administração', 'Acesso', `Usuário ${u.email} alterado: ${changes.join(', ')}.`);
     // Mudança de perfil ou desativação vale para as sessões abertas
     for (const s of sessions.values()) if (s.userId === u.id) { s.role = u.role; s.name = u.name; }
@@ -1330,7 +1370,8 @@ async function startServer() {
     const next = String(req.body?.next ?? '');
     if (next.length < 10) return res.status(400).json({ error: 'A nova senha precisa ter ao menos 10 caracteres.' });
     u.passwordHash = hashPassword(next);
-    log(null, 'Administração', 'Acesso', `${u.name} alterou a própria senha.`);
+    const n = endSessionsOf(u.id, s.id); // a troca de senha encerra as sessões abertas em outros dispositivos
+    log(null, 'Administração', 'Acesso', `${u.name} alterou a própria senha${n ? ` (${n} outra(s) sessão(ões) encerrada(s))` : ''}.`);
     res.json({ success: true });
   });
 
@@ -3434,7 +3475,7 @@ async function startServer() {
       csv += '=== MAGISTRADOS VOLUNTARIOS ===\n';
       csv += 'ID,Nome,Email,Lotacao Atual,1ª Preferencia,2ª Preferencia,Aceita Audiencia,Periodo Audiencias,IP,Declaracao,Status,Motivo Rejeicao,Data Inscr.\n';
       magistrates.filter((m) => m.editionId === edition.id).forEach((m) => {
-        csv += [m.id, m.name, m.email, m.currentLocation, m.firstPreference, m.secondPreference, m.acceptsHearings ? 'Sim' : 'Nao', magistratePeriodLabel(m.hearingPeriod), m.registeredIp ?? '', m.declaration ? 'Sim' : '', m.status, m.rejectionReason ?? '', m.createdAt].map(csvCell).join(',') + '\n';
+        csv += [m.id, m.name, m.email, m.currentLocation, m.firstPreference, m.secondPreference, m.acceptsHearings ? 'Sim' : 'Nao', hearingPeriodLabel(m.hearingPeriod), m.registeredIp ?? '', m.declaration ? 'Sim' : '', m.status, m.rejectionReason ?? '', m.createdAt].map(csvCell).join(',') + '\n';
       });
       csv += '\n\n';
     }
@@ -3443,7 +3484,7 @@ async function startServer() {
       csv += '=== UNIDADES JUDICIAIS ===\n';
       csv += 'ID,Unidade,Juiz(a) Responsavel,Email,Comarca,Areas,Auxilio Necessario,Periodo Audiencias,Vagas,IP,Triagem,Status,Motivo Rejeicao,Data Inscr.\n';
       units.filter((u) => u.editionId === edition.id).forEach((u) => {
-        csv += [u.id, u.unitName, u.judgeName, u.email, u.comarca, u.areas.join(' | '), u.supportNeeded, unitPeriodLabel(u.hearingPeriod), u.slots, u.registeredIp ?? '', u.selection, u.status, u.rejectionReason ?? '', u.createdAt].map(csvCell).join(',') + '\n';
+        csv += [u.id, u.unitName, u.judgeName, u.email, u.comarca, u.areas.join(' | '), u.supportNeeded, hearingPeriodLabel(u.hearingPeriod), u.slots, u.registeredIp ?? '', u.selection, u.status, u.rejectionReason ?? '', u.createdAt].map(csvCell).join(',') + '\n';
       });
       csv += '\n\n';
     }

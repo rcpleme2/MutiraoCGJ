@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Lock, Unlock, Plus, Trash2, Check, Pencil, Download, Sparkles, LogOut, Radio, Archive, RotateCcw, ChevronDown, ChevronRight, X, ArrowUp, ArrowDown, ArrowUpDown, Filter, StickyNote } from 'lucide-react';
 import { api, download, getToken, reloadCatalog, setToken } from './api';
-import { PREFERENCE_AREAS, ActingPeriod, Edition, FaqItem, LogEntry, Magistrate, Match, PanelRow, Transfer, Unit, Withdrawal, WorkType, WORK_TYPES, magistratePeriodLabel, unitPeriodLabel } from './types';
+import { PREFERENCE_AREAS, ActingPeriod, Edition, FaqItem, LogEntry, Magistrate, Match, PanelRow, Transfer, Unit, Withdrawal, WorkType, WORK_TYPES, hearingPeriodLabel, periodsClash } from './types';
 import { CATALOG, COMARCAS, canonicalComarca, catalogById, fullUnitName, unitsOfComarca, type CatalogUnit } from './catalogo-tjpr';
 import { Badge, EmptyRow, Field, Modal, Notice, formatDate, formatDateTime, magistrateTone, useFeedback } from './ui';
 import { MagistrateForm, UnitForm } from './Forms';
@@ -388,6 +388,7 @@ function WorkTypeWarnings({ unit, mag, workType }: { unit: Unit; mag?: Magistrat
   return (
     <>
       {mag && hearings && !mag.acceptsHearings && <p className="text-[11px] text-warn mt-1.5">Este magistrado informou que não aceita realizar audiências.</p>}
+      {mag && hearings && mag.acceptsHearings && periodsClash(mag.hearingPeriod, unit.hearingPeriod) && <p className="text-[11px] text-warn mt-1.5">Período das audiências diferente: o magistrado pode auxiliar <strong>{hearingPeriodLabel(mag.hearingPeriod).toLowerCase()}</strong> e a unidade pretende o auxílio <strong>{hearingPeriodLabel(unit.hearingPeriod).toLowerCase()}</strong>.</p>}
       {workType !== unit.supportNeeded && <p className="text-[11px] text-muted mt-1.5">A unidade pediu auxílio para <strong>{unit.supportNeeded.toLowerCase()}</strong>; esta vinculação cobre {workType.toLowerCase()}.</p>}
     </>
   );
@@ -436,7 +437,7 @@ function UnitDetail({ unit, magistrates, matches, busy, onLink, onUnlink }: {
         {unit.description.trim()
           ? <p className="text-sm leading-relaxed whitespace-pre-wrap">{unit.description}</p>
           : <p className="text-sm text-muted italic">Nenhuma justificativa informada.</p>}
-        <div className="text-xs text-muted mt-3">Auxílio solicitado: <span className="text-ink">{unit.supportNeeded}</span>{unit.hearingPeriod && <> · Audiências: <span className="text-ink">{unitPeriodLabel(unit.hearingPeriod).toLowerCase()}</span></>} · Responsável: <span className="text-ink">{unit.judgeName}</span></div>
+        <div className="text-xs text-muted mt-3">Auxílio solicitado: <span className="text-ink">{unit.supportNeeded}</span>{unit.hearingPeriod && <> · Audiências: <span className="text-ink">{hearingPeriodLabel(unit.hearingPeriod).toLowerCase()}</span></>} · Responsável: <span className="text-ink">{unit.judgeName}</span></div>
       </div>
 
       <div>
@@ -466,7 +467,7 @@ function UnitDetail({ unit, magistrates, matches, busy, onLink, onUnlink }: {
                   <span className="flex flex-wrap gap-1.5 mt-1.5">
                     <Badge tone="info">{rank}ª preferência: {area}</Badge>
                     <Badge tone={m.acceptsHearings ? 'ok' : 'neutral'}>{m.acceptsHearings ? 'Aceita audiências' : 'Não aceita audiências'}</Badge>
-                    {m.acceptsHearings && m.hearingPeriod && <Badge tone="neutral">Audiências: {magistratePeriodLabel(m.hearingPeriod).toLowerCase()}</Badge>}
+                    {m.acceptsHearings && m.hearingPeriod && <Badge tone={periodsClash(m.hearingPeriod, unit.hearingPeriod) ? 'warn' : 'neutral'}>Audiências: {hearingPeriodLabel(m.hearingPeriod).toLowerCase()}</Badge>}
                   </span>
                 </span>
               </label>
@@ -513,7 +514,7 @@ function LinkSlot({ unit, magistrates, matches, match, busy, onSave, onUnlink }:
   const changed = !!sel && (!match || match.magistrateId !== magId || match.workType !== effective);
 
   const label = (e: Eligible) =>
-    `${e.m.name}${e.rank ? ` — ${e.rank}ª preferência` : ''}${e.m.acceptsHearings ? '' : ' — não aceita audiências'}`;
+    `${e.m.name}${e.rank ? ` — ${e.rank}ª preferência` : ''}${e.m.acceptsHearings ? (e.m.hearingPeriod && unit.hearingPeriod ? ` — audiências: ${hearingPeriodLabel(e.m.hearingPeriod).toLowerCase()}${periodsClash(e.m.hearingPeriod, unit.hearingPeriod) ? ' (período diferente)' : ''}` : '') : ' — não aceita audiências'}`;
 
   return (
     <div>
@@ -577,7 +578,7 @@ function UnitLinkRow({ unit, magistrates, matches, busy, onSave, onUnlink, onSlo
           <div className="flex flex-wrap gap-1.5 mt-3">
             {unit.areas.map(a => <Badge key={a} tone="info">{a}</Badge>)}
             <Badge tone={workTypeTone(unit.supportNeeded)}>Precisa de: {unit.supportNeeded}</Badge>
-            {unit.hearingPeriod && <Badge tone="neutral">Audiências: {unitPeriodLabel(unit.hearingPeriod).toLowerCase()}</Badge>}
+            {unit.hearingPeriod && <Badge tone="neutral">Audiências: {hearingPeriodLabel(unit.hearingPeriod).toLowerCase()}</Badge>}
           </div>
           {unit.description.trim() && (
             <div className="mt-2.5">
@@ -1664,9 +1665,10 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const [loginStep, setLoginStep] = useState<null | { kind: 'totp' | 'enroll'; challenge: string; secret?: string; qrSvg?: string }>(null);
   const [totpCode, setTotpCode] = useState('');
   const [rememberDevice, setRememberDevice] = useState(false);
+  const [keepSession, setKeepSession] = useState(() => readPref<{ on: boolean }>('mutirao-keep-session', { on: false }).on);
   const [loginEmail, setLoginEmail] = useState('');
   const [loginMode, setLoginMode] = useState<{ users: boolean; shared: boolean }>({ users: false, shared: true });
-  const [me, setMe] = useState<{ name: string; role: 'admin' | 'gestor' | 'consulta'; shared: boolean; users: boolean } | null>(null);
+  const [me, setMe] = useState<{ name: string; role: 'admin' | 'gestor' | 'consulta'; shared: boolean; users: boolean; sessionExpiresAt?: string; keep?: boolean; otherSessions?: number } | null>(null);
   const [myPw, setMyPw] = useState<null | { current: string; next: string }>(null);
   const [excluding, setExcluding] = useState<Magistrate | null>(null);
   const [backupWarn, setBackupWarn] = useState('');
@@ -1765,16 +1767,17 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       const account = loginEmail.trim().toLowerCase() || 'shared';
       const devices = readPref<Record<string, string>>('mutirao-devices', {});
       if (!loginStep) {
-        const r = await api<{ token?: string; step: 'totp' | 'enroll'; challenge: string; secret?: string; qrSvg?: string }>('/admin/login', { method: 'POST', json: { email: loginEmail.trim(), password, deviceToken: devices[account] } });
+        writePref('mutirao-keep-session', { on: keepSession });
+        const r = await api<{ token?: string; keep?: boolean; step: 'totp' | 'enroll'; challenge: string; secret?: string; qrSvg?: string }>('/admin/login', { method: 'POST', json: { email: loginEmail.trim(), password, deviceToken: devices[account], keep: keepSession } });
         setPassword('');
-        if (r.token) { setToken(r.token); setAuthed(true); return; } // dispositivo lembrado: dispensa o código
+        if (r.token) { setToken(r.token, r.keep === true); setAuthed(true); return; } // dispositivo lembrado: dispensa o código
         setLoginStep({ kind: r.step, challenge: r.challenge, secret: r.secret, qrSvg: r.qrSvg });
         setTotpCode('');
       } else {
-        const r = await api<{ token: string; deviceToken?: string }>('/admin/login/verify', { method: 'POST', json: { challenge: loginStep.challenge, code: totpCode, remember: rememberDevice } });
+        const r = await api<{ token: string; keep?: boolean; deviceToken?: string }>('/admin/login/verify', { method: 'POST', json: { challenge: loginStep.challenge, code: totpCode, remember: rememberDevice, keep: keepSession } });
         if (r.deviceToken) writePref('mutirao-devices', { ...devices, [account]: r.deviceToken });
         else if (devices[account]) { delete devices[account]; writePref('mutirao-devices', devices); }
-        setToken(r.token); setLoginStep(null); setTotpCode(''); setAuthed(true);
+        setToken(r.token, r.keep === true); setLoginStep(null); setTotpCode(''); setAuthed(true);
       }
     } catch (err: any) {
       setLoginError(err.message);
@@ -1802,6 +1805,12 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
           )}
           {!loginStep && (
             <Field label="Senha"><input type="password" required autoFocus={!loginMode.users} autoComplete="current-password" className="input" value={password} onChange={e => setPassword(e.target.value)} /></Field>
+          )}
+          {!loginStep && (
+            <label className="flex items-start gap-2 text-sm text-ink">
+              <input type="checkbox" className="mt-0.5" checked={keepSession} onChange={e => setKeepSession(e.target.checked)} />
+              <span>Manter conectado por 30 dias <span className="block text-xs text-muted">A sessão continua aberta neste navegador, mesmo depois de fechá-lo, até você clicar em Sair. Não marque em computador compartilhado.</span></span>
+            </label>
           )}
           {loginStep?.kind === 'enroll' && (
             <div className="space-y-3">
@@ -1998,6 +2007,11 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       {me && (
         <div className="flex flex-wrap items-center justify-end gap-3 -mt-3 text-xs text-muted">
           <span>Conectado como <strong className="text-ink">{me.name}</strong> · {({ admin: 'Administrador', gestor: 'Gestor', consulta: 'Consulta' } as const)[me.role]}</span>
+          {me.keep && me.sessionExpiresAt && <span title="Opção &quot;Manter conectado&quot; marcada no login">Conectado até {formatDateTime(me.sessionExpiresAt)}</span>}
+          {!!me.otherSessions && <button className="text-bronze hover:underline" onClick={async () => {
+            if (!(await confirm(`Encerrar ${me.otherSessions} outra(s) sessão(ões) aberta(s) com o seu acesso em outros computadores ou navegadores? Esta sessão continua aberta.`, 'Encerrar sessões'))) return;
+            if (await run(() => api('/admin/me/sessions/end-others', { method: 'POST' }), 'Outras sessões encerradas.')) setMe({ ...me, otherSessions: 0 });
+          }}>Encerrar outras sessões ({me.otherSessions})</button>}
           {!me.shared && <button className="text-bronze hover:underline" onClick={() => setMyPw({ current: '', next: '' })}>Alterar minha senha</button>}
           {me.shared && me.role === 'admin' && !me.users && <button className="text-bronze hover:underline" onClick={() => setSub('users')}>Cadastre usuários individuais (recomendado)</button>}
         </div>
@@ -2134,7 +2148,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             { id: 'createdAt', label: 'Inscrição', optional: true, hidden: true, sort: m => m.createdAt, render: m => <DateCell iso={m.createdAt} /> },
             { id: 'location', label: 'Lotação', optional: true, filter: m => m.currentLocation, sort: m => m.currentLocation, tdClass: 'text-muted', render: m => <>{m.currentLocation}{m.currentLocation && !m.locationCatalogId && <span className="text-[11px] text-warn block">◦ A padronizar</span>}</> },
             { id: 'prefs', label: 'Preferências', optional: true, filter: m => [m.firstPreference, m.secondPreference].filter(Boolean), sort: m => m.firstPreference, tdClass: 'text-xs', render: m => <><div className="text-bronze font-medium">1ª: {m.firstPreference}</div><div className="text-muted">2ª: {m.secondPreference || '—'}</div></> },
-            { id: 'hearings', label: 'Audiências', optional: true, filter: m => (m.acceptsHearings ? ['Aceita audiências', ...(m.hearingPeriod ? [magistratePeriodLabel(m.hearingPeriod)] : [])] : 'Não aceita'), sort: m => (m.acceptsHearings ? 1 : 0), render: m => <div className="flex flex-col items-start gap-0.5"><Badge tone={m.acceptsHearings ? 'ok' : 'neutral'}>{m.acceptsHearings ? 'Aceita' : 'Não aceita'}</Badge>{m.acceptsHearings && m.hearingPeriod && <span className="text-[11px] text-muted">{magistratePeriodLabel(m.hearingPeriod)}</span>}</div> },
+            { id: 'hearings', label: 'Audiências', optional: true, filter: m => (m.acceptsHearings ? ['Aceita audiências', ...(m.hearingPeriod ? [hearingPeriodLabel(m.hearingPeriod)] : [])] : 'Não aceita'), sort: m => (m.acceptsHearings ? 1 : 0), render: m => <div className="flex flex-col items-start gap-0.5"><Badge tone={m.acceptsHearings ? 'ok' : 'neutral'}>{m.acceptsHearings ? 'Aceita' : 'Não aceita'}</Badge>{m.acceptsHearings && m.hearingPeriod && <span className="text-[11px] text-muted">{hearingPeriodLabel(m.hearingPeriod)}</span>}</div> },
             { id: 'status', label: 'Status', sort: m => m.status, filter: m => m.status, render: m => <>
               <Badge tone={magistrateTone(m.status)}>{m.status}</Badge>
               {m.status === 'Rejeitado' && m.rejectionReason && <div className="text-[11px] text-danger mt-1.5 max-w-[14rem] leading-snug" title={m.rejectionReason}>Motivo: {m.rejectionReason}</div>}
@@ -2214,7 +2228,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
               { id: 'email', label: 'E-mail', optional: true, hidden: true, sort: u => u.email, render: u => <span className="text-xs text-muted break-all">{u.email || '—'}</span> },
               { id: 'ip', label: 'IP', optional: true, hidden: true, sort: u => u.registeredIp ?? '', render: u => <span className="text-xs text-muted font-mono">{u.registeredIp || '—'}</span> },
               { id: 'createdAt', label: 'Inscrição', optional: true, hidden: true, sort: u => u.createdAt, render: u => <DateCell iso={u.createdAt} /> },
-              { id: 'areas', label: 'Áreas e auxílio', optional: true, filter: u => [...u.areas, `Precisa de: ${u.supportNeeded}`, ...(u.hearingPeriod ? [`Audiências: ${unitPeriodLabel(u.hearingPeriod)}`] : [])], sort: u => u.areas.join(', '), render: u => <div className="flex flex-wrap gap-1">{u.areas.map(a => <Badge key={a} tone="info">{a}</Badge>)}<Badge tone="neutral">Precisa de: {u.supportNeeded}</Badge>{u.hearingPeriod && <Badge tone="neutral">Audiências: {unitPeriodLabel(u.hearingPeriod).toLowerCase()}</Badge>}</div> },
+              { id: 'areas', label: 'Áreas e auxílio', optional: true, filter: u => [...u.areas, `Precisa de: ${u.supportNeeded}`, ...(u.hearingPeriod ? [`Audiências: ${hearingPeriodLabel(u.hearingPeriod)}`] : [])], sort: u => u.areas.join(', '), render: u => <div className="flex flex-wrap gap-1">{u.areas.map(a => <Badge key={a} tone="info">{a}</Badge>)}<Badge tone="neutral">Precisa de: {u.supportNeeded}</Badge>{u.hearingPeriod && <Badge tone="neutral">Audiências: {hearingPeriodLabel(u.hearingPeriod).toLowerCase()}</Badge>}</div> },
               { id: 'slots', label: 'Magistrados', optional: true, sort: u => matches.filter(m => m.unitId === u.id).length, render: u => <SlotsControl bare unit={u} linked={matches.filter(m => m.unitId === u.id).length} onChange={n => setSlots(u, n)} /> },
               { id: 'selection', label: 'Triagem', filter: u => u.selection, sort: u => SELECTION_ORDER[u.selection] ?? 9, render: u => <>
                 <Badge tone={u.selection === 'Escolhida' ? 'ok' : u.selection === 'Rejeitada' ? 'danger' : 'warn'}>{u.selection}</Badge>
@@ -2298,7 +2312,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             { id: 'location', label: 'Lotação', optional: true, sort: m => m.currentLocation, tdClass: 'text-muted', render: m => m.currentLocation },
             { id: 'first', label: '1ª preferência', filter: m => m.firstPreference, sort: m => m.firstPreference, tdClass: 'text-bronze font-medium', render: m => m.firstPreference },
             { id: 'second', label: '2ª preferência', optional: true, filter: m => m.secondPreference || '—', sort: m => m.secondPreference, tdClass: 'text-muted', render: m => m.secondPreference || '—' },
-            { id: 'hearings', label: 'Audiências', optional: true, filter: m => (m.acceptsHearings ? 'Aceita' : 'Não aceita'), sort: m => (m.acceptsHearings ? 1 : 0), tdClass: 'text-muted', render: m => (m.acceptsHearings ? `Aceita${m.hearingPeriod ? ` (${magistratePeriodLabel(m.hearingPeriod).toLowerCase()})` : ''}` : 'Não aceita') },
+            { id: 'hearings', label: 'Audiências', optional: true, filter: m => (m.acceptsHearings ? 'Aceita' : 'Não aceita'), sort: m => (m.acceptsHearings ? 1 : 0), tdClass: 'text-muted', render: m => (m.acceptsHearings ? `Aceita${m.hearingPeriod ? ` (${hearingPeriodLabel(m.hearingPeriod).toLowerCase()})` : ''}` : 'Não aceita') },
             { id: 'createdAt', label: 'Inscrição', optional: true, hidden: true, sort: m => m.createdAt, render: m => <DateCell iso={m.createdAt} /> },
           ]} />
         </div>
