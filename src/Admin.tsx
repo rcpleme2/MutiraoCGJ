@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Lock, Unlock, Plus, Trash2, Check, Pencil, Download, Sparkles, LogOut, Radio, Archive, RotateCcw, ChevronDown, ChevronRight, X, ArrowUp, ArrowDown, ArrowUpDown, Filter, StickyNote } from 'lucide-react';
 import { api, download, getToken, reloadCatalog, setToken } from './api';
-import { PREFERENCE_AREAS, ActingPeriod, Edition, FaqItem, LogEntry, Magistrate, Match, PanelRow, Transfer, Unit, Withdrawal, WorkType, WORK_TYPES } from './types';
+import { PREFERENCE_AREAS, ActingPeriod, Edition, FaqItem, LogEntry, Magistrate, Match, PanelRow, Transfer, Unit, Withdrawal, WorkType, WORK_TYPES, magistratePeriodLabel, unitPeriodLabel } from './types';
 import { CATALOG, COMARCAS, canonicalComarca, catalogById, fullUnitName, unitsOfComarca, type CatalogUnit } from './catalogo-tjpr';
 import { Badge, EmptyRow, Field, Modal, Notice, formatDate, formatDateTime, magistrateTone, useFeedback } from './ui';
 import { MagistrateForm, UnitForm } from './Forms';
@@ -436,7 +436,7 @@ function UnitDetail({ unit, magistrates, matches, busy, onLink, onUnlink }: {
         {unit.description.trim()
           ? <p className="text-sm leading-relaxed whitespace-pre-wrap">{unit.description}</p>
           : <p className="text-sm text-muted italic">Nenhuma justificativa informada.</p>}
-        <div className="text-xs text-muted mt-3">Auxílio solicitado: <span className="text-ink">{unit.supportNeeded}</span> · Responsável: <span className="text-ink">{unit.judgeName}</span></div>
+        <div className="text-xs text-muted mt-3">Auxílio solicitado: <span className="text-ink">{unit.supportNeeded}</span>{unit.hearingPeriod && <> · Audiências: <span className="text-ink">{unitPeriodLabel(unit.hearingPeriod).toLowerCase()}</span></>} · Responsável: <span className="text-ink">{unit.judgeName}</span></div>
       </div>
 
       <div>
@@ -466,6 +466,7 @@ function UnitDetail({ unit, magistrates, matches, busy, onLink, onUnlink }: {
                   <span className="flex flex-wrap gap-1.5 mt-1.5">
                     <Badge tone="info">{rank}ª preferência: {area}</Badge>
                     <Badge tone={m.acceptsHearings ? 'ok' : 'neutral'}>{m.acceptsHearings ? 'Aceita audiências' : 'Não aceita audiências'}</Badge>
+                    {m.acceptsHearings && m.hearingPeriod && <Badge tone="neutral">Audiências: {magistratePeriodLabel(m.hearingPeriod).toLowerCase()}</Badge>}
                   </span>
                 </span>
               </label>
@@ -576,6 +577,7 @@ function UnitLinkRow({ unit, magistrates, matches, busy, onSave, onUnlink, onSlo
           <div className="flex flex-wrap gap-1.5 mt-3">
             {unit.areas.map(a => <Badge key={a} tone="info">{a}</Badge>)}
             <Badge tone={workTypeTone(unit.supportNeeded)}>Precisa de: {unit.supportNeeded}</Badge>
+            {unit.hearingPeriod && <Badge tone="neutral">Audiências: {unitPeriodLabel(unit.hearingPeriod).toLowerCase()}</Badge>}
           </div>
           {unit.description.trim() && (
             <div className="mt-2.5">
@@ -2132,7 +2134,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             { id: 'createdAt', label: 'Inscrição', optional: true, hidden: true, sort: m => m.createdAt, render: m => <DateCell iso={m.createdAt} /> },
             { id: 'location', label: 'Lotação', optional: true, filter: m => m.currentLocation, sort: m => m.currentLocation, tdClass: 'text-muted', render: m => <>{m.currentLocation}{m.currentLocation && !m.locationCatalogId && <span className="text-[11px] text-warn block">◦ A padronizar</span>}</> },
             { id: 'prefs', label: 'Preferências', optional: true, filter: m => [m.firstPreference, m.secondPreference].filter(Boolean), sort: m => m.firstPreference, tdClass: 'text-xs', render: m => <><div className="text-bronze font-medium">1ª: {m.firstPreference}</div><div className="text-muted">2ª: {m.secondPreference || '—'}</div></> },
-            { id: 'hearings', label: 'Audiências', optional: true, filter: m => (m.acceptsHearings ? 'Aceita audiências' : 'Não aceita'), sort: m => (m.acceptsHearings ? 1 : 0), render: m => <Badge tone={m.acceptsHearings ? 'ok' : 'neutral'}>{m.acceptsHearings ? 'Aceita' : 'Não aceita'}</Badge> },
+            { id: 'hearings', label: 'Audiências', optional: true, filter: m => (m.acceptsHearings ? ['Aceita audiências', ...(m.hearingPeriod ? [magistratePeriodLabel(m.hearingPeriod)] : [])] : 'Não aceita'), sort: m => (m.acceptsHearings ? 1 : 0), render: m => <div className="flex flex-col items-start gap-0.5"><Badge tone={m.acceptsHearings ? 'ok' : 'neutral'}>{m.acceptsHearings ? 'Aceita' : 'Não aceita'}</Badge>{m.acceptsHearings && m.hearingPeriod && <span className="text-[11px] text-muted">{magistratePeriodLabel(m.hearingPeriod)}</span>}</div> },
             { id: 'status', label: 'Status', sort: m => m.status, filter: m => m.status, render: m => <>
               <Badge tone={magistrateTone(m.status)}>{m.status}</Badge>
               {m.status === 'Rejeitado' && m.rejectionReason && <div className="text-[11px] text-danger mt-1.5 max-w-[14rem] leading-snug" title={m.rejectionReason}>Motivo: {m.rejectionReason}</div>}
@@ -2212,7 +2214,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
               { id: 'email', label: 'E-mail', optional: true, hidden: true, sort: u => u.email, render: u => <span className="text-xs text-muted break-all">{u.email || '—'}</span> },
               { id: 'ip', label: 'IP', optional: true, hidden: true, sort: u => u.registeredIp ?? '', render: u => <span className="text-xs text-muted font-mono">{u.registeredIp || '—'}</span> },
               { id: 'createdAt', label: 'Inscrição', optional: true, hidden: true, sort: u => u.createdAt, render: u => <DateCell iso={u.createdAt} /> },
-              { id: 'areas', label: 'Áreas e auxílio', optional: true, filter: u => [...u.areas, `Precisa de: ${u.supportNeeded}`], sort: u => u.areas.join(', '), render: u => <div className="flex flex-wrap gap-1">{u.areas.map(a => <Badge key={a} tone="info">{a}</Badge>)}<Badge tone="neutral">Precisa de: {u.supportNeeded}</Badge></div> },
+              { id: 'areas', label: 'Áreas e auxílio', optional: true, filter: u => [...u.areas, `Precisa de: ${u.supportNeeded}`, ...(u.hearingPeriod ? [`Audiências: ${unitPeriodLabel(u.hearingPeriod)}`] : [])], sort: u => u.areas.join(', '), render: u => <div className="flex flex-wrap gap-1">{u.areas.map(a => <Badge key={a} tone="info">{a}</Badge>)}<Badge tone="neutral">Precisa de: {u.supportNeeded}</Badge>{u.hearingPeriod && <Badge tone="neutral">Audiências: {unitPeriodLabel(u.hearingPeriod).toLowerCase()}</Badge>}</div> },
               { id: 'slots', label: 'Magistrados', optional: true, sort: u => matches.filter(m => m.unitId === u.id).length, render: u => <SlotsControl bare unit={u} linked={matches.filter(m => m.unitId === u.id).length} onChange={n => setSlots(u, n)} /> },
               { id: 'selection', label: 'Triagem', filter: u => u.selection, sort: u => SELECTION_ORDER[u.selection] ?? 9, render: u => <>
                 <Badge tone={u.selection === 'Escolhida' ? 'ok' : u.selection === 'Rejeitada' ? 'danger' : 'warn'}>{u.selection}</Badge>
@@ -2296,7 +2298,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             { id: 'location', label: 'Lotação', optional: true, sort: m => m.currentLocation, tdClass: 'text-muted', render: m => m.currentLocation },
             { id: 'first', label: '1ª preferência', filter: m => m.firstPreference, sort: m => m.firstPreference, tdClass: 'text-bronze font-medium', render: m => m.firstPreference },
             { id: 'second', label: '2ª preferência', optional: true, filter: m => m.secondPreference || '—', sort: m => m.secondPreference, tdClass: 'text-muted', render: m => m.secondPreference || '—' },
-            { id: 'hearings', label: 'Audiências', optional: true, filter: m => (m.acceptsHearings ? 'Aceita' : 'Não aceita'), sort: m => (m.acceptsHearings ? 1 : 0), tdClass: 'text-muted', render: m => (m.acceptsHearings ? 'Aceita' : 'Não aceita') },
+            { id: 'hearings', label: 'Audiências', optional: true, filter: m => (m.acceptsHearings ? 'Aceita' : 'Não aceita'), sort: m => (m.acceptsHearings ? 1 : 0), tdClass: 'text-muted', render: m => (m.acceptsHearings ? `Aceita${m.hearingPeriod ? ` (${magistratePeriodLabel(m.hearingPeriod).toLowerCase()})` : ''}` : 'Não aceita') },
             { id: 'createdAt', label: 'Inscrição', optional: true, hidden: true, sort: m => m.createdAt, render: m => <DateCell iso={m.createdAt} /> },
           ]} />
         </div>

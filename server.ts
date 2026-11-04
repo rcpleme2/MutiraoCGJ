@@ -55,6 +55,8 @@ interface Magistrate {
   firstPreference: string;
   secondPreference: string;
   acceptsHearings: boolean;
+  /** Período em que pode auxiliar nas audiências (só quando aceita audiências) */
+  hearingPeriod?: MagistratePeriod;
   registeredIp?: string;
   /** Declaração de regularidade (120 dias / sanção / processo administrativo) aceita na inscrição pública */
   declaration?: boolean;
@@ -73,6 +75,14 @@ interface Magistrate {
 }
 
 type UnitSelection = 'Em análise' | 'Escolhida' | 'Rejeitada';
+/** Período em que o magistrado pode auxiliar nas audiências */
+type MagistratePeriod = 'Manhã' | 'Tarde' | 'Indiferente';
+const MAGISTRATE_PERIODS: MagistratePeriod[] = ['Manhã', 'Tarde', 'Indiferente'];
+/** Período em que a unidade pretende o auxílio nas audiências */
+type UnitPeriod = 'Manhã' | 'Expediente' | 'Indiferente';
+const UNIT_PERIODS: UnitPeriod[] = ['Manhã', 'Expediente', 'Indiferente'];
+const magistratePeriodLabel = (p?: string) => (p === 'Manhã' ? 'Manhã' : p === 'Tarde' ? 'Tarde' : p === 'Indiferente' ? 'Indiferente (manhã ou tarde)' : '');
+const unitPeriodLabel = (p?: string) => (p === 'Manhã' ? 'Período da manhã' : p === 'Expediente' ? 'Período do expediente' : p === 'Indiferente' ? 'Indiferente' : '');
 type WorkType = 'Audiência' | 'Sentença' | 'Audiência e Sentença';
 const WORK_TYPES: WorkType[] = ['Audiência', 'Sentença', 'Audiência e Sentença']; // auxílio pedido pela unidade
 /** Atuação do magistrado na unidade: apenas para audiências OU para sentença */
@@ -91,6 +101,8 @@ interface Unit {
   catalogId?: string;
   areas: string[];
   supportNeeded: 'Audiência' | 'Sentença' | 'Audiência e Sentença';
+  /** Período pretendido para o auxílio nas audiências (só quando o auxílio inclui audiências) */
+  hearingPeriod?: UnitPeriod;
   description: string;
   registeredIp?: string;
   createdAt: string;
@@ -540,7 +552,7 @@ function resolveCatalogPlace(
 }
 
 /** `strict` (inscrição pública): o aceite de audiências é obrigatório e precisa vir preenchido. A 2ª escolha é opcional. */
-function parseMagistrate(b: any, base?: Magistrate, strict = false, lenient = false): Parsed<Pick<Magistrate, 'name' | 'nameAsTyped' | 'email' | 'currentLocation' | 'locationCatalogId' | 'locationComarca' | 'firstPreference' | 'secondPreference' | 'acceptsHearings'>> {
+function parseMagistrate(b: any, base?: Magistrate, strict = false, lenient = false): Parsed<Pick<Magistrate, 'name' | 'nameAsTyped' | 'email' | 'currentLocation' | 'locationCatalogId' | 'locationComarca' | 'firstPreference' | 'secondPreference' | 'acceptsHearings' | 'hearingPeriod'>> {
   const pick = (k: keyof Magistrate) => (b?.[k] == null && base ? base[k] : b?.[k]);
   const rawName = cleanText(pick('name'), 200);
   const name = rawName ? canonicalPersonName(rawName) : null;
@@ -565,10 +577,16 @@ function parseMagistrate(b: any, base?: Magistrate, strict = false, lenient = fa
   if (second && second === first) return { error: 'A 2ª escolha não pode ser igual à 1ª escolha.' };
   const hearings = pick('acceptsHearings');
   if (strict && typeof hearings !== 'boolean') return { error: 'Informe se aceita realizar audiências.' };
-  return { value: { name, ...(b?.name != null && rawName && rawName !== name ? { nameAsTyped: rawName } : {}), email, currentLocation, locationCatalogId: loc.value.catalogId, locationComarca: loc.value.comarca || undefined, firstPreference: first, secondPreference: second, acceptsHearings: hearings === true } };
+  // Período das audiências: só faz sentido para quem aceita audiências (vazio = não informado)
+  const periodRaw = pick('hearingPeriod') ?? '';
+  if (periodRaw !== '' && !MAGISTRATE_PERIODS.includes(periodRaw as MagistratePeriod)) return { error: 'Período para audiências inválido.' };
+  const hearingPeriod = hearings === true && periodRaw ? (periodRaw as MagistratePeriod) : undefined;
+  if (strict && hearings === true && !hearingPeriod) return { error: 'Informe se pode auxiliar nas audiências de manhã, à tarde ou indiferentemente.' };
+  return { value: { name, ...(b?.name != null && rawName && rawName !== name ? { nameAsTyped: rawName } : {}), email, currentLocation, locationCatalogId: loc.value.catalogId, locationComarca: loc.value.comarca || undefined, firstPreference: first, secondPreference: second, acceptsHearings: hearings === true, hearingPeriod } };
 }
 
-function parseUnit(b: any, base?: Unit, lenient = false): Parsed<Pick<Unit, 'unitName' | 'judgeName' | 'email' | 'comarca' | 'separator' | 'catalogId' | 'areas' | 'supportNeeded' | 'description' | 'slots'>> {
+/** `strict` (inscrição pública): com auxílio para audiências, o período pretendido é obrigatório. */
+function parseUnit(b: any, base?: Unit, lenient = false, strict = false): Parsed<Pick<Unit, 'unitName' | 'judgeName' | 'email' | 'comarca' | 'separator' | 'catalogId' | 'areas' | 'supportNeeded' | 'hearingPeriod' | 'description' | 'slots'>> {
   const pick = (k: keyof Unit) => (b?.[k] == null && base ? base[k] : b?.[k]);
   // Unidade: do catálogo oficial (nome, comarca e separador vêm dele) ou comarca da lista + nome digitado em "Outra"
   const place = resolveCatalogPlace(b, base ? { catalogId: base.catalogId, comarca: base.comarca, name: base.unitName, separator: base.separator } : undefined,
@@ -593,11 +611,16 @@ function parseUnit(b: any, base?: Unit, lenient = false): Parsed<Pick<Unit, 'uni
   }
   const support = pick('supportNeeded') ?? 'Sentença';
   if (!WORK_TYPES.includes(support as WorkType)) return { error: 'Auxílio necessário inválido.' };
+  const periodRaw = pick('hearingPeriod') ?? '';
+  if (periodRaw !== '' && !UNIT_PERIODS.includes(periodRaw as UnitPeriod)) return { error: 'Período pretendido para as audiências inválido.' };
+  const withHearings = support === 'Audiência' || support === 'Audiência e Sentença';
+  const hearingPeriod = withHearings && periodRaw ? (periodRaw as UnitPeriod) : undefined;
+  if (strict && withHearings && !hearingPeriod) return { error: 'Informe se o auxílio nas audiências é pretendido no período da manhã, no período do expediente ou indiferentemente.' };
   const slots = pick('slots') ?? 1;
   if (typeof slots !== 'number' || !Number.isInteger(slots) || slots < 1 || slots > MAX_SLOTS) return { error: `O número de magistrados a alocar deve ser um inteiro de 1 a ${MAX_SLOTS}.` };
   const description = pick('description') ?? '';
   if (typeof description !== 'string' || description.length > 2000) return { error: 'A justificativa pode ter no máximo 2000 caracteres.' };
-  return { value: { unitName, judgeName, email, comarca, separator, catalogId, areas: [...new Set(areas as string[])], supportNeeded: support as WorkType, description: description.trim(), slots } };
+  return { value: { unitName, judgeName, email, comarca, separator, catalogId, areas: [...new Set(areas as string[])], supportNeeded: support as WorkType, hearingPeriod, description: description.trim(), slots } };
 }
 
 /** Dados antigos ou corrompidos (ex.: gravados antes da validação) são convertidos para tipos seguros. */
@@ -2693,6 +2716,7 @@ async function startServer() {
           firstPreference: mag.firstPreference,
           secondPreference: mag.secondPreference,
           acceptsHearings: mag.acceptsHearings,
+          hearingPeriod: mag.hearingPeriod,
           status: mag.status,
           createdAt: mag.createdAt,
           editionTitle: titleOf(mag.editionId),
@@ -2708,6 +2732,7 @@ async function startServer() {
         judgeName: u.judgeName,
         areas: u.areas,
         supportNeeded: u.supportNeeded,
+        hearingPeriod: u.hearingPeriod,
         status: u.status,
         selection: u.selection,
         createdAt: u.createdAt,
@@ -2764,7 +2789,7 @@ async function startServer() {
 
     const labels: Record<string, string> = {
       name: 'nome', email: 'e-mail', currentLocation: 'lotação', locationCatalogId: 'lotação (catálogo)', locationComarca: 'comarca da lotação', firstPreference: '1ª preferência',
-      secondPreference: '2ª preferência', acceptsHearings: 'aceita audiências',
+      secondPreference: '2ª preferência', acceptsHearings: 'aceita audiências', hearingPeriod: 'período para audiências',
     };
     const changed = (Object.keys(next) as (keyof typeof next)[])
       .filter((k) => labels[k] && next[k] !== mag[k])
@@ -2937,7 +2962,7 @@ async function startServer() {
     const { source } = req.body;
     const edition = resolveEdition(req);
     if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
-    const parsed = parseUnit(req.body, undefined, source === 'admin' && edition.isInitial === true);
+    const parsed = parseUnit(req.body, undefined, source === 'admin' && edition.isInitial === true, source !== 'admin');
     if ('error' in parsed) return res.status(400).json({ error: parsed.error });
     if (source !== 'admin') {
       const reg = registrationState(edition);
@@ -3025,7 +3050,7 @@ async function startServer() {
 
     const labels: Record<string, string> = {
       unitName: 'unidade', judgeName: 'responsável', email: 'e-mail', comarca: 'comarca', separator: 'separador', catalogId: 'unidade do catálogo',
-      areas: 'áreas', supportNeeded: 'auxílio necessário', description: 'justificativa', slots: 'magistrados a alocar',
+      areas: 'áreas', supportNeeded: 'auxílio necessário', hearingPeriod: 'período das audiências', description: 'justificativa', slots: 'magistrados a alocar',
     };
     if (next.slots < linkedCount(unit.id)) {
       return res.status(409).json({ error: `Há ${linkedCount(unit.id)} magistrado(s) vinculado(s) a esta unidade. Desfaça vínculos antes de reduzir o número de vagas.` });
@@ -3304,10 +3329,10 @@ async function startServer() {
         "assignedArea" deve ser uma das áreas da unidade, de preferência a 1ª ou a 2ª preferência do magistrado.
 
         Magistrados Disponíveis:
-        ${JSON.stringify(unassignedMags.map((m) => ({ id: m.id, name: m.name, currentLocation: m.currentLocation, locationComarca: m.locationComarca, firstPreference: m.firstPreference, secondPreference: m.secondPreference, acceptsHearings: m.acceptsHearings })), null, 2)}
+        ${JSON.stringify(unassignedMags.map((m) => ({ id: m.id, name: m.name, currentLocation: m.currentLocation, locationComarca: m.locationComarca, firstPreference: m.firstPreference, secondPreference: m.secondPreference, acceptsHearings: m.acceptsHearings, hearingPeriod: m.hearingPeriod })), null, 2)}
 
         Unidades Judiciais Pendentes:
-        ${JSON.stringify(pendingUnits.map((u) => ({ id: u.id, unitName: u.unitName, comarca: u.comarca, areas: u.areas, supportNeeded: u.supportNeeded, slots: u.slots, alreadyLinked: linkedCount(u.id), description: u.description })), null, 2)}
+        ${JSON.stringify(pendingUnits.map((u) => ({ id: u.id, unitName: u.unitName, comarca: u.comarca, areas: u.areas, supportNeeded: u.supportNeeded, hearingPeriod: u.hearingPeriod, slots: u.slots, alreadyLinked: linkedCount(u.id), description: u.description })), null, 2)}
 
         Responda em JSON contendo um array de recomendações com a estrutura:
         [
@@ -3407,18 +3432,18 @@ async function startServer() {
 
     if (type === 'magistrates' || type === 'all') {
       csv += '=== MAGISTRADOS VOLUNTARIOS ===\n';
-      csv += 'ID,Nome,Email,Lotacao Atual,1ª Preferencia,2ª Preferencia,Aceita Audiencia,IP,Declaracao,Status,Motivo Rejeicao,Data Inscr.\n';
+      csv += 'ID,Nome,Email,Lotacao Atual,1ª Preferencia,2ª Preferencia,Aceita Audiencia,Periodo Audiencias,IP,Declaracao,Status,Motivo Rejeicao,Data Inscr.\n';
       magistrates.filter((m) => m.editionId === edition.id).forEach((m) => {
-        csv += [m.id, m.name, m.email, m.currentLocation, m.firstPreference, m.secondPreference, m.acceptsHearings ? 'Sim' : 'Nao', m.registeredIp ?? '', m.declaration ? 'Sim' : '', m.status, m.rejectionReason ?? '', m.createdAt].map(csvCell).join(',') + '\n';
+        csv += [m.id, m.name, m.email, m.currentLocation, m.firstPreference, m.secondPreference, m.acceptsHearings ? 'Sim' : 'Nao', magistratePeriodLabel(m.hearingPeriod), m.registeredIp ?? '', m.declaration ? 'Sim' : '', m.status, m.rejectionReason ?? '', m.createdAt].map(csvCell).join(',') + '\n';
       });
       csv += '\n\n';
     }
 
     if (type === 'units' || type === 'all') {
       csv += '=== UNIDADES JUDICIAIS ===\n';
-      csv += 'ID,Unidade,Juiz(a) Responsavel,Email,Comarca,Areas,Auxilio Necessario,Vagas,IP,Triagem,Status,Motivo Rejeicao,Data Inscr.\n';
+      csv += 'ID,Unidade,Juiz(a) Responsavel,Email,Comarca,Areas,Auxilio Necessario,Periodo Audiencias,Vagas,IP,Triagem,Status,Motivo Rejeicao,Data Inscr.\n';
       units.filter((u) => u.editionId === edition.id).forEach((u) => {
-        csv += [u.id, u.unitName, u.judgeName, u.email, u.comarca, u.areas.join(' | '), u.supportNeeded, u.slots, u.registeredIp ?? '', u.selection, u.status, u.rejectionReason ?? '', u.createdAt].map(csvCell).join(',') + '\n';
+        csv += [u.id, u.unitName, u.judgeName, u.email, u.comarca, u.areas.join(' | '), u.supportNeeded, unitPeriodLabel(u.hearingPeriod), u.slots, u.registeredIp ?? '', u.selection, u.status, u.rejectionReason ?? '', u.createdAt].map(csvCell).join(',') + '\n';
       });
       csv += '\n\n';
     }
