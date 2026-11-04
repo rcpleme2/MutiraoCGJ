@@ -1150,7 +1150,7 @@ async function startServer() {
     }
     if (session) {
       // Perfis: Consulta só lê; Gestor opera o mutirão; Administrador também gere usuários, backup e exclusões em lote
-      const adminOnly = /^\/(admin\/users|backup)/.test(req.path) || /\/delete-all$/.test(req.path);
+      const adminOnly = /^\/(admin\/users|backup)/.test(req.path) || /\/delete-all$/.test(req.path) || /^\/editions\/[^/]+\/delete$/.test(req.path);
       const selfService = req.path === '/admin/me/password' || req.path === '/admin/logout' || req.path === '/admin/me' || req.path === '/admin/me/sessions/end-others';
       if (adminOnly && session.role !== 'admin') return res.status(403).json({ error: 'Ação restrita ao perfil Administrador.' });
       if (session.role === 'consulta' && req.method !== 'GET' && !selfService) return res.status(403).json({ error: 'Seu perfil é somente consulta.' });
@@ -1467,6 +1467,39 @@ async function startServer() {
     edition.status = 'Em andamento';
     log(edition.id, 'Administração', 'Edição', 'Edição reaberta (em andamento).');
     res.json({ success: true, edition: publicEdition(edition) });
+  });
+
+  // Exclusão de edição (perfil Administrador; exige confirm: "EXCLUIR"). Apaga também as inscrições, unidades,
+  // vinculações, desistências e alterações de vinculação da edição. O registro de atividades é preservado.
+  app.post('/api/editions/:id/delete', (req, res) => {
+    const edition = editionById(req.params.id);
+    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+    if (!confirmedWipe(req)) return res.status(400).json({ error: 'Confirmação ausente.' });
+    if (edition.isInitial) return res.status(409).json({ error: `A edição "${INITIAL_EDITION_TITLE}" guarda as designações já existentes do painel de vinculações e não pode ser excluída.` });
+    if (edition.id === activeEditionId) return res.status(409).json({ error: 'Esta é a edição vigente no portal. Torne outra edição vigente antes de excluí-la.' });
+    if (editions.length <= 1) return res.status(409).json({ error: 'É preciso manter ao menos uma edição.' });
+
+    const id = edition.id;
+    const counts = {
+      magistrates: magistrates.filter((m) => m.editionId === id).length,
+      units: units.filter((u) => u.editionId === id).length,
+      matches: matches.filter((m) => m.editionId === id).length,
+    };
+    magistrates = magistrates.filter((m) => m.editionId !== id);
+    units = units.filter((u) => u.editionId !== id);
+    matches = matches.filter((m) => m.editionId !== id);
+    panelEntries = panelEntries.filter((p) => p.editionId !== id);
+    withdrawals = withdrawals.filter((w) => w.editionId !== id);
+    transfers = transfers.filter((t) => t.editionId !== id);
+    units.forEach((u) => {
+      // Pedido que tinha sido transportado para a edição excluída volta a aguardar a próxima edição
+      if (u.carriedToEditionId === id) { u.carriedToEditionId = undefined; u.carryOver = true; }
+      if (u.carriedFromEditionId === id) u.carriedFromEditionId = undefined;
+    });
+    editions = editions.filter((e) => e.id !== id);
+    log(null, 'Administração', 'Edição',
+      `EXCLUSÃO DE EDIÇÃO: "${edition.title}" excluída, com ${counts.magistrates} inscrição(ões) de magistrado(s), ${counts.units} unidade(s) e ${counts.matches} vinculação(ões).`);
+    res.json({ success: true, ...counts });
   });
 
   // ---------- Perguntas frequentes ----------

@@ -1710,6 +1710,8 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const [editingFaq, setEditingFaq] = useState<FaqItem | null>(null);
   const [wiping, setWiping] = useState<'magistrates' | 'units' | 'matches' | null>(null);
   const [wipeText, setWipeText] = useState('');
+  const [deletingEdition, setDeletingEdition] = useState<Edition | null>(null);
+  const [deleteText, setDeleteText] = useState('');
   const [linking, setLinking] = useState(false);
   interface AiBalance { available: number; openSlots: number; balance: number; pendingUnits: number; suggestions: { unitId: string; unit: string; comarca: string; areas: string[]; slots: number; candidates: string[]; reason: string }[] }
   const [ai, setAi] = useState<{ loading: boolean; open: boolean; items: any[]; balance: AiBalance | null; error: string; picked: number[] }>({ loading: false, open: false, items: [], balance: null, error: '', picked: [] });
@@ -1935,6 +1937,13 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
     if (r) { toast(`${r.count} registro(s) excluído(s).`); setModal(null); refresh(); }
   };
 
+  const confirmDeleteEdition = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!deletingEdition || deleteText.trim() !== 'EXCLUIR') return;
+    const r = await run(() => api(`/editions/${deletingEdition.id}/delete`, { method: 'POST', json: { confirm: 'EXCLUIR' } }), `Edição "${deletingEdition.title}" excluída.`);
+    if (r) { setDeletingEdition(null); refresh(); }
+  };
+
   const approveAll = async () => {
     const n = magistrates.filter(m => m.status === 'Aguardando Conferência').length;
     if (!(await confirm(`Aprovar as ${n} inscrição(ões) de magistrado(s) pendente(s)? Inscrições rejeitadas não serão alteradas.`, 'Aprovar todos'))) return;
@@ -2108,6 +2117,10 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
                 ? <button className="btn-ghost btn-sm" title="Encerrar edição" onClick={() => editionAction(e.id, 'close', 'Edição encerrada.', 'Encerrar a edição? As inscrições públicas serão fechadas.')}><Archive className="w-4 h-4" /></button>
                 : <button className="btn-ghost btn-sm" title="Reabrir edição" onClick={() => editionAction(e.id, 'reopen', 'Edição reaberta.')}><RotateCcw className="w-4 h-4" /></button>}
               <button className="btn-ghost btn-sm" title="Editar" onClick={() => { setEditingEdition(e); setModal('edition-edit'); }}><Pencil className="w-4 h-4" /></button>
+              {me?.role === 'admin' && (
+                <button className="btn-ghost btn-sm !text-danger disabled:opacity-30" title={e.isInitial ? 'A edição de vinculações iniciais não pode ser excluída' : e.isActive ? 'Torne outra edição vigente antes de excluir esta' : 'Excluir edição'}
+                  disabled={e.isInitial || e.isActive || editions.length <= 1} onClick={() => { setDeletingEdition(e); setDeleteText(''); }}><Trash2 className="w-4 h-4" /></button>
+              )}
             </> },
           ]} />
           <p className="text-xs text-muted">Cada edição mantém suas próprias inscrições de magistrados e unidades, vinculações e registro de atividades. O portal público recebe inscrições apenas na edição vigente.</p>
@@ -2417,6 +2430,25 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             <div className="flex justify-end gap-2">
               <button type="button" className="btn-secondary" onClick={() => setModal(null)}>Cancelar</button>
               <button className="btn-primary !bg-danger" disabled={wipeText.trim() !== 'EXCLUIR'}>Excluir tudo</button>
+            </div>
+          </form>
+        </Modal>
+      )}
+      {deletingEdition && (
+        <Modal title="Excluir edição" onClose={() => setDeletingEdition(null)}>
+          <form onSubmit={confirmDeleteEdition} className="space-y-4">
+            <div className="rounded-md bg-danger-soft text-danger px-4 py-3 text-sm leading-relaxed">
+              <strong>Ação irreversível.</strong> A edição <strong>{deletingEdition.title}</strong> será excluída junto com
+              {' '}<strong>{deletingEdition.stats?.magistrates ?? 0}</strong> inscrição(ões) de magistrados, <strong>{deletingEdition.stats?.units ?? 0}</strong> unidade(s)
+              {' '}e <strong>{deletingEdition.stats?.matches ?? 0}</strong> vinculação(ões), além das desistências e alterações de vinculação registradas nela.
+            </div>
+            <p className="text-xs text-muted">As demais edições não são afetadas e o registro de atividades é mantido. Recomenda-se baixar um backup (aba Backup) antes de continuar.</p>
+            <Field label="Para confirmar, digite EXCLUIR">
+              <input autoFocus className="input" value={deleteText} onChange={e => setDeleteText(e.target.value)} placeholder="EXCLUIR" autoComplete="off" />
+            </Field>
+            <div className="flex justify-end gap-2">
+              <button type="button" className="btn-secondary" onClick={() => setDeletingEdition(null)}>Cancelar</button>
+              <button className="btn-primary !bg-danger" disabled={deleteText.trim() !== 'EXCLUIR'}>Excluir edição</button>
             </div>
           </form>
         </Modal>
