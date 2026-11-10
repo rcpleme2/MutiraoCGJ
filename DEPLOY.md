@@ -178,6 +178,11 @@ Exemplo: `gcloud run services update mutiraocgj --region europe-west1 --update-e
   motivo não aparece na consulta pública.
 - **Backup:** *Administração → Backup* exporta todos os dados em um arquivo .json (contém dados pessoais: guarde com segurança, não
   inclui senha nem segredo do 2FA) e restaura a partir dele, substituindo os dados atuais (o registro de atividades é preservado).
+- **Pedidos de alteração:** no portal, *Pedir alteração* permite que o magistrado já vinculado peça outra área ou outro
+  tipo de atuação, e que a unidade atendida peça outras áreas ou mais magistrados (justificativa obrigatória e observações).
+  A análise fica em *Administração → Pedidos de alteração*: ao deferir o pedido de um magistrado, define-se a área, o tipo, a
+  vara e a data de início (a atuação anterior vai até a véspera e um novo período começa na data); ao indeferir, o motivo
+  aparece para quem pediu.
 - **Inscrições:** os campos de escolha do magistrado (1ª e 2ª escolha e aceite de audiências) e as áreas da unidade começam
   sem seleção; todos são obrigatórios (o servidor também valida).
 

@@ -419,6 +419,26 @@ let withdrawals: Withdrawal[] = [];
 /** Alteração de vinculação (troca de unidade): a vinculação antiga vale até o dia anterior à data informada; a nova, a partir dela. */
 interface Transfer { id: string; editionId: string; magistrateId: string; name: string; /** início da atuação na unidade anterior, se diferente do da edição */ fromStartDate?: string; /** área de atuação anterior */ area: string; /** nova área de atuação (ausente em registros antigos: a área não mudou) */ toArea?: string; /** processo SEI da alteração (opcional) */ sei?: string; fromUnit: string; toUnit: string; fromWorkType: string; toWorkType: string; effectiveDate: string; createdAt: string }
 let transfers: Transfer[] = [];
+/**
+ * Pedido de alteração feito pelo portal por quem já está vinculado: o magistrado pede outra área e/ou outro tipo de atuação;
+ * a unidade pede outras áreas e/ou mais magistrados. Nada muda até a análise da administração (deferido ou indeferido).
+ */
+interface ChangeRequest {
+  id: string; protocol: string; kind: 'magistrado' | 'unidade'; editionId: string;
+  /** Designação (magistrado) ou unidade a que o pedido se refere */
+  matchId?: string; magistrateId?: string; unitId?: string;
+  /** Nome do magistrado ou da unidade, como estava no pedido */
+  name: string;
+  current: { unit: string; area?: string; workType?: string; areas?: string[]; slots?: number };
+  requested: { area?: string; workType?: string; areas?: string[]; extraSlots?: number };
+  justification: string; notes?: string;
+  status: 'Pendente' | 'Deferido' | 'Indeferido';
+  decidedAt?: string; decidedBy?: string; decisionReason?: string;
+  /** Resumo do que foi efetivamente aplicado no deferimento */
+  outcome?: string;
+  ip?: string; createdAt: string;
+}
+let changeRequests: ChangeRequest[] = [];
 /** Pares de nomes parecidos que a administração indicou NÃO serem a mesma pessoa (chave "nomeA|nomeB") */
 let dupDismissed: string[] = [];
 /** Lista oficial de comarcas e unidades, editável pelo painel. Vazia = ainda não editada: vale a lista embutida. */
@@ -783,7 +803,7 @@ const loadSessions = (list: unknown) => {
 };
 
 const collectionsNow = (): Record<string, { id: string }[]> => ({
-  editions, magistrates, units, matches, log: activityLog, faq, panel: panelEntries, withdrawals, transfers, admins,
+  editions, magistrates, units, matches, log: activityLog, faq, panel: panelEntries, withdrawals, transfers, requests: changeRequests, admins,
   catalog: catalogUnits, comarcas: catalogComarcas, sessions: liveSessions(),
 });
 
@@ -803,6 +823,7 @@ async function loadState() {
       lastAutoBackup = raw.lastAutoBackup ?? null;
       panelEntries = raw.panel ?? [];
       withdrawals = raw.withdrawals ?? [];
+      changeRequests = raw.requests ?? [];
       transfers = raw.transfers ?? [];
       admins = raw.admins ?? [];
       catalogUnits = raw.catalog ?? [];
@@ -845,6 +866,7 @@ async function loadState() {
   lastAutoBackup = meta?.lastAutoBackup ?? null;
   panelEntries = loaded.panel as PanelEntry[];
   withdrawals = loaded.withdrawals as Withdrawal[];
+  changeRequests = loaded.requests as ChangeRequest[];
   transfers = loaded.transfers as Transfer[];
   admins = loaded.admins as AdminUser[];
   catalogUnits = loaded.catalog as CatalogRecord[];
@@ -859,7 +881,7 @@ async function persist() {
     fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
     fs.writeFileSync(
       DATA_FILE,
-      JSON.stringify({ editions, activeEditionId, magistrates, units, matches, activityLog, faq, adminTotpSecret, panel: panelEntries, withdrawals, transfers, dupDismissed, admins, lastAutoBackup, catalog: catalogUnits, comarcas: catalogComarcas, sessions: liveSessions() }),
+      JSON.stringify({ editions, activeEditionId, magistrates, units, matches, activityLog, faq, adminTotpSecret, panel: panelEntries, withdrawals, transfers, requests: changeRequests, dupDismissed, admins, lastAutoBackup, catalog: catalogUnits, comarcas: catalogComarcas, sessions: liveSessions() }),
     );
     return;
   }
@@ -1105,10 +1127,22 @@ async function startServer() {
     if (session) { const store = reqCtx.getStore(); if (store) store.user = session.name; }
     const publicRead = (req.method === 'GET' && ['/settings', '/faq', '/admin/login-mode', '/catalog'].includes(req.path)) || (req.method === 'POST' && req.path === '/status');
     const publicSignup = req.method === 'POST' && (req.path === '/magistrates' || req.path === '/units');
+    const publicRequestPost = req.method === 'POST' && (req.path === '/requests' || req.path === '/requests/lookup');
     const login = req.method === 'POST' && (req.path === '/admin/login' || req.path === '/admin/login/verify');
 
     if (req.method === 'POST' && req.path === '/status' && rateLimited(`status:${ip}`, 30, 60_000)) {
       return res.status(429).json({ error: 'Muitas consultas. Aguarde um instante.' });
+    }
+    if (req.method === 'POST' && req.path === '/requests/lookup' && rateLimited(`status:${ip}`, 30, 60_000)) {
+      return res.status(429).json({ error: 'Muitas consultas. Aguarde um instante.' });
+    }
+    if (req.method === 'POST' && req.path === '/requests') {
+      // Pedido de alteração pelo portal: campo-isca e limite por IP (a análise é sempre da administração)
+      if (typeof req.body?.website === 'string' && req.body.website.trim() !== '') return res.status(201).json({ success: true, protocol: '—' });
+      const key = `chreq:${ip}`;
+      res.on('finish', () => { if (res.statusCode !== 201) refund(key); });
+      if (rateLimited(key, 10, 10 * 60_000)) return res.status(429).json({ error: 'Muitos pedidos em pouco tempo. Aguarde alguns minutos.' });
+      return next();
     }
     if (publicSignup && !admin) {
       // Anti-spam: campo-isca preenchido só por robôs (finge sucesso e descarta) e limites por IP e globais.
@@ -1137,7 +1171,7 @@ async function startServer() {
       req.query = {};
       return next();
     }
-    if (publicRead || login) return next();
+    if (publicRead || login || publicRequestPost) return next();
     // Chamada do Cloud Scheduler: autenticada pelo token próprio, conferido na rota
     // Leitura pelo Qlik Sense (REST Connector): autenticada pela chave BI_TOKEN, conferida na rota
     if (req.method === 'GET' && req.path === '/bi/designacoes') {
@@ -1161,7 +1195,7 @@ async function startServer() {
   // Em requisições que alteram dados, grava antes de responder.
   app.use('/api', (req, res, next) => {
     // Consultas e a etapa 1 do login não alteram dados: só gravam se gerarem registro de segurança (res.locals.persist)
-    const readOnlyPost = ['/status', '/admin/login', '/admin/logout'].includes(req.path);
+    const readOnlyPost = ['/status', '/requests/lookup', '/admin/login', '/admin/logout'].includes(req.path);
     if (req.method !== 'GET') {
       const json = res.json.bind(res);
       res.json = (body: any) => {
@@ -1491,6 +1525,7 @@ async function startServer() {
     panelEntries = panelEntries.filter((p) => p.editionId !== id);
     withdrawals = withdrawals.filter((w) => w.editionId !== id);
     transfers = transfers.filter((t) => t.editionId !== id);
+    changeRequests = changeRequests.filter((r) => r.editionId !== id);
     units.forEach((u) => {
       // Pedido que tinha sido transportado para a edição excluída volta a aguardar a próxima edição
       if (u.carriedToEditionId === id) { u.carriedToEditionId = undefined; u.carryOver = true; }
@@ -2585,7 +2620,7 @@ async function startServer() {
   /** Conteúdo do backup (sem usuários, senhas nem segredos do 2FA). */
   const backupJson = () => JSON.stringify({
     app: BACKUP_APP, version: 1, exportedAt: new Date().toISOString(), activeEditionId,
-    editions, magistrates, units, matches, faq, withdrawals, transfers, log: activityLog,
+    editions, magistrates, units, matches, faq, withdrawals, transfers, requests: changeRequests, log: activityLog,
     catalog: catalogUnits, comarcas: catalogComarcas,
   });
 
@@ -2672,8 +2707,8 @@ async function startServer() {
       if (v === undefined && !required) return [];
       return Array.isArray(v) && v.every((x) => x && typeof x === 'object' && typeof x.id === 'string' && x.id) ? v : null;
     };
-    const [eds, mags, uns, mts, fq, wds, lg, trs] = [arr('editions', true), arr('magistrates', true), arr('units', true), arr('matches', true), arr('faq'), arr('withdrawals'), arr('log'), arr('transfers')];
-    if (!eds || !mags || !uns || !mts || !fq || !wds || !lg || !trs) return res.status(400).json({ error: 'O arquivo está incompleto ou com registros inválidos.' });
+    const [eds, mags, uns, mts, fq, wds, lg, trs, rqs] = [arr('editions', true), arr('magistrates', true), arr('units', true), arr('matches', true), arr('faq'), arr('withdrawals'), arr('log'), arr('transfers'), arr('requests')];
+    if (!eds || !mags || !uns || !mts || !fq || !wds || !lg || !trs || !rqs) return res.status(400).json({ error: 'O arquivo está incompleto ou com registros inválidos.' });
     if (eds.length === 0 || !eds.every((e) => typeof e.title === 'string')) return res.status(400).json({ error: 'O backup precisa conter ao menos uma edição.' });
     const unique = (xs: any[]) => new Set(xs.map((x) => x.id)).size === xs.length;
     if (![eds, mags, uns, mts, fq, wds].every(unique)) return res.status(400).json({ error: 'O arquivo contém registros duplicados.' });
@@ -2684,7 +2719,7 @@ async function startServer() {
     }
 
     const before = { editions: editions.length, magistrates: magistrates.length, units: units.length, matches: matches.length };
-    editions = eds; magistrates = mags; units = uns; matches = mts; faq = fq; withdrawals = wds; transfers = trs; panelEntries = [];
+    editions = eds; magistrates = mags; units = uns; matches = mts; faq = fq; withdrawals = wds; transfers = trs; changeRequests = rqs ?? []; panelEntries = [];
     activeEditionId = edIds.has(d.activeEditionId) ? d.activeEditionId : eds[0].id;
     // Lista de comarcas e unidades: só é trocada se o backup a trouxer (backups antigos mantêm a atual)
     const cat = arr('catalog'), cms = arr('comarcas');
@@ -3235,61 +3270,67 @@ async function startServer() {
     res.status(201).json({ success: true, match: newMatch });
   });
 
-  app.put('/api/matches/:id', (req, res) => {
-    const match = matches.find((m) => m.id === req.params.id);
-    if (!match) return res.status(404).json({ error: 'Vinculação não encontrada.' });
+  /**
+   * Altera uma vinculação (troca de magistrado, unidade, área, tipo ou data de início).
+   * Com data de vigência, a troca de unidade, área ou tipo do mesmo magistrado é uma alteração de vinculação:
+   * o período anterior vai até a véspera e o novo começa na data. Usada pela edição manual e pelo deferimento de pedidos.
+   */
+  function updateMatch(match: Match, body: any, origin = ''): { status: number; error: string } | { match: Match } {
+    const fail = (status: number, error: string) => ({ status, error });
 
     const before = describeMatch(match);
-    const { magistrateId, unitId, assignedArea, workType } = req.body;
+    const { magistrateId, unitId, assignedArea, workType } = body;
     if (workType && !MATCH_WORK_TYPES.includes(workType)) {
-      return res.status(400).json({ error: 'Modalidade inválida. Use Para audiências ou Para sentença.' });
+      return fail(400, 'Modalidade inválida. Use Para audiências ou Para sentença.');
     }
 
     const nextMag = magistrates.find((m) => m.id === (magistrateId || match.magistrateId));
-    const newUnitName = typeof req.body?.newUnitName === 'string' ? cleanText(req.body.newUnitName, 300) : null;
+    const newUnitName = typeof body?.newUnitName === 'string' ? cleanText(body.newUnitName, 300) : null;
     const initialMatch = editionById(match.editionId)?.isInitial === true;
     // Na edição "Vinculações iniciais" a vara de destino pode ser digitada (é criada se ainda não existir)
     const nextUnit = initialMatch && newUnitName ? ensureInitialUnit(newUnitName, match.assignedArea) : units.find((u) => u.id === (unitId || match.unitId));
     if (!nextMag || !nextUnit || nextMag.editionId !== match.editionId || nextUnit.editionId !== match.editionId) {
-      return res.status(400).json({ error: 'Magistrado e unidade devem pertencer à mesma edição da vinculação.' });
+      return fail(400, 'Magistrado e unidade devem pertencer à mesma edição da vinculação.');
     }
     if (nextMag.status === 'Rejeitado') {
-      return res.status(400).json({ error: 'A inscrição deste magistrado foi rejeitada. Reconsidere-a antes de vincular.' });
+      return fail(400, 'A inscrição deste magistrado foi rejeitada. Reconsidere-a antes de vincular.');
     }
 
     if (nextUnit.selection !== 'Escolhida') {
-      return res.status(400).json({ error: 'Só é possível vincular unidades escolhidas para o mutirão.' });
+      return fail(400, 'Só é possível vincular unidades escolhidas para o mutirão.');
     }
 
     // O magistrado escolhido não pode estar vinculado em outra unidade; mover para outra unidade exige vaga livre
     if (matches.some((m) => m.id !== match.id && m.magistrateId === nextMag.id)) {
-      return res.status(409).json({ error: 'Este magistrado já está vinculado a outra unidade. Desfaça essa vinculação antes.' });
+      return fail(409, 'Este magistrado já está vinculado a outra unidade. Desfaça essa vinculação antes.');
     }
     const movingUnit = nextUnit.id !== match.unitId;
     if (movingUnit && initialMatch && linkedCount(nextUnit.id) >= (nextUnit.slots || 1)) nextUnit.slots = linkedCount(nextUnit.id) + 1; // varas das vinculações iniciais não limitam o número de magistrados
     if (movingUnit && linkedCount(nextUnit.id) >= (nextUnit.slots || 1)) {
-      return res.status(409).json({ error: `Todas as ${nextUnit.slots || 1} vaga(s) da unidade de destino já estão preenchidas.` });
+      return fail(409, `Todas as ${nextUnit.slots || 1} vaga(s) da unidade de destino já estão preenchidas.`);
     }
 
     const oldUnitId = match.unitId;
     const oldMag = magistrates.find((m) => m.id === match.magistrateId);
     const changedMag = nextMag.id !== oldMag?.id;
     // Troca de unidade do mesmo magistrado: exige a data a partir da qual ele atuará na nova unidade (a antiga vale até o dia anterior)
-    const effectiveDate = typeof req.body?.effectiveDate === 'string' ? req.body.effectiveDate.trim() : '';
-    const transferSei = typeof req.body?.sei === 'string' ? cleanCell(req.body.sei) : '';
-    if (transferSei && (transferSei.length < 3 || transferSei.length > 100)) return res.status(400).json({ error: 'Número do processo SEI inválido.' });
+    const effectiveDate = typeof body?.effectiveDate === 'string' ? body.effectiveDate.trim() : '';
+    const transferSei = typeof body?.sei === 'string' ? cleanCell(body.sei) : '';
+    if (transferSei && (transferSei.length < 3 || transferSei.length > 100)) return fail(400, 'Número do processo SEI inválido.');
     const newArea = typeof assignedArea === 'string' ? cleanCell(assignedArea) : '';
-    if (newArea.length > 150) return res.status(400).json({ error: 'Área de atuação longa demais.' });
+    if (newArea.length > 150) return fail(400, 'Área de atuação longa demais.');
     const changingArea = !!newArea && newArea !== match.assignedArea;
-    // Trocar a unidade (ou, no painel, a área de atuação) do mesmo magistrado é uma alteração de vinculação e exige a data de vigência
-    const isTransfer = !changedMag && (movingUnit || (changingArea && initialMatch)); // na edição das vinculações iniciais a área também é alterada pelo painel
+    const changingWorkType = !!workType && workType !== match.workType;
+    // Trocar a unidade do mesmo magistrado é uma alteração de vinculação e exige a data de vigência. A área e o tipo também,
+    // quando informada a data (painel de vinculações e deferimento de pedidos) ou na edição das vinculações iniciais.
+    const isTransfer = !changedMag && (movingUnit || ((changingArea || changingWorkType) && (initialMatch || !!effectiveDate)));
     if (isTransfer && (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveDate) || Number.isNaN(Date.parse(`${effectiveDate}T00:00:00${BRT}`)) || effectiveDate < '2000-01-01')) {
-      return res.status(400).json({ error: 'Informe a partir de quando o magistrado atuará na nova unidade.' });
+      return fail(400, 'Informe a partir de quando o magistrado atuará na nova unidade.');
     }
     // Correção da data de início (sem alteração de vara/área): em branco volta a valer o início da edição
-    const newStart = typeof req.body?.startDate === 'string' ? req.body.startDate.trim() : null;
-    if (newStart && !isYmd(newStart)) return res.status(400).json({ error: 'Data de início da atuação inválida.' });
-    if (newStart !== null && isTransfer) return res.status(400).json({ error: 'Na alteração de vara/área, o início na nova unidade é a data de vigência.' });
+    const newStart = typeof body?.startDate === 'string' ? body.startDate.trim() : null;
+    if (newStart && !isYmd(newStart)) return fail(400, 'Data de início da atuação inválida.');
+    if (newStart !== null && isTransfer) return fail(400, 'Na alteração de vara/área, o início na nova unidade é a data de vigência.');
     const oldUnit = units.find((u) => u.id === oldUnitId);
     const oldWorkType = match.workType; const oldArea = match.assignedArea; const oldStart = match.startDate;
     if (oldMag && changedMag) oldMag.status = 'Lista de Espera';
@@ -3315,8 +3356,171 @@ async function startServer() {
 
     const startNote = !isTransfer && match.startDate !== startBefore
       ? ` (início da atuação: ${(match.startDate ?? editionById(match.editionId)?.startDate)?.split('-').reverse().join('/') ?? 'não informado'})` : '';
-    log(match.editionId, 'Administração', 'Vinculação', `Vinculação alterada${startNote}${isTransfer ? ` (${movingUnit ? 'nova unidade' : 'nova área'}${movingUnit && changingArea ? ' e nova área' : ''} a partir de ${effectiveDate.split('-').reverse().join('/')}${transferSei ? `; SEI ${transferSei}` : ''})` : ''}: de ${before} para ${describeMatch(match)}.`);
-    res.json({ success: true, match });
+    const what = [movingUnit && 'nova unidade', changingArea && 'nova área', changingWorkType && 'novo tipo'].filter(Boolean).join(', ');
+    log(match.editionId, 'Administração', 'Vinculação', `Vinculação alterada${origin}${startNote}${isTransfer ? ` (${what} a partir de ${effectiveDate.split('-').reverse().join('/')}${transferSei ? `; SEI ${transferSei}` : ''})` : ''}: de ${before} para ${describeMatch(match)}.`);
+    return { match };
+  }
+
+  app.put('/api/matches/:id', (req, res) => {
+    const match = matches.find((m) => m.id === req.params.id);
+    if (!match) return res.status(404).json({ error: 'Vinculação não encontrada.' });
+    const r = updateMatch(match, req.body);
+    if ('error' in r) return res.status(r.status).json({ error: r.error });
+    res.json({ success: true, match: r.match });
+  });
+
+  // ---------- Pedidos de alteração (portal: só quem já está vinculado; análise pela administração) ----------
+  const fullUnitOf = (u?: Unit) => (u ? fullUnitName(u) : 'unidade removida');
+  const workLabel = (w?: string) => (w === 'Audiência' ? 'Audiências' : w || '—');
+  /** O que foi pedido, em uma linha */
+  const requestSummary = (r: ChangeRequest) => r.kind === 'magistrado'
+    ? [r.requested.area && `área: ${r.requested.area}`, r.requested.workType && `tipo: ${workLabel(r.requested.workType)}`].filter(Boolean).join('; ')
+    : [r.requested.areas && `áreas: ${r.requested.areas.join(', ')}`, r.requested.extraSlots && `mais ${r.requested.extraSlots} magistrado(s)`].filter(Boolean).join('; ');
+  /** Visão pública do pedido (sem IP nem quem decidiu) */
+  const publicRequest = (r: ChangeRequest) => ({
+    protocol: r.protocol, kind: r.kind, name: r.name, unit: r.current.unit, createdAt: r.createdAt, status: r.status, summary: requestSummary(r),
+    ...(r.status !== 'Pendente' ? { decidedAt: r.decidedAt, decisionReason: r.decisionReason ?? '', outcome: r.outcome ?? '' } : {}),
+  });
+  const pendingFor = (key: { matchId?: string; unitId?: string }) =>
+    changeRequests.find((r) => r.status === 'Pendente' && (key.matchId ? r.matchId === key.matchId : r.unitId === key.unitId));
+  /** Unidades com magistrado vinculado no painel (designação vigente) */
+  const linkedUnits = () => { const ids = new Set(panelRows().map((r) => r.unitId)); return units.filter((u) => ids.has(u.id)); };
+
+  // Consulta: o magistrado informa o e-mail cadastrado ou o nome completo; a unidade, o e-mail ou parte do nome da vara.
+  app.post('/api/requests/lookup', (req, res) => {
+    const kind = req.body?.kind;
+    const q = typeof req.body?.query === 'string' ? req.body.query.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 200) : '';
+    const byEmail = q.includes('@');
+    if (kind === 'magistrado') {
+      const wanted = personKey(q);
+      if (!byEmail && (wanted.split(' ').length < 2 || wanted.length < 6)) return res.status(400).json({ error: 'Informe o e-mail cadastrado ou o nome completo.' });
+      const emailIds = new Set(byEmail ? magistrates.filter((m) => m.email && m.email.toLowerCase() === q.toLowerCase()).map((m) => m.id) : []);
+      const rows = panelRows().filter((r) => (byEmail ? emailIds.has(r.magistrateId) : personKey(r.name) === wanted));
+      const matchIds = new Set(rows.map((r) => r.id));
+      return res.json({
+        items: rows.map((r) => ({ id: r.id, name: r.name, unit: unitLabel(r), area: r.area, workType: r.workType ?? '', editionTitle: r.editionTitle, pending: !!pendingFor({ matchId: r.id }) })),
+        requests: changeRequests.filter((r) => r.kind === 'magistrado' && (matchIds.has(r.matchId ?? '') || (!byEmail && personKey(r.name) === wanted)))
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(publicRequest),
+      });
+    }
+    if (kind === 'unidade') {
+      const words = norm(q).split(/[^a-z0-9ºª]+/).filter((w) => w.length >= 2);
+      if (!byEmail && norm(q).replace(/\s/g, '').length < 4) return res.status(400).json({ error: 'Informe o e-mail cadastrado ou o nome da vara.' });
+      const found = linkedUnits().filter((u) => (byEmail ? !!u.email && u.email.toLowerCase() === q.toLowerCase() : words.every((w) => norm(fullUnitName(u)).includes(w)))).slice(0, 15);
+      const ids = new Set(found.map((u) => u.id));
+      return res.json({
+        items: found.map((u) => ({ id: u.id, unit: fullUnitName(u), areas: u.areas, slots: u.slots || 1, linked: linkedCount(u.id), editionTitle: editionById(u.editionId)?.title ?? '', pending: !!pendingFor({ unitId: u.id }) })),
+        requests: changeRequests.filter((r) => r.kind === 'unidade' && ids.has(r.unitId ?? '')).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(publicRequest),
+      });
+    }
+    res.status(400).json({ error: 'Tipo de pedido inválido.' });
+  });
+
+  // Envio do pedido pelo portal
+  app.post('/api/requests', (req, res) => {
+    const b = req.body ?? {};
+    const justification = cleanText(b.justification, 4000);
+    if (!justification) return res.status(400).json({ error: 'Informe a justificativa do pedido.' });
+    const notes = freeText(b.notes, 4000);
+    const year = new Date().getFullYear();
+    const seq = 1 + changeRequests.filter((r) => r.protocol.startsWith(`ALT-${year}-`)).reduce((n, r) => Math.max(n, Number(r.protocol.split('-')[2]) || 0), 0);
+    const base = { id: newId('req'), protocol: `ALT-${year}-${String(seq).padStart(4, '0')}`, justification, ...(notes ? { notes } : {}), status: 'Pendente' as const, ip: clientIp(req), createdAt: new Date().toISOString() };
+    let record: ChangeRequest;
+    if (b.kind === 'magistrado') {
+      const row = panelRows().find((r) => r.id === b.id);
+      if (!row) return res.status(404).json({ error: 'Designação vigente não encontrada. Só quem está vinculado pode pedir alteração.' });
+      const area = typeof b.area === 'string' && b.area ? b.area : '';
+      const workType = typeof b.workType === 'string' && b.workType ? b.workType : '';
+      if (area && !PREFERENCE_AREAS.includes(area)) return res.status(400).json({ error: 'Área de atuação inválida.' });
+      if (workType && !MATCH_WORK_TYPES.includes(workType as WorkType)) return res.status(400).json({ error: 'Tipo de atuação inválido.' });
+      const newArea = area && norm(area) !== norm(row.area) ? area : '';
+      const newWork = workType && workType !== row.workType ? workType : '';
+      if (!newArea && !newWork) return res.status(400).json({ error: 'Escolha uma área ou um tipo de atuação diferente do atual.' });
+      if (pendingFor({ matchId: row.id })) return res.status(409).json({ error: 'Já existe um pedido pendente para esta designação. Aguarde a análise.' });
+      record = { ...base, kind: 'magistrado', editionId: row.editionId, matchId: row.id, magistrateId: row.magistrateId, name: row.name,
+        current: { unit: unitLabel(row), area: row.area, workType: row.workType ?? '' }, requested: { ...(newArea ? { area: newArea } : {}), ...(newWork ? { workType: newWork } : {}) } };
+      log(row.editionId, 'Público', 'Vinculação', `Pedido de alteração ${record.protocol} recebido de ${row.name} (${record.current.unit}): ${requestSummary(record)}.`);
+    } else if (b.kind === 'unidade') {
+      const unit = linkedUnits().find((u) => u.id === b.id);
+      if (!unit) return res.status(404).json({ error: 'Unidade com magistrado vinculado não encontrada. Só unidades atendidas podem pedir alteração.' });
+      const areas = Array.isArray(b.areas) ? [...new Set(b.areas.filter((a: unknown) => typeof a === 'string' && PREFERENCE_AREAS.includes(a)))] as string[] : [];
+      const extraSlots = Number.isInteger(b.extraSlots) ? b.extraSlots : 0;
+      if (extraSlots < 0 || extraSlots > 20) return res.status(400).json({ error: 'Número de magistrados a mais inválido (até 20).' });
+      const sameAreas = areas.length === 0 || (areas.length === unit.areas.length && areas.every((a) => unit.areas.some((x) => norm(x) === norm(a))));
+      if (sameAreas && extraSlots === 0) return res.status(400).json({ error: 'Escolha áreas diferentes das atuais e/ou peça mais magistrados.' });
+      if (pendingFor({ unitId: unit.id })) return res.status(409).json({ error: 'Já existe um pedido pendente para esta unidade. Aguarde a análise.' });
+      record = { ...base, kind: 'unidade', editionId: unit.editionId, unitId: unit.id, name: fullUnitName(unit),
+        current: { unit: fullUnitName(unit), areas: [...unit.areas], slots: unit.slots || 1 }, requested: { ...(!sameAreas ? { areas } : {}), ...(extraSlots ? { extraSlots } : {}) } };
+      log(unit.editionId, 'Público', 'Unidade', `Pedido de alteração ${record.protocol} recebido da unidade ${record.name}: ${requestSummary(record)}.`);
+    } else return res.status(400).json({ error: 'Tipo de pedido inválido.' });
+    changeRequests.push(record);
+    res.status(201).json({ success: true, protocol: record.protocol });
+  });
+
+  // Administração: pedidos com a situação atual da designação/unidade, para a análise
+  app.get('/api/requests', (_req, res) => {
+    const rows = panelRows();
+    res.json([...changeRequests].sort((a, b) => (a.status === 'Pendente' ? 0 : 1) - (b.status === 'Pendente' ? 0 : 1) || b.createdAt.localeCompare(a.createdAt)).map((r) => {
+      const row = r.matchId ? rows.find((x) => x.id === r.matchId) : undefined;
+      const unit = r.unitId ? units.find((u) => u.id === r.unitId) : undefined;
+      return { ...r, summary: requestSummary(r), editionTitle: editionById(r.editionId)?.title ?? '', isInitial: editionById(r.editionId)?.isInitial === true,
+        live: r.kind === 'magistrado'
+          ? (row ? { unitId: row.unitId, unit: unitLabel(row), area: row.area, workType: row.workType ?? '', comarca: row.comarca ?? '' } : null)
+          : (unit ? { unitId: unit.id, unit: fullUnitName(unit), areas: unit.areas, slots: unit.slots || 1, linked: linkedCount(unit.id) } : null) };
+    }));
+  });
+
+  // Administração: deferir (aplicando a alteração) ou indeferir (com motivo)
+  app.post('/api/requests/:id/decide', (req, res) => {
+    const r = changeRequests.find((x) => x.id === req.params.id);
+    if (!r) return res.status(404).json({ error: 'Pedido não encontrado.' });
+    if (r.status !== 'Pendente') return res.status(409).json({ error: 'Este pedido já foi analisado.' });
+    const b = req.body ?? {};
+    const reason = freeText(b.reason, 2000);
+    if (b.decision === 'Indeferido') {
+      if (!reason) return res.status(400).json({ error: 'Informe o motivo do indeferimento.' });
+      Object.assign(r, { status: 'Indeferido', decisionReason: reason, decidedAt: new Date().toISOString(), decidedBy: reqCtx.getStore()?.user });
+      log(r.editionId, 'Administração', r.kind === 'magistrado' ? 'Vinculação' : 'Unidade', `Pedido de alteração ${r.protocol} (${r.name}) INDEFERIDO. Motivo: ${reason}`);
+      return res.json({ success: true, request: r });
+    }
+    if (b.decision !== 'Deferido') return res.status(400).json({ error: 'Decisão inválida.' });
+    let outcome = '';
+    if (r.kind === 'magistrado') {
+      const match = matches.find((m) => m.id === r.matchId);
+      if (!match || !panelRows().some((x) => x.id === match.id)) return res.status(409).json({ error: 'A designação deste pedido não está mais vigente. Indefira o pedido informando o motivo.' });
+      if (!isYmd(b.effectiveDate)) return res.status(400).json({ error: 'Informe a partir de quando valerá a alteração.' });
+      const area = typeof b.area === 'string' ? b.area.trim() : '';
+      const workType = typeof b.workType === 'string' ? b.workType : '';
+      if (!area || area.length > 150) return res.status(400).json({ error: 'Informe a área de atuação.' });
+      if (!MATCH_WORK_TYPES.includes(workType as WorkType)) return res.status(400).json({ error: 'Informe o tipo de atuação (Audiências ou Sentença).' });
+      const newUnitName = typeof b.newUnitName === 'string' ? b.newUnitName.trim() : '';
+      const unitId = typeof b.unitId === 'string' && b.unitId ? b.unitId : match.unitId;
+      if (!newUnitName && unitId === match.unitId && norm(area) === norm(match.assignedArea) && workType === match.workType) {
+        return res.status(400).json({ error: 'Nada foi alterado. Mude a área, o tipo ou a vara, ou indefira o pedido.' });
+      }
+      const body: Record<string, string> = { assignedArea: area, workType, effectiveDate: b.effectiveDate, ...(newUnitName ? { newUnitName } : { unitId }) };
+      if (typeof b.sei === 'string' && b.sei.trim()) body.sei = b.sei.trim();
+      const done = updateMatch(match, body, ` por deferimento do pedido ${r.protocol}`);
+      if ('error' in done) return res.status(done.status).json({ error: done.error });
+      const un = units.find((u) => u.id === done.match.unitId);
+      outcome = `${fullUnitOf(un)} · área: ${done.match.assignedArea} · tipo: ${workLabel(done.match.workType)} · a partir de ${b.effectiveDate.split('-').reverse().join('/')}`;
+    } else {
+      const unit = units.find((u) => u.id === r.unitId);
+      if (!unit) return res.status(409).json({ error: 'A unidade deste pedido não existe mais. Indefira o pedido informando o motivo.' });
+      const areas = Array.isArray(b.areas) ? [...new Set(b.areas.filter((a: unknown) => typeof a === 'string' && a.trim() && a.length <= 150).map((a: string) => a.trim()))] as string[] : [];
+      const slots = Number(b.slots);
+      if (areas.length === 0) return res.status(400).json({ error: 'A unidade precisa de ao menos uma área.' });
+      if (!Number.isInteger(slots) || slots < 1 || slots > 50) return res.status(400).json({ error: 'Número de magistrados inválido.' });
+      if (slots < linkedCount(unit.id)) return res.status(400).json({ error: `A unidade já tem ${linkedCount(unit.id)} magistrado(s) vinculado(s); o número não pode ser menor.` });
+      const before = `áreas: ${unit.areas.join(', ')}; ${unit.slots || 1} magistrado(s)`;
+      unit.areas = areas; unit.slots = slots;
+      refreshUnitStatus(unit.id);
+      outcome = `áreas: ${areas.join(', ')} · ${slots} magistrado(s)`;
+      log(unit.editionId, 'Administração', 'Unidade', `Unidade ${fullUnitName(unit)} alterada por deferimento do pedido ${r.protocol}: de ${before} para ${outcome.replace(' · ', '; ')}.`);
+    }
+    Object.assign(r, { status: 'Deferido', outcome, decidedAt: new Date().toISOString(), decidedBy: reqCtx.getStore()?.user, ...(reason ? { decisionReason: reason } : {}) });
+    log(r.editionId, 'Administração', r.kind === 'magistrado' ? 'Vinculação' : 'Unidade', `Pedido de alteração ${r.protocol} (${r.name}) DEFERIDO: ${outcome}.`);
+    res.json({ success: true, request: r });
   });
 
   app.delete('/api/matches/:id', (req, res) => {
