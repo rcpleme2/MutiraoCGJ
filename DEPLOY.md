@@ -159,6 +159,16 @@ Exemplo: `gcloud run services update mutiraocgj --region europe-west1 --update-e
 
 ## 8. Regras de funcionamento
 
+- **Mutirão único e janelas de inscrição:** magistrados, unidades, lista de espera e vinculações formam um só conjunto. As
+  antigas edições são *janelas de inscrição* (*Administração → Janelas de inscrição*), cada uma com abertura, encerramento e
+  **início padrão da atuação**. Um magistrado de qualquer janela pode ser vinculado a uma unidade de qualquer janela; a
+  vinculação usa o início da janela em que o magistrado se inscreveu (editável). O portal recebe inscrições na janela vigente,
+  dentro do prazo. No topo da administração, o filtro "Janela de inscrição" restringe o que é exibido (padrão: todas).
+- **Nova inscrição da mesma pessoa:** um e-mail só pode ter uma inscrição de magistrado em aberto; quem foi rejeitado, desistiu
+  ou foi excluído pode se inscrever de novo (a inscrição antiga fica no histórico).
+- **Unidade rejeitada com o pedido mantido:** volta para "Em análise" na próxima janela de inscrição (na seguinte, se já existir,
+  ou assim que for criada).
+
 - **Painel de vinculações (restrito à administração):** *Administração → Painel de vinculações*. Tabela única com as designações vigentes de
   **todas as edições** (valem até o registro da desistência). Planilhas coladas viram vinculações reais na edição **Vinculações iniciais**
   (criada automaticamente; nunca é a edição vigente), onde as varas podem ser alteradas ("Alterar vara", com a data de início) e o painel reflete na hora. A atuação é sempre para audiências ou para sentença (nas vinculações iniciais, sentença).
@@ -186,7 +196,7 @@ Exemplo: `gcloud run services update mutiraocgj --region europe-west1 --update-e
 - **Inscrições:** os campos de escolha do magistrado (1ª e 2ª escolha e aceite de audiências) e as áreas da unidade começam
   sem seleção; todos são obrigatórios (o servidor também valida).
 
-- **Prazo de inscrições:** vale a chave "Inscrições públicas habilitadas" **e** a janela de datas da edição, em horário de
+- **Prazo de inscrições:** vale a chave "Inscrições públicas habilitadas" **e** as datas da janela de inscrição vigente, em horário de
   Brasília (o último minuto de encerramento é incluído). Fora da janela os formulários ficam visíveis, porém bloqueados, com
   a data correta. O cadastro manual pelo painel não é limitado pela janela.
 - **Registro de atividades:** nunca é apagado do Firestore (a tela mostra as 5.000 mais recentes). Ações administrativas,
@@ -228,12 +238,12 @@ restaura qualquer cópia. Se o backup falhar ou atrasar mais de 36 horas, o pain
 O endereço `GET /api/bi/designacoes` entrega, só para quem tiver a chave `BI_TOKEN` (cabeçalho `x-bi-token`), uma
 tabela única com as designações e o **histórico de atuação**: uma linha por período de um magistrado numa unidade.
 
-- **Colunas:** `edicao`, `magistrado`, `area`, `unidade`, `comarca`, `atuacao`, `situacao`, `inicio` e `fim` (DD/MM/AAAA)
+- **Colunas:** `edicao` (nome da janela de inscrição do magistrado; o nome da coluna foi mantido), `magistrado`, `area`, `unidade`, `comarca`, `atuacao`, `situacao`, `inicio` e `fim` (DD/MM/AAAA)
   e `dias` (dias corridos do período, contando o primeiro e o último; período em curso conta até hoje).
 - **Situação:** `Ativo` (em curso, `fim` vazio), `Alterado` (encerrado por alteração de vara/área; a nova unidade é outra
   linha, começando no dia seguinte), `Desistente` e `Excluído`.
-- **Regras das datas:** o início é o da vinculação ou, sem data própria, o da edição (campo *Início da atuação* no cadastro
-  da edição; Vinculações iniciais = 15/06/2026). A alteração de vara/área encerra o período na véspera da nova vigência; a
+- **Regras das datas:** o início é o da vinculação ou, sem data própria, o da janela de inscrição do magistrado (campo *Início da
+  atuação* no cadastro da janela; Vinculações iniciais = 15/06/2026). A alteração de vara/área encerra o período na véspera da nova vigência; a
   desistência, no último dia do mês do pedido; a exclusão, na data do registro. Data ainda não informada = campo vazio.
 - **O que não vai:** e-mail, IP e motivos.
 - **Formato:** JSON por padrão; `?formato=csv` entrega CSV com `;`.

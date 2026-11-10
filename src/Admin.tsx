@@ -10,7 +10,7 @@ type Sub = 'overview' | 'editions' | 'magistrates' | 'units' | 'matches' | 'wait
 
 const SUBS: { id: Sub; label: string }[] = [
   { id: 'overview', label: 'Painel' },
-  { id: 'editions', label: 'Edições' },
+  { id: 'editions', label: 'Janelas de inscrição' },
   { id: 'magistrates', label: 'Magistrados' },
   { id: 'units', label: 'Unidades' },
   { id: 'matches', label: 'Vinculações' },
@@ -99,7 +99,7 @@ function AttendedUnits({ refreshKey }: { refreshKey: number }) {
       { id: 'mags', label: 'Magistrados vinculados', sort: g => g.rows.length, render: g => (
         <ul className="space-y-0.5">{g.rows.map(r => <li key={r.id} className="text-sm">{r.name}{!area && !split && <span className="text-xs text-bronze"> · {r.area}</span>}</li>)}</ul>
       ) },
-      { id: 'edition', label: 'Edição', sort: g => g.edition, tdClass: 'text-xs text-muted', render: g => [...new Set(g.rows.map(r => r.editionTitle))].join(', ') },
+      { id: 'edition', label: 'Janela', sort: g => g.edition, tdClass: 'text-xs text-muted', render: g => [...new Set(g.rows.map(r => r.editionTitle))].join(', ') },
     ]} />
   );
   return (
@@ -277,19 +277,8 @@ function Table({ head, children }: { head: React.ReactNode[]; children: React.Re
   );
 }
 
-/** Filtro de edição das listas: mostra apenas os registros da edição escolhida (a mesma "edição em gestão" do topo). */
-function EditionFilter({ editions, value, onChange, what }: { editions: Edition[]; value: string; onChange: (id: string) => void; what: string }) {
-  return (
-    <div className="flex flex-wrap items-center gap-3 mb-4">
-      <label className="text-xs font-medium text-muted tracking-wide" htmlFor={`ed-filter-${what}`}>Edição</label>
-      <select id={`ed-filter-${what}`} className="input max-w-sm" value={value} onChange={e => onChange(e.target.value)}>
-        <option value="all">Todas as edições — {editions.reduce((n, e) => n + (what === 'magistrados' ? e.stats?.magistrates ?? 0 : e.stats?.units ?? 0), 0)} {what}</option>
-        {editions.map(e => <option key={e.id} value={e.id}>{e.title}{e.isActive ? ' (vigente)' : ''} — {what === 'magistrados' ? e.stats?.magistrates ?? 0 : e.stats?.units ?? 0} {what}</option>)}
-      </select>
-      <span className="text-xs text-muted">{value === 'all' ? `Exibindo os ${what} de todas as edições (somente consulta e edição de registros).` : `Exibindo apenas os ${what} desta edição.`}</span>
-    </div>
-  );
-}
+/** Nome da vara na lista de escolha; com o mesmo nome em mais de uma janela de inscrição, indica a janela */
+const unitOption = (u: Unit, list: Unit[]) => (list.some(x => x.id !== u.id && x.unitName === u.unitName) ? `${u.unitName} — ${u.editionTitle ?? ''}` : u.unitName);
 
 function Toolbar({ title, children }: { title: string; children?: React.ReactNode }) {
   return (
@@ -300,7 +289,7 @@ function Toolbar({ title, children }: { title: string; children?: React.ReactNod
   );
 }
 
-/* ---------- Formulário de edição ---------- */
+/* ---------- Formulário da janela de inscrição ---------- */
 function EditionForm({ initial, onSubmit }: { initial?: Edition; onSubmit: (v: any) => Promise<void> }) {
   const [f, setF] = useState({
     title: initial?.title ?? '',
@@ -313,8 +302,8 @@ function EditionForm({ initial, onSubmit }: { initial?: Edition; onSubmit: (v: a
   });
   return (
     <form className="space-y-4" onSubmit={e => { e.preventDefault(); onSubmit(f); }}>
-      <Field label="Título da edição">
-        <input required className="input" value={f.title} onChange={e => setF({ ...f, title: e.target.value })} placeholder="Ex.: Mutirão de Julgamento TJPR - 2ª Edição 2026" />
+      <Field label="Nome da janela de inscrição">
+        <input required className="input" value={f.title} onChange={e => setF({ ...f, title: e.target.value })} placeholder="Ex.: Inscrições extraordinárias – novembro/2026" />
       </Field>
       <Field label="Descrição">
         <textarea rows={3} className="input" value={f.description} onChange={e => setF({ ...f, description: e.target.value })} />
@@ -330,9 +319,9 @@ function EditionForm({ initial, onSubmit }: { initial?: Edition; onSubmit: (v: a
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={f.isRegistrationOpen} onChange={e => setF({ ...f, isRegistrationOpen: e.target.checked })} /> Inscrições públicas habilitadas <span className="text-muted">(as datas acima também precisam estar vigentes)</span></label>
       ) : (
         <label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-1" checked={f.activate} onChange={e => setF({ ...f, activate: e.target.checked })} />
-          <span>Tornar esta a edição vigente <span className="text-muted">(as inscrições públicas passam a ser registradas nela)</span></span></label>
+          <span>Tornar esta a janela vigente <span className="text-muted">(as inscrições públicas passam a ser registradas nela)</span></span></label>
       )}
-      <button className="btn-primary w-full">{initial ? 'Salvar alterações' : 'Criar edição'}</button>
+      <button className="btn-primary w-full">{initial ? 'Salvar alterações' : 'Criar janela'}</button>
     </form>
   );
 }
@@ -354,7 +343,7 @@ const prefLabel = (m: Magistrate | undefined, area: string) => {
 function eligibleFor(unit: Unit, magistrates: Magistrate[], matches: Match[], current?: Match) {
   const taken = new Set(matches.filter(x => x.id !== current?.id).map(x => x.magistrateId));
   const list: Eligible[] = magistrates
-    .filter(m => m.editionId === unit.editionId && m.status !== 'Rejeitado' && m.status !== 'Desistente' && !taken.has(m.id)
+    .filter(m => m.status !== 'Rejeitado' && m.status !== 'Desistente' && m.status !== 'Excluído' && !taken.has(m.id) // de qualquer janela de inscrição
       && (m.status !== 'Aguardando Conferência' || m.id === current?.magistrateId))
     .map(m => {
       const first = unit.areas.includes(m.firstPreference);
@@ -695,7 +684,7 @@ function RequestsAdmin({ run, readOnly, onChanged }: { run: RunFn; readOnly: boo
       return;
     }
     const live = r.live as { unitId: string; area: string; workType: string } | null;
-    const us = await run(() => api<Unit[]>(`/units?edition=${encodeURIComponent(r.editionId)}`));
+    const us = await run(() => api<Unit[]>('/units?edition=all'));
     if (!us) return;
     setD({ kind: 'mag', r, units: us.filter(u => u.selection === 'Escolhida').sort((a, b) => a.unitName.localeCompare(b.unitName, 'pt-BR')),
       area: r.requested.area ?? live?.area ?? '', workType: r.requested.workType ?? live?.workType ?? 'Sentença', comarca: '', unit: '', newName: '', date: '', sei: '', reason: '' });
@@ -812,7 +801,7 @@ function RequestsAdmin({ run, readOnly, onChanged }: { run: RunFn; readOnly: boo
                   <Field label="Nova vara">
                     <select className="input" value={d.unit} onChange={e => setD({ ...d, unit: e.target.value })} disabled={!d.comarca || !!d.newName.trim()}>
                       <option value="">{d.comarca ? 'Manter a vara atual' : 'Escolha a comarca primeiro'}</option>
-                      {existing.filter(u => u.id !== live?.unitId).map(u => <option key={u.id} value={u.id}>{u.unitName}</option>)}
+                      {existing.filter(u => u.id !== live?.unitId).map(u => <option key={u.id} value={u.id}>{unitOption(u, existing)}</option>)}
                       {fromCatalog.map(c => <option key={c.id} value={`cat:${c.id}`}>{c.unitName}</option>)}
                     </select>
                   </Field>
@@ -920,7 +909,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
     if (r) { setEditingWd(null); await load(); }
   };
   const openMove = async (r: PanelRow) => {
-    const list = await run(() => api<Unit[]>(`/units?edition=${encodeURIComponent(r.editionId)}`));
+    const list = await run(() => api<Unit[]>('/units?edition=all'));
     if (!list) return;
     setMoving({ row: r, units: list.filter(u => u.selection === 'Escolhida' && u.id !== r.unitId).sort((a, b) => a.unitName.localeCompare(b.unitName, 'pt-BR')) });
     setMoveUnit(''); setMoveComarca(''); setMoveNewName(''); setMoveArea(r.area); setMoveWork(r.workType ?? ''); setMoveSei(''); setMoveDate(today());
@@ -977,7 +966,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
         <button className="btn-secondary btn-sm" onClick={exportPdf}><Download className="w-4 h-4" /> Exportar relatório em PDF</button>
       </Toolbar>
       <p className="text-sm text-muted -mt-2">
-        Relação total das vinculações vigentes de <strong className="text-ink">todas as edições</strong>, de uso restrito da administração. As designações de edições anteriores continuam valendo até que seja registrada a desistência.
+        Relação total das vinculações vigentes do mutirão (<strong className="text-ink">todas as janelas de inscrição</strong>), de uso restrito da administração. As designações continuam valendo até que seja registrada a desistência.
         Ao desfazer uma vinculação, a linha sai daqui automaticamente. Para trocar a vara, a área ou o tipo de atuação de alguém, use "Alterar vara/área/tipo" (informa a partir de quando atua na nova unidade; a anterior fica registrada até o dia anterior).
       </p>
 
@@ -1036,7 +1025,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
             </> },
             { id: 'comarca', label: 'Comarca', optional: true, hidden: true, sort: r => r.comarca ?? '', filter: r => r.comarca ?? '', tdClass: 'text-xs', render: r => r.comarca || '—' },
             { id: 'work', label: 'Atuação', optional: true, filter: r => r.workType ?? '', sort: r => r.workType ?? '', tdClass: 'text-xs', render: r => (r.workType === 'Audiência' ? 'Audiências' : r.workType === 'Sentença' ? 'Sentença' : r.workType) },
-            { id: 'edition', label: 'Edição', optional: true, sort: r => r.editionTitle, filter: r => r.editionTitle, tdClass: 'text-xs text-muted', render: r => r.editionTitle },
+            { id: 'edition', label: 'Janela', optional: true, sort: r => r.editionTitle, filter: r => r.editionTitle, tdClass: 'text-xs text-muted', render: r => r.editionTitle },
             { id: 'postit', label: 'Observações', optional: true, sort: r => r.postit ?? '', filter: r => (r.postit ? 'Com observação' : 'Sem observação'), render: r => <PostIt key={`${r.id}:${r.postit ?? ''}`} row={r} run={run} onSaved={load} /> },
             { id: 'actions', label: '', align: 'right', render: r => (
               <div className="flex flex-wrap justify-end gap-1">
@@ -1094,7 +1083,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
             <SmartTable bare id="historico" rows={list} rowKey={p => p.id} empty={data.periods.length ? 'Nenhum resultado para a busca.' : 'Nenhum período registrado.'} defaultSort={{ key: 'name', dir: 'asc' }} cols={[
               { id: 'name', label: 'Magistrado(a)', sort: p => `${p.name}|${p.start ?? ''}`, tdClass: 'font-medium', render: p => p.name },
               { id: 'unit', label: 'Unidade', sort: p => p.unit, render: p => <>{p.unit}<div className="text-xs text-muted">{p.area}{p.workType ? ` · ${p.workType === 'Audiência' ? 'Audiências' : p.workType}` : ''}</div></> },
-              { id: 'edition', label: 'Edição', optional: true, sort: p => p.editionTitle, filter: p => p.editionTitle, tdClass: 'text-xs text-muted', render: p => p.editionTitle },
+              { id: 'edition', label: 'Janela', optional: true, sort: p => p.editionTitle, filter: p => p.editionTitle, tdClass: 'text-xs text-muted', render: p => p.editionTitle },
               { id: 'start', label: 'Início', sort: p => p.start ?? '', tdClass: 'whitespace-nowrap', render: p => (p.start ? dmy(p.start) : <span className="text-warn">A informar</span>) },
               { id: 'end', label: 'Fim', sort: p => p.end ?? (p.endReason ? '0' : '9'), tdClass: 'whitespace-nowrap', render: p => (p.end ? dmy(p.end) : p.endReason ? <span className="text-warn">A informar</span> : <Badge tone="ok">Em curso</Badge>) },
               { id: 'reason', label: 'Encerramento', filter: p => p.endReason || 'Em curso', sort: p => p.endReason, tdClass: 'text-xs', render: p => <>{p.endReason || '—'}{p.sei && <div className="text-muted font-mono">SEI {p.sei}</div>}</> },
@@ -1108,7 +1097,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
         <div className="space-y-4 mt-4">
           <p className="text-sm text-muted">
             No Excel, selecione as colunas <strong className="text-ink">Nome</strong>, <strong className="text-ink">Área</strong> e <strong className="text-ink">Designado Para</strong> (com ou sem a linha de cabeçalho),
-            copie (Ctrl+C) e cole abaixo (Ctrl+V). Cada linha vira uma vinculação da edição <strong className="text-ink">{data.initialEdition.title}</strong> (e-mail, lotação e comarca ficam em branco) e pode ser ajustada na aba Vinculações.
+            copie (Ctrl+C) e cole abaixo (Ctrl+V). Cada linha vira uma vinculação da janela <strong className="text-ink">{data.initialEdition.title}</strong> (e-mail, lotação e comarca ficam em branco) e pode ser ajustada na aba Vinculações.
           </p>
           <textarea rows={8} className="input font-mono text-xs" placeholder={'Nome\tÁrea\tDesignado Para\nDra. Fulana de Tal\tCrime\t1ª Vara Criminal de Curitiba'}
             value={text} onChange={e => { setText(e.target.value); setPreview(null); }} aria-label="Linhas copiadas da planilha" />
@@ -1166,7 +1155,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
                   <Field label="Nova vara">
                     <select className="input" value={moveUnit} onChange={e => setMoveUnit(e.target.value)} disabled={!moveComarca || !!moveNewName.trim()}>
                       <option value="">{moveComarca ? 'Manter a unidade atual' : 'Escolha a comarca primeiro'}</option>
-                      {existing.map(u => <option key={u.id} value={u.id}>{u.unitName}</option>)}
+                      {existing.map(u => <option key={u.id} value={u.id}>{unitOption(u, existing)}</option>)}
                       {fromCatalog.map(c => <option key={c.id} value={`cat:${c.id}`}>{c.unitName}</option>)}
                     </select>
                   </Field>
@@ -1208,7 +1197,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
         <Modal title="Data de início da atuação" onClose={() => setStartEdit(null)}>
           <form onSubmit={submitStart} className="space-y-4">
             <p className="text-sm text-muted"><strong className="text-ink">{startEdit.row.name}</strong> em <strong className="text-ink">{fullUnitName({ unitName: startEdit.row.unit, comarca: startEdit.row.comarca, separator: startEdit.row.separator })}</strong>. Use para corrigir a data (ex.: substituto que começou depois). Para mudar de vara, área ou tipo, use "Alterar vara/área/tipo".</p>
-            <Field label="Atua desde (em branco = início da edição)">
+            <Field label="Atua desde (em branco = início da janela de inscrição)">
               <input className="input" type="date" autoFocus value={startEdit.date} onChange={e => setStartEdit({ ...startEdit, date: e.target.value })} />
             </Field>
             <div className="flex justify-end gap-2">
@@ -1304,7 +1293,7 @@ interface Dashboard {
 }
 
 function SupplyDemand({ editionId, refreshKey, onGo }: { editionId: string; refreshKey: number; onGo: (s: Sub) => void }) {
-  const [scope, setScope] = useState<'edition' | 'all'>('edition');
+  const [scope, setScope] = useState<'edition' | 'all'>('all');
   const [d, setD] = useState<Dashboard | null>(null);
   const [allComarcas, setAllComarcas] = useState(false);
   useEffect(() => {
@@ -1325,10 +1314,10 @@ function SupplyDemand({ editionId, refreshKey, onGo }: { editionId: string; refr
     <div className="card p-5 space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h4 className="font-semibold text-navy">Oferta × demanda</h4>
-        <div className="flex gap-1.5" role="group" aria-label="Abrangência">
+        <div className={`flex gap-1.5 ${editionId === 'all' ? 'hidden' : ''}`} role="group" aria-label="Abrangência">
           {(['edition', 'all'] as const).map(s => (
             <button key={s} type="button" aria-pressed={scope === s} onClick={() => setScope(s)}
-              className={`px-2.5 py-1 rounded-full border text-xs ${scope === s ? 'bg-navy text-white border-navy' : 'border-line text-muted hover:text-ink'}`}>{s === 'edition' ? 'Edição em gestão' : 'Todas as edições'}</button>
+              className={`px-2.5 py-1 rounded-full border text-xs ${scope === s ? 'bg-navy text-white border-navy' : 'border-line text-muted hover:text-ink'}`}>{s === 'edition' ? 'Janela filtrada' : 'Todo o mutirão'}</button>
           ))}
         </div>
       </div>
@@ -1503,7 +1492,7 @@ function StandardizeAdmin({ run, confirm, onChanged }: { run: RunFn; confirm: (m
   if (!data) return <div className="card p-8 text-sm text-muted">Carregando…</div>;
   const auto = [...data.units.filter(confident).map(g => ({ kind: 'unit' as const, g })), ...data.locations.filter(confident).map(g => ({ kind: 'location' as const, g }))];
   const applyAll = async () => {
-    if (!(await confirm(`Aplicar as ${auto.length} sugestões de alta confiança? Recomenda-se exportar um backup antes (aba Backup). Unidades repetidas na mesma edição serão fundidas.`, 'Aplicar todas'))) return;
+    if (!(await confirm(`Aplicar as ${auto.length} sugestões de alta confiança? Recomenda-se exportar um backup antes (aba Backup). Unidades repetidas na mesma janela serão fundidas.`, 'Aplicar todas'))) return;
     const r = await run(() => api<{ units: number; locations: number; merged: number }>('/standardize/apply', { method: 'POST', json: { items: auto.map(a => ({ kind: a.kind, ids: a.g.ids, catalogId: a.g.suggestions[0].id })) } }));
     if (r) { await load(); onChanged(); }
   };
@@ -1523,7 +1512,7 @@ function StandardizeAdmin({ run, confirm, onChanged }: { run: RunFn; confirm: (m
       </Toolbar>
       <p className="text-sm text-muted -mt-2">
         Registros com unidade ou lotação fora da lista oficial do TJPR (digitados em "Outra", importados de planilha ou anteriores à lista).
-        Ao aplicar, o nome oficial substitui o digitado e inscrições repetidas da mesma unidade numa edição são fundidas. Faça um backup antes de aplicações em lote.
+        Ao aplicar, o nome oficial substitui o digitado e inscrições repetidas da mesma unidade numa janela são fundidas. Faça um backup antes de aplicações em lote.
       </p>
       <div className="card p-5 flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
@@ -1881,9 +1870,9 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const [sub, setSub] = useState<Sub>('overview');
   const [pendingRequests, setPendingRequests] = useState(0);
   const [editions, setEditions] = useState<Edition[]>([]);
-  const [selectedId, setSelectedId] = useState('');
-  const [viewAll, setViewAll] = useState(false); // abas Magistrados/Unidades: todas as edições
-  const pickEdition = (id: string) => { if (id === 'all') setViewAll(true); else { setViewAll(false); setSelectedId(id); } };
+  // Filtro por janela de inscrição ('all' = todo o mutirão). Magistrados, unidades e vinculações ficam sempre completos na memória
+  // (a vinculação pode unir janelas diferentes); o filtro só restringe o que é exibido.
+  const [selectedId, setSelectedId] = useState('all');
   const [magistrates, setMagistrates] = useState<Magistrate[]>([]);
   const [units, setUnits] = useState<Unit[]>([]);
   const [matches, setMatches] = useState<Match[]>([]);
@@ -1913,7 +1902,10 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const aiClosed = { loading: false, open: false, items: [] as any[], balance: null, error: '', picked: [] as number[] };
 
   const selected = editions.find(e => e.id === selectedId);
-
+  const allScope = selectedId === 'all';
+  const inScope = (x: { editionId: string }) => allScope || x.editionId === selectedId;
+  /** Janela que recebe os cadastros feitos pela administração: a filtrada ou, com "todas", a vigente no portal */
+  const target = selected ?? editions.find(e => e.isActive) ?? editions[0];
   // Executa uma chamada tratando erro e expiração de sessão
   const run = useCallback(async <T,>(fn: () => Promise<T>, okMessage?: string): Promise<T | undefined> => {
     try {
@@ -1930,7 +1922,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
     const r = await run(() => api<{ activeEditionId: string; editions: Edition[] }>('/editions'));
     if (!r) return;
     setEditions(r.editions);
-    setSelectedId(prev => (r.editions.some(e => e.id === prev) ? prev : r.activeEditionId));
+    setSelectedId(prev => (prev === 'all' || r.editions.some(e => e.id === prev) ? prev : 'all'));
   }, [run]);
 
   const loadFaq = useCallback(async () => {
@@ -1941,22 +1933,20 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const loadScoped = useCallback(async () => {
     if (!selectedId) return;
     const q = `?edition=${encodeURIComponent(selectedId)}`;
-    const lq = viewAll ? '?edition=all' : q;
     const r = await run(() => Promise.all([
-      api<Magistrate[]>(`/magistrates${lq}`), api<Unit[]>(`/units${lq}`), api<Match[]>(`/matches${lq}`),
-      api<Magistrate[]>(`/waiting-list${q}`), api<LogEntry[]>(`/log${q}`),
+      api<Magistrate[]>('/magistrates?edition=all'), api<Unit[]>('/units?edition=all'), api<Match[]>('/matches?edition=all'),
+      api<Magistrate[]>(`/waiting-list${q}`), api<LogEntry[]>(`/log${selectedId === 'all' ? '' : q}`),
     ]));
     if (!r) return;
     api<Record<string, Presence>>('/panel/presence').then(setPresence).catch(() => setPresence({}));
     api<ChangeRequest[]>('/requests').then(l => setPendingRequests(l.filter(x => x.status === 'Pendente').length)).catch(() => {});
     [setMagistrates, setUnits, setMatches, setWaiting, setLog].forEach((set, i) => (set as any)(r[i]));
-  }, [selectedId, viewAll, run]);
+  }, [selectedId, run]);
 
   const refresh = useCallback(async () => { await loadEditions(); await loadScoped(); onEditionsChanged(); }, [loadEditions, loadScoped, onEditionsChanged]);
 
   useEffect(() => { if (authed) { loadEditions(); loadFaq(); api<typeof me>('/admin/me').then(setMe).catch(() => setMe(null)); } }, [authed]);
-  useEffect(() => { if (authed) { loadScoped(); setAi(aiClosed); } }, [authed, selectedId, viewAll]);
-  useEffect(() => { if (sub !== 'magistrates' && sub !== 'units') setViewAll(false); }, [sub]);
+  useEffect(() => { if (authed) { loadScoped(); setAi(aiClosed); } }, [authed, selectedId]);
 
   const login = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1985,7 +1975,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const logout = () => { api('/admin/logout', { method: 'POST' }).catch(() => {}); setToken(''); setMe(null); setAuthed(false); };
 
   const q = `edition=${encodeURIComponent(selectedId)}`;
-  const withEdition = (body: object) => ({ ...body, editionId: selectedId, source: 'admin' });
+  const withEdition = (body: object) => ({ ...body, editionId: target?.id, source: 'admin' });
 
   /* ---------- Login ---------- */
   // Abas que o perfil pode ver e, delas, as que o usuário escolheu esconder na própria tela
@@ -2105,12 +2095,12 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   };
 
   const createEdition = async (v: any) => {
-    const r = await run(() => api('/editions', { method: 'POST', json: v }), 'Edição criada.');
+    const r = await run(() => api('/editions', { method: 'POST', json: v }), 'Janela de inscrição criada.');
     if (r) { setModal(null); await loadEditions(); onEditionsChanged(); setSub('editions'); }
   };
   const updateEdition = async (v: any) => {
     if (!editingEdition) return;
-    const r = await run(() => api(`/editions/${editingEdition.id}`, { method: 'PUT', json: v }), 'Edição atualizada.');
+    const r = await run(() => api(`/editions/${editingEdition.id}`, { method: 'PUT', json: v }), 'Janela de inscrição atualizada.');
     if (r) { setModal(null); refresh(); }
   };
   const editionAction = async (id: string, action: 'activate' | 'close' | 'reopen', msg: string, ask?: string) => {
@@ -2123,15 +2113,15 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
     e.preventDefault();
     if (!rejecting) return;
     const r = await run(() => api(`/${rejecting.kind}/${rejecting.id}/reject`, { method: 'POST', json: { reason: rejectReason, carryOver: rejecting.kind === 'units' && rejectCarry } }),
-      rejecting.kind === 'units' ? (rejectCarry ? 'Unidade rejeitada; pedido mantido para a próxima edição.' : 'Unidade rejeitada.') : 'Inscrição rejeitada.');
+      rejecting.kind === 'units' ? (rejectCarry ? 'Unidade rejeitada; o pedido volta para análise na próxima janela.' : 'Unidade rejeitada.') : 'Inscrição rejeitada.');
     if (r) { setModal(null); refresh(); }
   };
   const WIPE = {
-    magistrates: { path: '/magistrates/delete-all', label: 'inscrições de magistrados', count: () => magistrates.length,
+    magistrates: { path: '/magistrates/delete-all', label: 'inscrições de magistrados', count: () => magistrates.filter(inScope).length,
       effect: 'As vinculações desses magistrados também serão removidas, e as unidades afetadas voltarão a ficar sem magistrado.' },
-    units: { path: '/units/delete-all', label: 'unidades judiciais', count: () => units.length,
+    units: { path: '/units/delete-all', label: 'unidades judiciais', count: () => units.filter(inScope).length,
       effect: 'As vinculações dessas unidades também serão removidas, e os magistrados afetados voltarão à lista de espera.' },
-    matches: { path: '/matches/delete-all', label: 'vinculações', count: () => matches.length,
+    matches: { path: '/matches/delete-all', label: 'vinculações', count: () => matches.filter(inScope).length,
       effect: 'Os magistrados voltarão à lista de espera e as unidades ficarão sem magistrado. As inscrições são mantidas.' },
   } as const;
   const startWipe = (kind: 'magistrates' | 'units' | 'matches') => { setWiping(kind); setWipeText(''); setModal('wipe'); };
@@ -2145,19 +2135,19 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const confirmDeleteEdition = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!deletingEdition || deleteText.trim() !== 'EXCLUIR') return;
-    const r = await run(() => api(`/editions/${deletingEdition.id}/delete`, { method: 'POST', json: { confirm: 'EXCLUIR' } }), `Edição "${deletingEdition.title}" excluída.`);
+    const r = await run(() => api(`/editions/${deletingEdition.id}/delete`, { method: 'POST', json: { confirm: 'EXCLUIR' } }), `Janela "${deletingEdition.title}" excluída.`);
     if (r) { setDeletingEdition(null); refresh(); }
   };
 
   const approveAll = async () => {
-    const n = magistrates.filter(m => m.status === 'Aguardando Conferência').length;
+    const n = magistrates.filter(m => inScope(m) && m.status === 'Aguardando Conferência').length;
     if (!(await confirm(`Aprovar as ${n} inscrição(ões) de magistrado(s) pendente(s)? Inscrições rejeitadas não serão alteradas.`, 'Aprovar todos'))) return;
     const r = await run(() => api<{ count: number }>(`/magistrates/approve-all?${q}`, { method: 'POST' }));
     if (r) toast(`${r.count} inscrição(ões) aprovada(s).`);
     refresh();
   };
   const chooseAll = async () => {
-    const n = units.filter(u => u.selection === 'Em análise').length;
+    const n = units.filter(u => inScope(u) && u.selection === 'Em análise').length;
     if (!(await confirm(`Escolher as ${n} unidade(s) em análise para o mutirão? Unidades rejeitadas não serão alteradas.`, 'Escolher todas'))) return;
     const r = await run(() => api<{ count: number }>(`/units/choose-all?${q}`, { method: 'POST' }));
     if (r) toast(`${r.count} unidade(s) escolhida(s).`);
@@ -2168,7 +2158,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
     if (r) refresh();
   };
   const mergeUnit = async (u: Unit) => {
-    if (!(await confirm(`Fundir as ${u.duplicateCount} inscrições de "${unitLabel(u)}" desta edição em uma só? Vinculações, vagas, áreas e justificativas passam para a inscrição mais antiga.`, 'Fundir'))) return;
+    if (!(await confirm(`Fundir as ${u.duplicateCount} inscrições de "${unitLabel(u)}" desta janela em uma só? Vinculações, vagas, áreas e justificativas passam para a inscrição mais antiga.`, 'Fundir'))) return;
     await run(() => api('/units/merge', { method: 'POST', json: { id: u.id } }), 'Inscrições fundidas.'); refresh();
   };
   const chooseUnit = async (id: string) => { await run(() => api(`/units/${id}/choose`, { method: 'POST' }), 'Unidade escolhida para o mutirão.'); refresh(); };
@@ -2192,29 +2182,31 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
     refresh();
   };
 
-  const sortedMagistrates = magistrates.filter(m => m.status !== 'Excluído'); // a ordem é definida pelos cabeçalhos da tabela
-  const excludedMags = magistrates.filter(m => m.status === 'Excluído').sort((a, b) => (b.excludedAt ?? '').localeCompare(a.excludedAt ?? ''));
-  const sortedUnits = units;
+  const sortedMagistrates = magistrates.filter(m => inScope(m) && m.status !== 'Excluído'); // a ordem é definida pelos cabeçalhos da tabela
+  const excludedMags = magistrates.filter(m => inScope(m) && m.status === 'Excluído').sort((a, b) => (b.excludedAt ?? '').localeCompare(a.excludedAt ?? ''));
+  const sortedUnits = units.filter(inScope);
 
   const readOnlyEdition = selected?.status === 'Encerrada';
   const logRows = log.filter(l => !logFilter || l.category === logFilter);
 
   return (
     <div className="space-y-6">
-      {/* Cabeçalho + seletor de edição */}
+      {/* Cabeçalho: mutirão único, com filtro opcional por janela de inscrição */}
       <div className="card p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div className="flex-1 min-w-0">
-          <label className="label">Edição em gestão</label>
+          <label className="label" htmlFor="janela-filtro">Janela de inscrição</label>
           <div className="flex flex-wrap items-center gap-3">
-            <select className="input max-w-md" value={selectedId} onChange={e => setSelectedId(e.target.value)}>
-              {editions.map(e => <option key={e.id} value={e.id}>{e.title}{e.isActive ? ' (vigente)' : ''}</option>)}
+            <select id="janela-filtro" className="input max-w-md" value={selectedId} onChange={e => setSelectedId(e.target.value)}>
+              <option value="all">Todas as janelas (mutirão completo)</option>
+              {editions.map(e => <option key={e.id} value={e.id}>{e.title}{e.isActive ? ' (vigente no portal)' : ''}</option>)}
             </select>
             {selected && <Badge tone={selected.status === 'Encerrada' ? 'neutral' : 'ok'}>{selected.status}</Badge>}
             {selected?.isActive && <Badge tone="info">Vigente no portal</Badge>}
+            {!selected && target && <span className="text-xs text-muted">Inscrições do portal e novos cadastros vão para <strong className="text-ink">{target.title}</strong>.</span>}
           </div>
         </div>
         <div className="flex gap-2">
-          <button className="btn-secondary" onClick={() => setModal('edition-new')}><Plus className="w-4 h-4" /> Nova edição</button>
+          <button className="btn-secondary" onClick={() => setModal('edition-new')}><Plus className="w-4 h-4" /> Nova janela</button>
           <button className="btn-ghost" onClick={logout}><LogOut className="w-4 h-4" /> Sair</button>
         </div>
       </div>
@@ -2241,7 +2233,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
         </Modal>
       )}
 
-      {readOnlyEdition && <Notice tone="danger">Esta edição está encerrada. Os dados continuam editáveis aqui, mas o portal público não aceita novas inscrições.</Notice>}
+      {readOnlyEdition && <Notice tone="danger">Esta janela de inscrição está encerrada. Os dados continuam editáveis aqui, mas o portal público não aceita inscrições nela.</Notice>}
 
       <div className="flex flex-wrap gap-x-1 border-b border-line">
         {allowedSubs.filter(t => !hiddenTabs.includes(t.id)).map(t => (
@@ -2281,13 +2273,13 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       )}
 
       {/* ---------- Painel ---------- */}
-      {sub === 'overview' && selected && (
+      {sub === 'overview' && (
         <div className="space-y-6">
           {backupWarn && <Notice tone="danger">{backupWarn}</Notice>}
           <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
             {[
-              ['Magistrados', magistrates.length], ['Unidades', units.length], ['Vinculações', matches.length],
-              ['Em espera', waiting.length], ['Unidades sem magistrado', units.filter(u => u.selection === 'Escolhida' && u.status === 'Pendente').length],
+              ['Magistrados', magistrates.filter(inScope).length], ['Unidades', units.filter(inScope).length], ['Vinculações', matches.filter(inScope).length],
+              ['Em espera', waiting.length], ['Unidades sem magistrado', units.filter(u => inScope(u) && u.selection === 'Escolhida' && u.status === 'Pendente').length],
             ].map(([l, v]) => (
               <div key={l as string} className="card p-5">
                 <div className="text-3xl font-serif font-semibold text-navy">{v}</div>
@@ -2303,7 +2295,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             </div>
             <div className="card p-5 space-y-3">
               <h4 className="font-semibold text-navy">Exportação</h4>
-              <p className="text-sm text-muted">Dados desta edição, incluindo o registro de atividades.</p>
+              <p className="text-sm text-muted">Dados {allScope ? 'de todo o mutirão' : 'desta janela de inscrição'}, incluindo o registro de atividades.</p>
               <div className="flex gap-2 flex-wrap">
                 <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/csv?type=all&${q}`, 'mutirao.csv')}><Download className="w-4 h-4" /> CSV</button>
                 <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/xlsx/matches?${q}`, 'vinculacoes.xlsx')}><Download className="w-4 h-4" /> XLSX</button>
@@ -2321,15 +2313,15 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
         </div>
       )}
 
-      {/* ---------- Edições ---------- */}
+      {/* ---------- Janelas de inscrição ---------- */}
       {sub === 'editions' && (
         <div className="space-y-6">
-          <Toolbar title="Edições do mutirão">
-            <button className="btn-primary btn-sm" onClick={() => setModal('edition-new')}><Plus className="w-4 h-4" /> Nova edição</button>
+          <Toolbar title="Janelas de inscrição">
+            <button className="btn-primary btn-sm" onClick={() => setModal('edition-new')}><Plus className="w-4 h-4" /> Nova janela</button>
           </Toolbar>
-          <SmartTable id="edicoes" picker={false} rows={editions} rowKey={e => e.id} empty="Nenhuma edição." defaultSort={{ key: 'created', dir: 'desc' }}
+          <SmartTable id="edicoes" picker={false} rows={editions} rowKey={e => e.id} empty="Nenhuma janela de inscrição." defaultSort={{ key: 'created', dir: 'desc' }}
             rowClass={e => (e.id === selectedId ? 'bg-bronze-soft/40' : '')} cols={[
-            { id: 'title', label: 'Edição', sort: e => e.title, render: e => <><div className="font-medium">{e.title}</div><div className="text-xs text-muted">Criada em {formatDate(e.createdAt)}</div></> },
+            { id: 'title', label: 'Janela', sort: e => e.title, render: e => <><div className="font-medium">{e.title}</div><div className="text-xs text-muted">Criada em {formatDate(e.createdAt)}</div></> },
             { id: 'created', label: 'Período', sort: e => e.openingDate, tdClass: 'text-muted text-xs', render: e => <>{formatDate(e.openingDate)} a {formatDate(e.closingDate)}<div className={e.startDate ? 'text-bronze' : 'text-warn'}>Início da atuação: {e.startDate ? dmy(e.startDate) : 'a informar'}</div></> },
             { id: 'stats', label: 'Inscritos', sort: e => e.stats?.magistrates ?? 0, tdClass: 'text-xs text-muted', render: e => <>{e.stats?.magistrates ?? 0} magistrados<br />{e.stats?.units ?? 0} unidades · {e.stats?.matches ?? 0} vínculos</> },
             { id: 'status', label: 'Situação', sort: e => e.status, tdClass: 'space-y-1', render: e => <>
@@ -2338,25 +2330,25 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
               {e.registration && (
                 <div title={e.registration.message}>
                   <Badge tone={e.registration.state === 'open' ? 'ok' : e.registration.state === 'not_yet' ? 'warn' : 'neutral'}>
-                    {{ open: 'Inscrições abertas', not_yet: 'Ainda não abriu', ended: 'Prazo encerrado', paused: 'Inscrições suspensas', closed: 'Edição encerrada' }[e.registration.state as string] ?? e.registration.state}
+                    {{ open: 'Inscrições abertas', not_yet: 'Ainda não abriu', ended: 'Prazo encerrado', paused: 'Inscrições suspensas', closed: 'Janela encerrada' }[e.registration.state as string] ?? e.registration.state}
                   </Badge>
                 </div>
               )}
             </> },
             { id: 'actions', label: 'Ações', align: 'right', tdClass: 'whitespace-nowrap', render: e => <>
-              {e.id !== selectedId && <button className="btn-ghost btn-sm" onClick={() => setSelectedId(e.id)}>Gerir</button>}
-              {!e.isActive && e.status === 'Em andamento' && <button className="btn-ghost btn-sm" title="Tornar vigente" onClick={() => editionAction(e.id, 'activate', 'Edição vigente atualizada.', 'Tornar esta edição a vigente? As novas inscrições públicas passarão a ser registradas nela.')}><Radio className="w-4 h-4" /></button>}
+              {e.id !== selectedId && <button className="btn-ghost btn-sm" title="Mostrar só os registros desta janela" onClick={() => setSelectedId(e.id)}>Filtrar</button>}
+              {!e.isActive && e.status === 'Em andamento' && <button className="btn-ghost btn-sm" title="Tornar vigente" onClick={() => editionAction(e.id, 'activate', 'Janela vigente atualizada.', 'Tornar esta edição a vigente? As novas inscrições públicas passarão a ser registradas nela.')}><Radio className="w-4 h-4" /></button>}
               {e.status === 'Em andamento'
-                ? <button className="btn-ghost btn-sm" title="Encerrar edição" onClick={() => editionAction(e.id, 'close', 'Edição encerrada.', 'Encerrar a edição? As inscrições públicas serão fechadas.')}><Archive className="w-4 h-4" /></button>
-                : <button className="btn-ghost btn-sm" title="Reabrir edição" onClick={() => editionAction(e.id, 'reopen', 'Edição reaberta.')}><RotateCcw className="w-4 h-4" /></button>}
+                ? <button className="btn-ghost btn-sm" title="Encerrar janela" onClick={() => editionAction(e.id, 'close', 'Janela encerrada.', 'Encerrar a janela de inscrição? As inscrições públicas serão fechadas.')}><Archive className="w-4 h-4" /></button>
+                : <button className="btn-ghost btn-sm" title="Reabrir janela" onClick={() => editionAction(e.id, 'reopen', 'Janela reaberta.')}><RotateCcw className="w-4 h-4" /></button>}
               <button className="btn-ghost btn-sm" title="Editar" onClick={() => { setEditingEdition(e); setModal('edition-edit'); }}><Pencil className="w-4 h-4" /></button>
               {me?.role === 'admin' && (
-                <button className="btn-ghost btn-sm !text-danger disabled:opacity-30" title={e.isInitial ? 'A edição de vinculações iniciais não pode ser excluída' : e.isActive ? 'Torne outra edição vigente antes de excluir esta' : 'Excluir edição'}
+                <button className="btn-ghost btn-sm !text-danger disabled:opacity-30" title={e.isInitial ? 'A janela das vinculações iniciais não pode ser excluída' : e.isActive ? 'Torne outra janela vigente antes de excluir esta' : 'Excluir janela'}
                   disabled={e.isInitial || e.isActive || editions.length <= 1} onClick={() => { setDeletingEdition(e); setDeleteText(''); }}><Trash2 className="w-4 h-4" /></button>
               )}
             </> },
           ]} />
-          <p className="text-xs text-muted">Cada edição mantém suas próprias inscrições de magistrados e unidades, vinculações e registro de atividades. O portal público recebe inscrições apenas na edição vigente.</p>
+          <p className="text-xs text-muted">O mutirão é um só: magistrados de qualquer janela podem ser vinculados a unidades de qualquer janela. A janela guarda a origem da inscrição e a data padrão de início da atuação. O portal recebe inscrições apenas na janela vigente, dentro do prazo.</p>
         </div>
       )}
 
@@ -2364,27 +2356,24 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       {sub === 'magistrates' && (
         <div>
           <Toolbar title="Magistrados voluntários">
-            {!viewAll && <>
-            {magistrates.some(m => m.status === 'Aguardando Conferência') && (
+            {sortedMagistrates.some(m => m.status === 'Aguardando Conferência') && (
               <button className="btn-secondary btn-sm" onClick={approveAll}>
-                <Check className="w-4 h-4" /> Aprovar todos pendentes ({magistrates.filter(m => m.status === 'Aguardando Conferência').length})
+                <Check className="w-4 h-4" /> Aprovar todos pendentes ({sortedMagistrates.filter(m => m.status === 'Aguardando Conferência').length})
               </button>
             )}
-            {magistrates.length > 0 && (
-              <button className="btn-secondary btn-sm !text-danger" onClick={() => startWipe('magistrates')}><Trash2 className="w-4 h-4" /> Excluir tudo ({magistrates.length})</button>
+            {!allScope && sortedMagistrates.length + excludedMags.length > 0 && (
+              <button className="btn-secondary btn-sm !text-danger" onClick={() => startWipe('magistrates')}><Trash2 className="w-4 h-4" /> Excluir tudo da janela ({sortedMagistrates.length + excludedMags.length})</button>
             )}
             <button className="btn-primary btn-sm" onClick={() => setModal('mag')}><Plus className="w-4 h-4" /> Cadastrar</button>
             <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/csv?type=magistrates&${q}`, 'magistrados.csv')}><Download className="w-4 h-4" /> CSV</button>
-          </>}
           </Toolbar>
-          <EditionFilter editions={editions} value={viewAll ? 'all' : selectedId} onChange={pickEdition} what="magistrados" />
-          <SmartTable id="magistrados" rows={sortedMagistrates} rowKey={m => m.id} empty="Nenhuma inscrição nesta edição." defaultSort={{ key: 'name', dir: 'asc' }} cols={[
+          <SmartTable id="magistrados" rows={sortedMagistrates} rowKey={m => m.id} empty={allScope ? 'Nenhuma inscrição.' : 'Nenhuma inscrição nesta janela.'} defaultSort={{ key: 'name', dir: 'asc' }} cols={[
             { id: 'name', label: 'Magistrado(a)', sort: m => m.name, tdClass: 'min-w-[13rem]', render: m => <>
               <div className="font-medium">{m.name}</div>
-              {viewAll && <div className="text-[11px] text-bronze">{m.editionTitle}</div>}
-              {m.duplicateCount && <div className="text-[11px] text-danger mt-0.5">◦ Mesmo nome inscrito {m.duplicateCount} vezes nesta edição</div>}
+              <div className="text-[11px] text-bronze">{m.editionTitle}</div>
+              {m.duplicateCount && <div className="text-[11px] text-danger mt-0.5">◦ Mesmo nome com {m.duplicateCount} inscrições em aberto</div>}
               {m.linkedElsewhere && <div className="text-[11px] text-danger mt-0.5 leading-snug">
-                ◦ Duplicidade: já vinculado(a) e ativo(a) em outra edição
+                ◦ Duplicidade: já vinculado(a) e ativo(a) por outra inscrição
                 {m.linkedElsewhere.map((l, i) => <div key={i} className="text-muted">{l.unit} ({l.area}) · {l.editionTitle}</div>)}
               </div>}
               {m.priorWithdrawal && <div className="text-[11px] text-warn mt-0.5">Já desistiu antes (SEI {m.priorWithdrawal.sei || 'não informado'}{m.priorWithdrawal.requestDate ? `, pedido em ${m.priorWithdrawal.requestDate.split('-').reverse().join('/')}` : ''}). Se deferida esta inscrição, a desistência passa a valer só para o período anterior.</div>}
@@ -2412,7 +2401,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             <div className="mt-8 space-y-2">
               <h4 className="font-semibold text-navy">Excluídos <span className="text-muted font-normal">({excludedMags.length})</span></h4>
               <SmartTable id="excluidos" picker={false} rows={excludedMags} rowKey={m => m.id} empty="" defaultSort={{ key: 'at', dir: 'desc' }} cols={[
-                { id: 'name', label: 'Magistrado(a)', sort: m => m.name, render: m => <><div className="font-medium">{m.name}</div>{viewAll && <div className="text-[11px] text-bronze">{m.editionTitle}</div>}</> },
+                { id: 'name', label: 'Magistrado(a)', sort: m => m.name, render: m => <><div className="font-medium">{m.name}</div><div className="text-[11px] text-bronze">{m.editionTitle}</div></> },
                 { id: 'reason', label: 'Motivo', sort: m => m.exclusionReason ?? '', tdClass: 'whitespace-pre-wrap', render: m => m.exclusionReason },
                 { id: 'sei', label: 'SEI', sort: m => m.exclusionSei ?? '', tdClass: 'font-mono text-xs', render: m => m.exclusionSei || '—' },
                 { id: 'at', label: 'Exclusão', sort: m => m.excludedAt ?? '', tdClass: 'text-xs text-muted whitespace-nowrap', render: m => <>{m.excludedAt ? formatDateTime(m.excludedAt) : '—'}{m.excludedBy && <div>{m.excludedBy}</div>}</> },
@@ -2428,22 +2417,19 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       {sub === 'units' && (
         <div>
           <Toolbar title="Unidades judiciais">
-            {!viewAll && <>
-            {units.some(u => u.selection === 'Em análise') && (
+            {sortedUnits.some(u => u.selection === 'Em análise') && (
               <button className="btn-secondary btn-sm" onClick={chooseAll}>
-                <Check className="w-4 h-4" /> Aprovar todas pendentes ({units.filter(u => u.selection === 'Em análise').length})
+                <Check className="w-4 h-4" /> Aprovar todas pendentes ({sortedUnits.filter(u => u.selection === 'Em análise').length})
               </button>
             )}
-            {units.length > 0 && (
-              <button className="btn-secondary btn-sm !text-danger" onClick={() => startWipe('units')}><Trash2 className="w-4 h-4" /> Excluir tudo ({units.length})</button>
+            {!allScope && sortedUnits.length > 0 && (
+              <button className="btn-secondary btn-sm !text-danger" onClick={() => startWipe('units')}><Trash2 className="w-4 h-4" /> Excluir tudo da janela ({sortedUnits.length})</button>
             )}
             <button className="btn-primary btn-sm" onClick={() => setModal('unit')}><Plus className="w-4 h-4" /> Cadastrar</button>
             <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/xlsx/unlinked-units?${q}`, 'unidades-sem-magistrado.xlsx')}><Download className="w-4 h-4" /> Sem magistrado (XLSX)</button>
             <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/csv?type=units&${q}`, 'unidades.csv')}><Download className="w-4 h-4" /> CSV</button>
-          </>}
           </Toolbar>
-          <EditionFilter editions={editions} value={viewAll ? 'all' : selectedId} onChange={pickEdition} what="unidades" />
-          <SmartTable id="unidades" rows={sortedUnits} rowKey={u => u.id} empty="Nenhuma unidade inscrita nesta edição." defaultSort={{ key: 'name', dir: 'asc' }}
+          <SmartTable id="unidades" rows={sortedUnits} rowKey={u => u.id} empty={allScope ? 'Nenhuma unidade inscrita.' : 'Nenhuma unidade inscrita nesta janela.'} defaultSort={{ key: 'name', dir: 'asc' }}
             rowClass={u => (openUnitId === u.id ? 'bg-paper' : '')}
             after={(u, span) => openUnitId === u.id && (
               <tr className="bg-paper">
@@ -2462,9 +2448,9 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
                     <span>
                       <span className="font-medium block">{unitLabel(u)}</span>
                       {!u.catalogId && <span className="text-[11px] text-warn block">◦ A padronizar (fora da lista oficial)</span>}
-                      {u.duplicateCount && <span className="text-[11px] text-danger block">◦ Unidade inscrita {u.duplicateCount} vezes nesta edição</span>}
+                      {u.duplicateCount && <span className="text-[11px] text-danger block">◦ Unidade inscrita {u.duplicateCount} vezes nesta janela</span>}
                       {presence[u.id] && <PresenceNote p={presence[u.id]} />}
-                      {viewAll && <span className="text-[11px] text-bronze block">{u.editionTitle}</span>}
+                      <span className="text-[11px] text-bronze block">{u.editionTitle}</span>
                     </span>
                   </button>
                 );
@@ -2479,8 +2465,8 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
               { id: 'selection', label: 'Triagem', filter: u => u.selection, sort: u => SELECTION_ORDER[u.selection] ?? 9, render: u => <>
                 <Badge tone={u.selection === 'Escolhida' ? 'ok' : u.selection === 'Rejeitada' ? 'danger' : 'warn'}>{u.selection}</Badge>
                 {u.selection === 'Rejeitada' && u.rejectionReason && <div className="text-[11px] text-danger mt-1.5 max-w-[12rem] leading-snug" title={u.rejectionReason}>Motivo: {u.rejectionReason}</div>}
-                {u.selection === 'Rejeitada' && (u.carryOver || u.carriedToEditionId) && <div className="text-[11px] text-bronze mt-1">{u.carriedToEditionId ? 'Pedido mantido: transportado para a próxima edição' : 'Pedido mantido: aguarda a próxima edição'}</div>}
-                {u.carriedFromEditionId && <div className="text-[11px] text-bronze mt-1">Pedido mantido da edição anterior</div>}
+                {u.selection === 'Rejeitada' && u.carryOver && <div className="text-[11px] text-bronze mt-1">Pedido mantido: volta para análise na próxima janela</div>}
+                {u.carriedFromEditionId && u.selection !== 'Rejeitada' && <div className="text-[11px] text-bronze mt-1">Pedido mantido de janela anterior</div>}
               </> },
               { id: 'status', label: 'Status', optional: true, filter: u => (u.selection === 'Escolhida' ? u.status : '—'), sort: u => (u.selection === 'Escolhida' ? u.status : ''), render: u => (u.selection === 'Escolhida' ? <Badge tone={u.status === 'Atendida' ? 'ok' : 'warn'}>{u.status}</Badge> : <span className="text-xs text-muted">—</span>) },
               { id: 'actions', label: 'Ações', align: 'right', render: u => {
@@ -2502,7 +2488,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
 
       {/* ---------- Vinculações ---------- */}
       {sub === 'matches' && (() => {
-        const chosenUnits = units.filter(u => u.selection === 'Escolhida');
+        const chosenUnits = units.filter(u => inScope(u) && u.selection === 'Escolhida');
         const linkedCount = chosenUnits.filter(u => matches.some(m => m.unitId === u.id)).length;
         const rows = chosenUnits.filter(u => {
           const has = matches.some(m => m.unitId === u.id);
@@ -2511,13 +2497,13 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
         return (
           <div>
             <Toolbar title="Vinculações">
-            {matches.length > 0 && (
-              <button className="btn-secondary btn-sm !text-danger" onClick={() => startWipe('matches')}><Trash2 className="w-4 h-4" /> Excluir tudo ({matches.length})</button>
+            {!allScope && matches.some(inScope) && (
+              <button className="btn-secondary btn-sm !text-danger" onClick={() => startWipe('matches')}><Trash2 className="w-4 h-4" /> Excluir tudo da janela ({matches.filter(inScope).length})</button>
             )}
               <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/xlsx/unlinked-units?${q}`, 'unidades-sem-magistrado.xlsx')}><Download className="w-4 h-4" /> Unidades sem magistrado (XLSX)</button>
               <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/xlsx/matches?${q}`, 'vinculacoes.xlsx')}><Download className="w-4 h-4" /> Vinculações (XLSX)</button>
-              <button className="btn-secondary btn-sm" onClick={() => exportFile(`/panel/report.pdf?edition=${encodeURIComponent(selectedId)}`, 'designacoes-edicao.pdf')}><Download className="w-4 h-4" /> Relatório da edição (PDF)</button>
-              <button className="btn-secondary btn-sm" onClick={() => exportFile(`/panel/report.pdf?por=area&edition=${encodeURIComponent(selectedId)}`, 'designacoes-edicao-por-area.pdf')}><Download className="w-4 h-4" /> PDF por área da edição</button>
+              <button className="btn-secondary btn-sm" onClick={() => exportFile(`/panel/report.pdf${allScope ? '' : `?edition=${encodeURIComponent(selectedId)}`}`, 'designacoes.pdf')}><Download className="w-4 h-4" /> Relatório {allScope ? '' : 'da janela '}(PDF)</button>
+              <button className="btn-secondary btn-sm" onClick={() => exportFile(`/panel/report.pdf?por=area${allScope ? '' : `&edition=${encodeURIComponent(selectedId)}`}`, 'designacoes-por-area.pdf')}><Download className="w-4 h-4" /> PDF por área{allScope ? '' : ' da janela'}</button>
             </Toolbar>
             <p className="text-sm text-muted mb-4">
               Unidades escolhidas para o mutirão. Defina em cada unidade <strong className="text-ink">quantos magistrados serão alocados</strong> (padrão 1),
@@ -2579,7 +2565,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             <button className="btn-primary btn-sm" onClick={() => { setEditingFaq(null); setModal('faq-new'); }}><Plus className="w-4 h-4" /> Nova pergunta</button>
           </Toolbar>
           <p className="text-sm text-muted mb-4">
-            Conteúdo geral do portal, comum a todas as edições. Apenas as perguntas <strong className="text-ink">publicadas</strong> aparecem na página pública
+            Conteúdo geral do portal, comum a todo o mutirão. Apenas as perguntas <strong className="text-ink">publicadas</strong> aparecem na página pública
             (o item “Perguntas Frequentes” só surge no menu quando há alguma publicada). Use as setas para definir a ordem.
           </p>
           {faqItems.length === 0 && <div className="card p-10 text-center text-sm text-muted">Nenhuma pergunta cadastrada.</div>}
@@ -2625,14 +2611,14 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             { id: 'ip', label: 'IP', optional: true, hidden: true, sort: l => l.ip ?? '', tdClass: 'text-xs text-muted font-mono whitespace-nowrap', render: l => l.ip ?? '—' },
             { id: 'desc', label: 'Descrição', sort: l => l.description, render: l => l.description },
           ]} />
-          <p className="text-xs text-muted mt-3">Registro das últimas 500 ocorrências da edição, incluindo acessos ao painel.</p>
+          <p className="text-xs text-muted mt-3">Registro das últimas 500 ocorrências {allScope ? 'do mutirão' : 'da janela'}, incluindo acessos ao painel.</p>
         </div>
       )}
 
       {/* ---------- Modais ---------- */}
       {modal === 'mag' && (
-        <Modal title="Cadastrar magistrado" onClose={() => setModal(null)}>
-          <MagistrateForm withStatus relaxed={selected?.isInitial} submitLabel="Salvar magistrado" onSubmit={async p => {
+        <Modal title={`Cadastrar magistrado — ${target?.title ?? ''}`} onClose={() => setModal(null)}>
+          <MagistrateForm withStatus relaxed={target?.isInitial} submitLabel="Salvar magistrado" onSubmit={async p => {
             const r = await run(() => api('/magistrates', { method: 'POST', json: withEdition(p) }), 'Magistrado incluído.');
             if (r) { setModal(null); refresh(); }
             return !!r;
@@ -2640,8 +2626,8 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
         </Modal>
       )}
       {modal === 'unit' && (
-        <Modal title="Cadastrar unidade judicial" onClose={() => setModal(null)}>
-          <UnitForm withSlots relaxed={selected?.isInitial} submitLabel="Salvar unidade" onSubmit={async p => {
+        <Modal title={`Cadastrar unidade judicial — ${target?.title ?? ''}`} onClose={() => setModal(null)}>
+          <UnitForm withSlots relaxed={target?.isInitial} submitLabel="Salvar unidade" onSubmit={async p => {
             const r = await run(() => api('/units', { method: 'POST', json: withEdition(p) }), 'Unidade incluída.');
             if (r) { setModal(null); refresh(); }
             return !!r;
@@ -2654,10 +2640,10 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
         <Modal title="Excluir tudo" onClose={() => setModal(null)}>
           <form onSubmit={confirmWipe} className="space-y-4">
             <div className="rounded-md bg-danger-soft text-danger px-4 py-3 text-sm leading-relaxed">
-              <strong>Ação irreversível.</strong> Serão excluídas <strong>{WIPE[wiping].count()}</strong> {WIPE[wiping].label} da edição
+              <strong>Ação irreversível.</strong> Serão excluídas <strong>{WIPE[wiping].count()}</strong> {WIPE[wiping].label} da janela
               {' '}<strong>{selected?.title}</strong>. {WIPE[wiping].effect}
             </div>
-            <p className="text-xs text-muted">Edições anteriores não são afetadas. A exclusão fica registrada no histórico de atividades. Recomenda-se exportar o CSV antes de continuar.</p>
+            <p className="text-xs text-muted">As demais janelas não são afetadas. A exclusão fica registrada no histórico de atividades. Recomenda-se exportar o CSV antes de continuar.</p>
             <Field label='Para confirmar, digite EXCLUIR'>
               <input autoFocus className="input" value={wipeText} onChange={e => setWipeText(e.target.value)} placeholder="EXCLUIR" autoComplete="off" />
             </Field>
@@ -2669,20 +2655,20 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
         </Modal>
       )}
       {deletingEdition && (
-        <Modal title="Excluir edição" onClose={() => setDeletingEdition(null)}>
+        <Modal title="Excluir janela de inscrição" onClose={() => setDeletingEdition(null)}>
           <form onSubmit={confirmDeleteEdition} className="space-y-4">
             <div className="rounded-md bg-danger-soft text-danger px-4 py-3 text-sm leading-relaxed">
-              <strong>Ação irreversível.</strong> A edição <strong>{deletingEdition.title}</strong> será excluída junto com
+              <strong>Ação irreversível.</strong> A janela <strong>{deletingEdition.title}</strong> será excluída junto com
               {' '}<strong>{deletingEdition.stats?.magistrates ?? 0}</strong> inscrição(ões) de magistrados, <strong>{deletingEdition.stats?.units ?? 0}</strong> unidade(s)
               {' '}e <strong>{deletingEdition.stats?.matches ?? 0}</strong> vinculação(ões), além das desistências e alterações de vinculação registradas nela.
             </div>
-            <p className="text-xs text-muted">As demais edições não são afetadas e o registro de atividades é mantido. Recomenda-se baixar um backup (aba Backup) antes de continuar.</p>
+            <p className="text-xs text-muted">As demais janelas não são afetadas e o registro de atividades é mantido. Vinculações de magistrados de outras janelas a unidades desta janela também são desfeitas. Recomenda-se baixar um backup (aba Backup) antes de continuar.</p>
             <Field label="Para confirmar, digite EXCLUIR">
               <input autoFocus className="input" value={deleteText} onChange={e => setDeleteText(e.target.value)} placeholder="EXCLUIR" autoComplete="off" />
             </Field>
             <div className="flex justify-end gap-2">
               <button type="button" className="btn-secondary" onClick={() => setDeletingEdition(null)}>Cancelar</button>
-              <button className="btn-primary !bg-danger" disabled={deleteText.trim() !== 'EXCLUIR'}>Excluir edição</button>
+              <button className="btn-primary !bg-danger" disabled={deleteText.trim() !== 'EXCLUIR'}>Excluir janela</button>
             </div>
           </form>
         </Modal>
@@ -2763,7 +2749,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             {rejecting.kind === 'units' && (
               <label className="flex items-start gap-2 text-sm">
                 <input type="checkbox" className="mt-1" checked={rejectCarry} onChange={e => setRejectCarry(e.target.checked)} />
-                <span>Rejeitar nesta edição, mas <strong>manter o pedido para a próxima edição</strong>. Ele é copiado automaticamente (em análise) para a próxima edição, ou assim que ela for criada.</span>
+                <span>Rejeitar agora, mas <strong>manter o pedido</strong>: ele volta para análise na próxima janela de inscrição (na seguinte, se já existir, ou assim que ela for criada).</span>
               </label>
             )}
             <div className="flex justify-end gap-2">
@@ -2775,7 +2761,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       )}
       {modal === 'mag-edit' && editingMag && (
         <Modal title="Editar magistrado" onClose={() => setModal(null)}>
-          <MagistrateForm withStatus relaxed={selected?.isInitial} initial={editingMag} submitLabel="Salvar alterações" onSubmit={async p => {
+          <MagistrateForm withStatus relaxed={editions.find(e => e.id === editingMag.editionId)?.isInitial} initial={editingMag} submitLabel="Salvar alterações" onSubmit={async p => {
             const r = await run(() => api(`/magistrates/${editingMag.id}`, { method: 'PUT', json: p }), 'Inscrição atualizada.');
             if (r) { setModal(null); refresh(); }
             return !!r;
@@ -2784,15 +2770,15 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       )}
       {modal === 'unit-edit' && editingUnit && (
         <Modal title="Editar unidade judicial" onClose={() => setModal(null)}>
-          <UnitForm withSlots relaxed={selected?.isInitial} initial={editingUnit} submitLabel="Salvar alterações" onSubmit={async p => {
+          <UnitForm withSlots relaxed={editions.find(e => e.id === editingUnit.editionId)?.isInitial} initial={editingUnit} submitLabel="Salvar alterações" onSubmit={async p => {
             const r = await run(() => api(`/units/${editingUnit.id}`, { method: 'PUT', json: p }), 'Unidade atualizada.');
             if (r) { setModal(null); refresh(); }
             return !!r;
           }} />
         </Modal>
       )}
-      {modal === 'edition-new' && <Modal title="Nova edição" onClose={() => setModal(null)}><EditionForm onSubmit={createEdition} /></Modal>}
-      {modal === 'edition-edit' && editingEdition && <Modal title="Editar edição" onClose={() => setModal(null)}><EditionForm initial={editingEdition} onSubmit={updateEdition} /></Modal>}
+      {modal === 'edition-new' && <Modal title="Nova janela de inscrição" onClose={() => setModal(null)}><EditionForm onSubmit={createEdition} /></Modal>}
+      {modal === 'edition-edit' && editingEdition && <Modal title="Editar janela de inscrição" onClose={() => setModal(null)}><EditionForm initial={editingEdition} onSubmit={updateEdition} /></Modal>}
     </div>
   );
 }

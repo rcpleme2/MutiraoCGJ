@@ -708,17 +708,25 @@ function nextEditionAfter(editionId: string): Edition | undefined {
   return editions.filter((e) => !e.isInitial && e.id !== cur.id && e.createdAt > cur.createdAt).sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
 }
 
-/** Copia o pedido de uma unidade rejeitada para a edição de destino (volta a "Em análise", mantendo a data original da inscrição). Devolve false se a unidade já constava ali. */
+/**
+ * Pedido de unidade rejeitado e mantido: volta a "Em análise" na janela de inscrição seguinte (o mesmo registro, mantendo a data
+ * original da inscrição). Devolve false se a unidade já tem outro pedido em aberto nessa janela.
+ */
 function carryUnitTo(u: Unit, target: Edition): boolean {
   u.carryOver = false;
-  u.carriedToEditionId = target.id;
   const same = (x: Unit) => (u.catalogId ? x.catalogId === u.catalogId : normName(x.unitName) === normName(u.unitName) && normName(x.comarca) === normName(u.comarca));
-  if (units.some((x) => x.editionId === target.id && same(x))) return false;
-  units.unshift({
-    ...u, id: newId('unit'), editionId: target.id, selection: 'Em análise', status: 'Pendente',
-    rejectionReason: undefined, rejectedAt: undefined, carryOver: undefined, carriedToEditionId: undefined, carriedFromEditionId: u.editionId,
-  });
+  if (units.some((x) => x.id !== u.id && x.editionId === target.id && x.selection !== 'Rejeitada' && same(x))) return false;
+  Object.assign(u, { carriedFromEditionId: u.editionId, editionId: target.id, selection: 'Em análise', status: 'Pendente',
+    rejectionReason: undefined, rejectedAt: undefined, carriedToEditionId: undefined });
   return true;
+}
+
+/** Escopo das consultas da administração: uma janela de inscrição (?edition=id) ou todas (?edition=all). */
+interface Scope { all: boolean; edition?: Edition; title: string; has: (x: { editionId: string }) => boolean }
+function scopeOf(req: express.Request): Scope | undefined {
+  if (req.query.edition === 'all' || req.body?.editionId === 'all') return { all: true, title: 'Todas as janelas', has: () => true };
+  const e = resolveEdition(req);
+  return e ? { all: false, edition: e, title: e.title, has: (x) => x.editionId === e.id } : undefined;
 }
 
 /** Resolves the edition targeted by a request (?edition=, body.editionId) or falls back to the active one. */
@@ -755,7 +763,7 @@ const fmtLocal = (local: string) => {
 function registrationMessage(e: Edition, state: RegistrationState) {
   if (state === 'not_yet') return `As inscrições ainda não foram abertas. Abertura em ${fmtLocal(e.openingDate)} (horário de Brasília).`;
   if (state === 'ended') return `O prazo de inscrições foi encerrado em ${fmtLocal(e.closingDate)} (horário de Brasília).`;
-  return 'As inscrições desta edição estão encerradas ou temporariamente suspensas pela coordenação.';
+  return 'As inscrições estão encerradas ou temporariamente suspensas pela coordenação.';
 }
 
 const publicEdition = (e: Edition) => {
@@ -1443,7 +1451,7 @@ async function startServer() {
   app.post('/api/editions', (req, res) => {
     const { title, description, openingDate, closingDate, activate, startDate } = req.body || {};
     if (!title || !openingDate || !closingDate) {
-      return res.status(400).json({ error: 'Informe título, abertura e encerramento da edição.' });
+      return res.status(400).json({ error: 'Informe nome, abertura e encerramento da janela de inscrição.' });
     }
     if (startDate && !isYmd(startDate)) return res.status(400).json({ error: 'Data de início da atuação inválida.' });
     const edition: Edition = {
@@ -1462,7 +1470,7 @@ async function startServer() {
     // Pedidos de unidades rejeitadas que ficaram aguardando a próxima edição passam para esta
     const waiting = units.filter((u) => u.carryOver && u.editionId !== edition.id);
     const carried = waiting.filter((u) => carryUnitTo(u, edition)).length;
-    if (waiting.length) log(edition.id, 'Sistema', 'Unidade', `${carried} pedido(s) de unidade mantido(s) da edição anterior foi(ram) transportado(s) para esta edição (em análise).`);
+    if (waiting.length) log(edition.id, 'Sistema', 'Unidade', `${carried} pedido(s) de unidade mantido(s) voltou(aram) para análise nesta janela de inscrição.`);
     if (activate) {
       activeEditionId = edition.id;
       log(edition.id, 'Administração', 'Edição', 'Edição definida como a vigente para inscrições públicas.');
@@ -1472,7 +1480,7 @@ async function startServer() {
 
   app.put('/api/editions/:id', (req, res) => {
     const edition = editionById(req.params.id);
-    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+    if (!edition) return res.status(404).json({ error: 'Janela de inscrição não encontrada.' });
 
     const { title, description, openingDate, closingDate, isRegistrationOpen, startDate } = req.body || {};
     if (typeof startDate === 'string' && startDate && !isYmd(startDate)) return res.status(400).json({ error: 'Data de início da atuação inválida.' });
@@ -1497,7 +1505,7 @@ async function startServer() {
 
   app.post('/api/editions/:id/activate', (req, res) => {
     const edition = editionById(req.params.id);
-    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+    if (!edition) return res.status(404).json({ error: 'Janela de inscrição não encontrada.' });
     activeEditionId = edition.id;
     log(edition.id, 'Administração', 'Edição', 'Edição definida como a vigente para inscrições públicas.');
     res.json({ success: true });
@@ -1505,7 +1513,7 @@ async function startServer() {
 
   app.post('/api/editions/:id/close', (req, res) => {
     const edition = editionById(req.params.id);
-    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+    if (!edition) return res.status(404).json({ error: 'Janela de inscrição não encontrada.' });
     edition.status = 'Encerrada';
     edition.isRegistrationOpen = false;
     log(edition.id, 'Administração', 'Edição', 'Edição encerrada. Inscrições fechadas.');
@@ -1514,7 +1522,7 @@ async function startServer() {
 
   app.post('/api/editions/:id/reopen', (req, res) => {
     const edition = editionById(req.params.id);
-    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+    if (!edition) return res.status(404).json({ error: 'Janela de inscrição não encontrada.' });
     edition.status = 'Em andamento';
     log(edition.id, 'Administração', 'Edição', 'Edição reaberta (em andamento).');
     res.json({ success: true, edition: publicEdition(edition) });
@@ -1524,11 +1532,11 @@ async function startServer() {
   // vinculações, desistências e alterações de vinculação da edição. O registro de atividades é preservado.
   app.post('/api/editions/:id/delete', (req, res) => {
     const edition = editionById(req.params.id);
-    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+    if (!edition) return res.status(404).json({ error: 'Janela de inscrição não encontrada.' });
     if (!confirmedWipe(req)) return res.status(400).json({ error: 'Confirmação ausente.' });
     if (edition.isInitial) return res.status(409).json({ error: `A edição "${INITIAL_EDITION_TITLE}" guarda as designações já existentes do painel de vinculações e não pode ser excluída.` });
-    if (edition.id === activeEditionId) return res.status(409).json({ error: 'Esta é a edição vigente no portal. Torne outra edição vigente antes de excluí-la.' });
-    if (editions.length <= 1) return res.status(409).json({ error: 'É preciso manter ao menos uma edição.' });
+    if (edition.id === activeEditionId) return res.status(409).json({ error: 'Esta é a janela vigente no portal. Torne outra janela vigente antes de excluí-la.' });
+    if (editions.length <= 1) return res.status(409).json({ error: 'É preciso manter ao menos uma janela de inscrição.' });
 
     const id = edition.id;
     const counts = {
@@ -1536,9 +1544,18 @@ async function startServer() {
       units: units.filter((u) => u.editionId === id).length,
       matches: matches.filter((m) => m.editionId === id).length,
     };
+    // Vinculações entre janelas: as que usam magistrado ou unidade da janela excluída também saem; quem fica sem vínculo volta à espera
+    const goneMags = new Set(magistrates.filter((m) => m.editionId === id).map((m) => m.id));
+    const goneUnits = new Set(units.filter((u) => u.editionId === id).map((u) => u.id));
+    const dropped = matches.filter((m) => m.editionId === id || goneMags.has(m.magistrateId) || goneUnits.has(m.unitId));
     magistrates = magistrates.filter((m) => m.editionId !== id);
     units = units.filter((u) => u.editionId !== id);
-    matches = matches.filter((m) => m.editionId !== id);
+    matches = matches.filter((m) => !dropped.includes(m));
+    dropped.forEach((mt) => {
+      const g = magistrates.find((x) => x.id === mt.magistrateId);
+      if (g && g.status === 'Atribuído' && !matches.some((x) => x.magistrateId === g.id)) g.status = 'Lista de Espera';
+      if (units.some((u) => u.id === mt.unitId)) refreshUnitStatus(mt.unitId);
+    });
     panelEntries = panelEntries.filter((p) => p.editionId !== id);
     withdrawals = withdrawals.filter((w) => w.editionId !== id);
     transfers = transfers.filter((t) => t.editionId !== id);
@@ -1958,16 +1975,16 @@ async function startServer() {
   app.get('/api/dashboard', (req, res) => {
     const all = req.query.edition === 'all';
     const edition = all ? undefined : resolveEdition(req);
-    if (!all && !edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+    if (!all && !edition) return res.status(404).json({ error: 'Janela de inscrição não encontrada.' });
     const inScope = (x: { editionId: string }) => all || x.editionId === edition!.id;
     const us = units.filter(inScope), ms = magistrates.filter(inScope), mts = matches.filter(inScope);
     const chosen = us.filter((u) => u.selection === 'Escolhida');
     const linkedMag = new Set(matches.map((m) => m.magistrateId));
     const available = ms.filter((m) => (m.status === 'Aprovado' || m.status === 'Lista de Espera') && !linkedMag.has(m.id));
     // Quantos juízes faltam e para qual área: cada vaga aberta de unidade escolhida é casada (emparelhamento máximo) com um magistrado disponível
-    // que tenha a área da unidade entre as preferências, na mesma edição e fora da comarca em que atua. Vaga sem par = juiz que falta.
+    // que tenha a área da unidade entre as preferências (de qualquer janela de inscrição) e fora da comarca em que atua. Vaga sem par = juiz que falta.
     const slots = chosen.flatMap((u) => Array.from({ length: Math.max(0, (u.slots || 1) - linkedCount(u.id)) }, () => u));
-    const edges = slots.map((u) => available.map((m, j) => (m.editionId === u.editionId && !sameComarcaAs(m, u) && (u.areas.includes(m.firstPreference) || (!!m.secondPreference && u.areas.includes(m.secondPreference))) ? j : -1)).filter((j) => j >= 0));
+    const edges = slots.map((u) => available.map((m, j) => (!sameComarcaAs(m, u) && (u.areas.includes(m.firstPreference) || (!!m.secondPreference && u.areas.includes(m.secondPreference))) ? j : -1)).filter((j) => j >= 0));
     const slotOf = new Array<number>(available.length).fill(-1);
     const tryFill = (i: number, seen: Set<number>): boolean => {
       for (const j of edges[i]) {
@@ -2409,7 +2426,7 @@ async function startServer() {
     const byArea = req.query.por === 'area'; // versão só com as designações, uma área por bloco
     const onlyAreas = typeof req.query.areas === 'string' && req.query.areas ? new Set(req.query.areas.split('|').map((a) => norm(a))) : null;
     const ed = typeof req.query.edition === 'string' && req.query.edition ? editionById(req.query.edition) : undefined; // relatório de uma só edição
-    if (req.query.edition && !ed) return res.status(404).json({ error: 'Edição não encontrada.' });
+    if (req.query.edition && !ed) return res.status(404).json({ error: 'Janela de inscrição não encontrada.' });
     const rows = panelRows().filter((r) => (!ed || r.editionId === ed.id) && (!byArea || !onlyAreas || onlyAreas.has(norm(r.area))));
     const drops = withdrawals.filter((w) => !ed || w.editionId === ed.id).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
     // Excluídos pela administração (de qualquer situação), com as designações que tinham na data da exclusão
@@ -2776,10 +2793,12 @@ async function startServer() {
     res.json(list.map((m0) => {
       const m = req.query.edition === 'all' ? { ...m0, editionTitle: editionById(m0.editionId)?.title ?? '' } : m0;
       const w = withdrawals.find((x) => !x.endedAt && personKey(x.name) === personKey(m.name) && !(x.magistrateIds ?? []).includes(m.id) && m.createdAt > x.createdAt);
-      // Mesma pessoa (mesmo nome) inscrita mais de uma vez na mesma edição — exceto na edição inicial, onde cada designação é um registro
-      const twins = editionById(m.editionId)?.isInitial ? 0 : magistrates.filter((x) => x.editionId === m.editionId && x.id !== m.id && personKey(x.name) === personKey(m.name)).length;
+      // Mesma pessoa (mesmo nome) com mais de uma inscrição em aberto no mutirão — fora as vinculações iniciais (cada designação é um registro)
+      // e as inscrições encerradas (rejeitada, desistente ou excluída), que ficam no histórico
+      const closed = (x: Magistrate) => x.status === 'Rejeitado' || x.status === 'Desistente' || x.status === 'Excluído';
+      const twins = editionById(m.editionId)?.isInitial || closed(m) ? 0 : magistrates.filter((x) => x.id !== m.id && !closed(x) && !editionById(x.editionId)?.isInitial && personKey(x.name) === personKey(m.name)).length;
       const me = personOf(m.id, m.name);
-      const elsewhere = rows.filter((r, i) => r.editionId !== m.editionId && r.magistrateId !== m.id && samePerson(me, people[i]))
+      const elsewhere = rows.filter((r, i) => r.magistrateId !== m.id && samePerson(me, people[i]))
         .map((r) => ({ editionTitle: r.editionTitle, unit: unitLabel(r), area: r.area }));
       return { ...m, ...(w ? { priorWithdrawal: { sei: w.sei, requestDate: w.requestDate } } : {}), ...(twins ? { duplicateCount: twins + 1 } : {}), ...(elsewhere.length ? { linkedElsewhere: elsewhere } : {}) };
     }));
@@ -2874,7 +2893,7 @@ async function startServer() {
   app.post('/api/magistrates', (req, res) => {
     const { declaration, status, source } = req.body;
     const edition = resolveEdition(req);
-    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+    if (!edition) return res.status(404).json({ error: 'Janela de inscrição não encontrada.' });
     const parsed = parseMagistrate(req.body, undefined, req.body?.source !== 'admin', source === 'admin' && edition.isInitial === true);
     if ('error' in parsed) return res.status(400).json({ error: parsed.error });
     const { name, email } = parsed.value;
@@ -2885,8 +2904,9 @@ async function startServer() {
     if (source !== 'admin' && declaration !== true) {
       return res.status(400).json({ error: 'É necessário aceitar a declaração de regularidade para concluir a inscrição.' });
     }
-    if (email && magistrates.some((m) => m.editionId === edition.id && m.email.toLowerCase() === email.toLowerCase())) {
-      return res.status(409).json({ error: 'Já existe uma inscrição de magistrado com este e-mail nesta edição.' });
+    // Uma inscrição em aberto por e-mail no mutirão; quem foi rejeitado, desistiu ou foi excluído pode se inscrever de novo
+    if (email && magistrates.some((m) => m.email.toLowerCase() === email.toLowerCase() && m.status !== 'Rejeitado' && m.status !== 'Desistente' && m.status !== 'Excluído')) {
+      return res.status(409).json({ error: 'Já existe uma inscrição de magistrado em aberto com este e-mail.' });
     }
 
     const newMag: Magistrate = {
@@ -2912,8 +2932,8 @@ async function startServer() {
     const parsed = parseMagistrate(b, mag, false, editionById(mag.editionId)?.isInitial === true);
     if ('error' in parsed) return res.status(400).json({ error: parsed.error });
     const next = parsed.value;
-    if (next.email && magistrates.some((m) => m.id !== mag.id && m.editionId === mag.editionId && m.email.toLowerCase() === next.email.toLowerCase())) {
-      return res.status(409).json({ error: 'Já existe outra inscrição de magistrado com este e-mail nesta edição.' });
+    if (next.email && magistrates.some((m) => m.id !== mag.id && m.status !== 'Rejeitado' && m.status !== 'Desistente' && m.status !== 'Excluído' && m.email.toLowerCase() === next.email.toLowerCase())) {
+      return res.status(409).json({ error: 'Já existe outra inscrição de magistrado em aberto com este e-mail.' });
     }
 
     const labels: Record<string, string> = {
@@ -2945,7 +2965,7 @@ async function startServer() {
   // ---------- Exclusão em lote (somente a edição indicada; exige confirm: "EXCLUIR") ----------
   app.post('/api/magistrates/delete-all', (req, res) => {
     const edition = resolveEdition(req);
-    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+    if (!edition) return res.status(404).json({ error: 'Janela de inscrição não encontrada.' });
     if (!confirmedWipe(req)) return res.status(400).json({ error: 'Confirmação ausente.' });
 
     const ids = new Set(magistrates.filter((m) => m.editionId === edition.id).map((m) => m.id));
@@ -2961,7 +2981,7 @@ async function startServer() {
 
   app.post('/api/units/delete-all', (req, res) => {
     const edition = resolveEdition(req);
-    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+    if (!edition) return res.status(404).json({ error: 'Janela de inscrição não encontrada.' });
     if (!confirmedWipe(req)) return res.status(400).json({ error: 'Confirmação ausente.' });
 
     const ids = new Set(units.filter((u) => u.editionId === edition.id).map((u) => u.id));
@@ -2979,7 +2999,7 @@ async function startServer() {
 
   app.post('/api/matches/delete-all', (req, res) => {
     const edition = resolveEdition(req);
-    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+    if (!edition) return res.status(404).json({ error: 'Janela de inscrição não encontrada.' });
     if (!confirmedWipe(req)) return res.status(400).json({ error: 'Confirmação ausente.' });
 
     const removed = matches.filter((m) => m.editionId === edition.id);
@@ -2988,21 +3008,21 @@ async function startServer() {
       if (g && g.status === 'Atribuído') g.status = 'Lista de Espera';
     });
     matches = matches.filter((m) => m.editionId !== edition.id);
-    units.filter((u) => u.editionId === edition.id).forEach((u) => refreshUnitStatus(u.id));
+    new Set(removed.map((m) => m.unitId)).forEach(refreshUnitStatus); // a unidade pode ser de outra janela
     log(edition.id, 'Administração', 'Vinculação', `EXCLUSÃO EM LOTE: ${removed.length} vinculação(ões) desfeita(s).`);
     res.json({ success: true, count: removed.length });
   });
 
   // Aprova em lote todas as inscrições pendentes (Aguardando Conferência) da edição. Rejeitadas não são alteradas.
   app.post('/api/magistrates/approve-all', (req, res) => {
-    const edition = resolveEdition(req);
-    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
-    const pending = magistrates.filter((m) => m.editionId === edition.id && m.status === 'Aguardando Conferência');
+    const scope = scopeOf(req);
+    if (!scope) return res.status(404).json({ error: 'Janela de inscrição não encontrada.' });
+    const pending = magistrates.filter((m) => scope.has(m) && m.status === 'Aguardando Conferência');
     pending.forEach((m) => {
       m.status = matches.some((x) => x.magistrateId === m.id) ? 'Atribuído' : 'Lista de Espera';
     });
     if (pending.length) {
-      log(edition.id, 'Administração', 'Magistrado', `Aprovação em lote: ${pending.length} inscrição(ões) de magistrado(s) aprovada(s).`);
+      log(scope.edition?.id ?? null, 'Administração', 'Magistrado', `Aprovação em lote: ${pending.length} inscrição(ões) de magistrado(s) aprovada(s).`);
     }
     res.json({ success: true, count: pending.length });
   });
@@ -3090,7 +3110,7 @@ async function startServer() {
   app.post('/api/units', (req, res) => {
     const { source } = req.body;
     const edition = resolveEdition(req);
-    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+    if (!edition) return res.status(404).json({ error: 'Janela de inscrição não encontrada.' });
     const parsed = parseUnit(req.body, undefined, source === 'admin' && edition.isInitial === true, source !== 'admin');
     if ('error' in parsed) return res.status(400).json({ error: parsed.error });
     if (source !== 'admin') {
@@ -3115,12 +3135,12 @@ async function startServer() {
 
   // Escolhe em lote todas as unidades em análise da edição. Rejeitadas não são alteradas.
   app.post('/api/units/choose-all', (req, res) => {
-    const edition = resolveEdition(req);
-    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
-    const pending = units.filter((u) => u.editionId === edition.id && u.selection === 'Em análise');
+    const scope = scopeOf(req);
+    if (!scope) return res.status(404).json({ error: 'Janela de inscrição não encontrada.' });
+    const pending = units.filter((u) => scope.has(u) && u.selection === 'Em análise');
     pending.forEach((u) => { u.selection = 'Escolhida'; });
     if (pending.length) {
-      log(edition.id, 'Administração', 'Unidade', `Escolha em lote: ${pending.length} unidade(s) escolhida(s) para o mutirão.`);
+      log(scope.edition?.id ?? null, 'Administração', 'Unidade', `Escolha em lote: ${pending.length} unidade(s) escolhida(s) para o mutirão.`);
     }
     res.json({ success: true, count: pending.length });
   });
@@ -3160,8 +3180,8 @@ async function startServer() {
     let carryNote = '';
     if (req.body?.carryOver === true && !unit.carriedToEditionId) {
       const next = nextEditionAfter(unit.editionId);
-      if (next) { carryUnitTo(unit, next); carryNote = ` Pedido mantido e transportado para "${next.title}".`; }
-      else { unit.carryOver = true; carryNote = ' Pedido mantido para a próxima edição (será transportado quando ela for criada).'; }
+      if (next && carryUnitTo(unit, next)) carryNote = ` Pedido mantido: voltou para análise na janela "${next.title}".`;
+      else if (!next) { unit.carryOver = true; carryNote = ' Pedido mantido: volta para análise quando a próxima janela de inscrição for criada.'; }
     }
     log(unit.editionId, 'Administração', 'Unidade',
       `Unidade "${unit.unitName}" rejeitada${linked.length ? ' (vinculação desfeita)' : ''}. Motivo: ${reason}${carryNote}`);
@@ -3236,9 +3256,6 @@ async function startServer() {
     const mag = magistrates.find((m) => m.id === magistrateId);
     const unit = units.find((u) => u.id === unitId);
     if (!mag || !unit) return res.status(404).json({ error: 'Magistrado ou unidade não encontrados.' });
-    if (mag.editionId !== unit.editionId) {
-      return res.status(400).json({ error: 'Magistrado e unidade pertencem a edições diferentes.' });
-    }
     if (mag.status === 'Rejeitado') {
       return res.status(400).json({ error: 'A inscrição deste magistrado foi rejeitada. Reconsidere-a antes de vincular.' });
     }
@@ -3309,9 +3326,7 @@ async function startServer() {
     const initialMatch = editionById(match.editionId)?.isInitial === true;
     // Na edição "Vinculações iniciais" a vara de destino pode ser digitada (é criada se ainda não existir)
     const nextUnit = initialMatch && newUnitName ? ensureInitialUnit(newUnitName, match.assignedArea) : units.find((u) => u.id === (unitId || match.unitId));
-    if (!nextMag || !nextUnit || nextMag.editionId !== match.editionId || nextUnit.editionId !== match.editionId) {
-      return fail(400, 'Magistrado e unidade devem pertencer à mesma edição da vinculação.');
-    }
+    if (!nextMag || !nextUnit) return fail(400, 'Magistrado ou unidade não encontrados.');
     if (nextMag.status === 'Rejeitado') {
       return fail(400, 'A inscrição deste magistrado foi rejeitada. Reconsidere-a antes de vincular.');
     }
@@ -3356,6 +3371,7 @@ async function startServer() {
     if (oldMag && changedMag) oldMag.status = 'Lista de Espera';
 
     match.magistrateId = nextMag.id;
+    if (changedMag) match.editionId = nextMag.editionId; // a vinculação pertence à janela de inscrição do magistrado
     match.unitId = nextUnit.id;
     match.assignedArea = newArea || match.assignedArea;
     if (initialMatch && match.assignedArea && !nextUnit.areas.some((a) => normName(a) === normName(match.assignedArea))) nextUnit.areas.push(match.assignedArea);
@@ -3550,10 +3566,10 @@ async function startServer() {
   });
 
   app.get('/api/waiting-list', (req, res) => {
-    const edition = resolveEdition(req);
-    if (!edition) return res.json([]);
-    const assigned = new Set(matches.filter((m) => m.editionId === edition.id).map((m) => m.magistrateId));
-    res.json(magistrates.filter((m) => m.editionId === edition.id && m.status !== 'Atribuído' && m.status !== 'Rejeitado' && m.status !== 'Desistente' && m.status !== 'Excluído' && !assigned.has(m.id)));
+    const scope = scopeOf(req);
+    if (!scope) return res.json([]);
+    const assigned = new Set(matches.map((m) => m.magistrateId));
+    res.json(magistrates.filter((m) => scope.has(m) && m.status !== 'Atribuído' && m.status !== 'Rejeitado' && m.status !== 'Desistente' && m.status !== 'Excluído' && !assigned.has(m.id)));
   });
 
   // ---------- Sugestões (IA) ----------
@@ -3569,13 +3585,14 @@ async function startServer() {
 
   /** Com saldo de magistrados (disponíveis > vagas abertas nas unidades escolhidas), indica quais unidades "Em análise" atender, priorizando
    *  a afinidade com as áreas dos magistrados disponíveis e, em seguida, a data da inscrição. Não altera nada: a administração decide. */
-  function unitSuggestions(editionId: string) {
-    const assigned = new Set(matches.filter((m) => m.editionId === editionId).map((m) => m.magistrateId));
-    const avail = magistrates.filter((m) => m.editionId === editionId && isAvailableMag(m, assigned));
-    const chosen = units.filter((u) => u.editionId === editionId && u.selection === 'Escolhida');
+  function unitSuggestions(scope: Scope) {
+    // Magistrados disponíveis e vagas de todo o mutirão; o escopo só restringe quais pedidos "Em análise" são sugeridos
+    const assigned = new Set(matches.map((m) => m.magistrateId));
+    const avail = magistrates.filter((m) => isAvailableMag(m, assigned));
+    const chosen = units.filter((u) => u.selection === 'Escolhida');
     const openSlots = chosen.reduce((n, u) => n + Math.max(0, (u.slots || 1) - linkedCount(u.id)), 0);
     const balance = avail.length - openSlots;
-    const pending = units.filter((u) => u.editionId === editionId && u.selection === 'Em análise');
+    const pending = units.filter((u) => scope.has(u) && u.selection === 'Em análise');
     const suggestions: { unitId: string; unit: string; comarca: string; areas: string[]; slots: number; candidates: string[]; reason: string }[] = [];
     let left = balance;
     if (balance > 0) {
@@ -3600,24 +3617,24 @@ async function startServer() {
   }
 
   app.get('/api/matches/unit-suggestions', (req, res) => {
-    const edition = resolveEdition(req);
-    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
-    res.json(unitSuggestions(edition.id));
+    const scope = scopeOf(req);
+    if (!scope) return res.status(404).json({ error: 'Janela de inscrição não encontrada.' });
+    res.json(unitSuggestions(scope));
   });
 
   // Mostra as sugestões na tela para revisão; nada é vinculado aqui (a vinculação é feita pela administração em POST /api/matches).
   app.post('/api/ai/match-recommendations', async (req, res) => {
-    const edition = resolveEdition(req);
-    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
-    const balance = unitSuggestions(edition.id);
+    const scope = scopeOf(req);
+    if (!scope) return res.status(404).json({ error: 'Janela de inscrição não encontrada.' });
+    const balance = unitSuggestions(scope);
     if (!ai) {
       return res.json({ success: true, recommendations: [], balance, aiError: 'Chave da API Gemini não configurada: sugestões de alocação por IA indisponíveis.' });
     }
 
     try {
-      const assigned = new Set(matches.filter((m) => m.editionId === edition.id).map((m) => m.magistrateId));
-      const unassignedMags = magistrates.filter((m) => m.editionId === edition.id && isAvailableMag(m, assigned));
-      const pendingUnits = units.filter((u) => u.editionId === edition.id && u.selection === 'Escolhida' && linkedCount(u.id) < (u.slots || 1));
+      const assigned = new Set(matches.map((m) => m.magistrateId));
+      const unassignedMags = magistrates.filter((m) => isAvailableMag(m, assigned));
+      const pendingUnits = units.filter((u) => u.selection === 'Escolhida' && linkedCount(u.id) < (u.slots || 1));
 
       const prompt = `
         Você é o assistente de inteligência artificial de coordenação de um Mutirão de Julgamento do Tribunal de Justiça.
@@ -3662,7 +3679,7 @@ async function startServer() {
         used.add(mag.id); taken.set(un.id, (taken.get(un.id) ?? 0) + 1);
         return true;
       });
-      log(edition.id, 'Sistema', 'Vinculação', `Sugestões de IA geradas (${result.length}); ${balance.suggestions.length} unidade(s) em análise sugerida(s) por saldo de magistrados. Nada foi vinculado.`);
+      log(scope.edition?.id ?? null, 'Sistema', 'Vinculação', `Sugestões de IA geradas (${result.length}); ${balance.suggestions.length} unidade(s) em análise sugerida(s) por saldo de magistrados. Nada foi vinculado.`);
       res.json({ success: true, recommendations: result, balance });
     } catch (err: any) {
       console.error('Gemini AI error:', err);
@@ -3673,13 +3690,13 @@ async function startServer() {
   // ---------- Exports ----------
   // Planilha das unidades escolhidas para o mutirão que ainda não têm magistrado: Comarca, Unidade, Juiz(a) responsável.
   app.get('/api/export/xlsx/unlinked-units', async (req, res) => {
-    const edition = resolveEdition(req);
-    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+    const scope = scopeOf(req);
+    if (!scope) return res.status(404).json({ error: 'Janela de inscrição não encontrada.' });
 
-    const linked = new Set(matches.filter((m) => m.editionId === edition.id).map((m) => m.unitId));
+    const linked = new Set(matches.map((m) => m.unitId));
     const header = ['Comarca', 'Unidade', 'Juiz(a) responsável'];
     const data = units
-      .filter((u) => u.editionId === edition.id && u.selection === 'Escolhida' && !linked.has(u.id))
+      .filter((u) => scope.has(u) && u.selection === 'Escolhida' && !linked.has(u.id))
       .sort((x, y) => x.comarca.localeCompare(y.comarca, 'pt-BR') || x.unitName.localeCompare(y.unitName, 'pt-BR'))
       .map((u) => ({ 'Comarca': u.comarca, 'Unidade': u.unitName, 'Juiz(a) responsável': u.judgeName }));
 
@@ -3689,19 +3706,19 @@ async function startServer() {
     XLSX.utils.book_append_sheet(workbook, sheet, 'Sem magistrado');
     const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 
-    log(edition.id, 'Administração', 'Exportação', `Planilha de unidades sem magistrado (XLSX) exportada: ${data.length} unidade(s).`);
+    log(scope.edition?.id ?? null, 'Administração', 'Exportação', `Planilha de unidades sem magistrado (XLSX) exportada: ${data.length} unidade(s).`);
     if (!(await saveState())) return res.status(503).json({ error: 'Não foi possível registrar a exportação. Tente novamente.' });
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename=unidades-sem-magistrado-${edition.id}-${Date.now()}.xlsx`);
+    res.setHeader('Content-Disposition', `attachment; filename=unidades-sem-magistrado-${Date.now()}.xlsx`);
     res.send(buffer);
   });
 
   app.get('/api/export/xlsx/matches', async (req, res) => {
-    const edition = resolveEdition(req);
-    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+    const scope = scopeOf(req);
+    if (!scope) return res.status(404).json({ error: 'Janela de inscrição não encontrada.' });
 
     const data = matches
-      .filter((m) => m.editionId === edition.id)
+      .filter(scope.has)
       .map((mt) => ({
         'Nome': magistrates.find((m) => m.id === mt.magistrateId)?.name || 'Magistrado Removido',
         'Área': mt.assignedArea,
@@ -3714,24 +3731,24 @@ async function startServer() {
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(data), 'Vinculacoes');
     const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 
-    log(edition.id, 'Administração', 'Exportação', 'Planilha de vinculações (XLSX) exportada.');
+    log(scope.edition?.id ?? null, 'Administração', 'Exportação', 'Planilha de vinculações (XLSX) exportada.');
     if (!(await saveState())) return res.status(503).json({ error: 'Não foi possível registrar a exportação. Tente novamente.' });
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename=vinculacoes-${edition.id}-${Date.now()}.xlsx`);
+    res.setHeader('Content-Disposition', `attachment; filename=vinculacoes-${Date.now()}.xlsx`);
     res.send(buffer);
   });
 
   app.get('/api/export/csv', async (req, res) => {
-    const edition = resolveEdition(req);
-    if (!edition) return res.status(404).json({ error: 'Edição não encontrada.' });
+    const scope = scopeOf(req);
+    if (!scope) return res.status(404).json({ error: 'Janela de inscrição não encontrada.' });
 
     const type = (req.query.type as string) || 'all';
-    let csv = `﻿Edição: ${edition.title}\n\n`;
+    let csv = `﻿Janela de inscrição: ${scope.title}\n\n`;
 
     if (type === 'magistrates' || type === 'all') {
       csv += '=== MAGISTRADOS VOLUNTARIOS ===\n';
       csv += 'ID,Nome,Email,Lotacao Atual,1ª Preferencia,2ª Preferencia,Aceita Audiencia,Periodo Audiencias,IP,Declaracao,Status,Motivo Rejeicao,Data Inscr.\n';
-      magistrates.filter((m) => m.editionId === edition.id).forEach((m) => {
+      magistrates.filter(scope.has).forEach((m) => {
         csv += [m.id, m.name, m.email, m.currentLocation, m.firstPreference, m.secondPreference, m.acceptsHearings ? 'Sim' : 'Nao', hearingPeriodLabel(m.hearingPeriod), m.registeredIp ?? '', m.declaration ? 'Sim' : '', m.status, m.rejectionReason ?? '', m.createdAt].map(csvCell).join(',') + '\n';
       });
       csv += '\n\n';
@@ -3740,7 +3757,7 @@ async function startServer() {
     if (type === 'units' || type === 'all') {
       csv += '=== UNIDADES JUDICIAIS ===\n';
       csv += 'ID,Unidade,Juiz(a) Responsavel,Email,Comarca,Areas,Auxilio Necessario,Periodo Audiencias,Vagas,IP,Triagem,Status,Motivo Rejeicao,Data Inscr.\n';
-      units.filter((u) => u.editionId === edition.id).forEach((u) => {
+      units.filter(scope.has).forEach((u) => {
         csv += [u.id, u.unitName, u.judgeName, u.email, u.comarca, u.areas.join(' | '), u.supportNeeded, hearingPeriodLabel(u.hearingPeriod), u.slots, u.registeredIp ?? '', u.selection, u.status, u.rejectionReason ?? '', u.createdAt].map(csvCell).join(',') + '\n';
       });
       csv += '\n\n';
@@ -3749,7 +3766,7 @@ async function startServer() {
     if (type === 'matches' || type === 'all') {
       csv += '=== VINCULACOES REALIZADAS ===\n';
       csv += 'ID Vinculo,Magistrado,Unidade,Area Atribuida,Modalidade,Status,Data\n';
-      matches.filter((m) => m.editionId === edition.id).forEach((mt) => {
+      matches.filter(scope.has).forEach((mt) => {
         const mag = magistrates.find((m) => m.id === mt.magistrateId);
         const un = units.find((u) => u.id === mt.unitId);
         csv += [mt.id, mag?.name || mt.magistrateId, un?.unitName || mt.unitId, mt.assignedArea, mt.workType, mt.status, mt.createdAt].map(csvCell).join(',') + '\n';
@@ -3760,15 +3777,15 @@ async function startServer() {
     if (type === 'log' || type === 'all') {
       csv += '=== REGISTRO DE ATIVIDADES ===\n';
       csv += 'Data/Hora,Responsavel,Categoria,IP,Descricao\n';
-      activityLog.filter((l) => l.editionId === edition.id || l.editionId === null).forEach((l) => {
+      activityLog.filter((l) => scope.all || l.editionId === scope.edition!.id || l.editionId === null).forEach((l) => {
         csv += [l.timestamp, l.actor, l.category, l.ip ?? '', l.description].map(csvCell).join(',') + '\n';
       });
     }
 
-    log(edition.id, 'Administração', 'Exportação', `Exportação CSV (${type}).`);
+    log(scope.edition?.id ?? null, 'Administração', 'Exportação', `Exportação CSV (${type}).`);
     if (!(await saveState())) return res.status(503).json({ error: 'Não foi possível registrar a exportação. Tente novamente.' });
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename=mutirao-${edition.id}-${type}-${Date.now()}.csv`);
+    res.setHeader('Content-Disposition', `attachment; filename=mutirao-${type}-${Date.now()}.csv`);
     res.send(csv);
   });
 

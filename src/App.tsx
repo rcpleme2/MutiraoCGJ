@@ -213,7 +213,7 @@ function AppInner() {
 
         {tab === 'magistrate' && (
           <PageCard icon={UserCheck} title="Inscrição de magistrado voluntário"
-            subtitle={edition ? `${edition.title}. Informe seus dados institucionais e áreas de preferência.` : 'Sem edição vigente.'}>
+            subtitle={edition ? `${edition.title}. Informe seus dados institucionais e áreas de preferência.` : 'Sem janela de inscrição vigente.'}>
             {(
               <div className="space-y-5">
                 {!open && <Notice tone="danger">{regMessage}</Notice>}
@@ -228,7 +228,7 @@ function AppInner() {
 
         {tab === 'unit' && (
           <PageCard icon={Building2} title="Inscrição de unidade judicial"
-            subtitle={edition ? `${edition.title}. Cadastre a unidade e indique o tipo de auxílio necessário.` : 'Sem edição vigente.'}>
+            subtitle={edition ? `${edition.title}. Cadastre a unidade e indique o tipo de auxílio necessário.` : 'Sem janela de inscrição vigente.'}>
             {(
               <div className="space-y-5">
                 {!open && <Notice tone="danger">{regMessage}</Notice>}
