@@ -216,6 +216,8 @@ interface AdminUser {
   /** scrypt$<sal>$<hash> */
   passwordHash: string;
   totpSecret?: string; active: boolean; createdAt: string; lastLoginAt?: string;
+  /** Abas da administração que o usuário escolheu esconder na própria tela */
+  hiddenTabs?: string[];
 }
 let admins: AdminUser[] = [];
 const hashPassword = (pw: string) => { const salt = crypto.randomBytes(16); return `scrypt$${salt.toString('hex')}$${crypto.scryptSync(pw, salt, 64).toString('hex')}`; };
@@ -793,7 +795,9 @@ const lastSaved = new Map<string, Map<string, string>>();
 let persistedLogIds = new Set<string>();
 let lastMeta = '';
 
-const metaJson = () => JSON.stringify({ activeEditionId, adminTotpSecret, dupDismissed, lastAutoBackup });
+/** Abas escondidas por quem entra com a senha compartilhada (sem usuário individual) */
+let sharedHiddenTabs: string[] = [];
+const metaJson = () => JSON.stringify({ activeEditionId, adminTotpSecret, dupDismissed, lastAutoBackup, sharedHiddenTabs });
 
 /** Sessões ainda válidas (as expiradas não são gravadas) */
 const liveSessions = () => { const now = Date.now(); return [...sessions.values()].filter((x) => x.exp > now); };
@@ -821,6 +825,7 @@ async function loadState() {
       adminTotpSecret = raw.adminTotpSecret ?? null;
       dupDismissed = Array.isArray(raw.dupDismissed) ? raw.dupDismissed : [];
       lastAutoBackup = raw.lastAutoBackup ?? null;
+      sharedHiddenTabs = Array.isArray(raw.sharedHiddenTabs) ? raw.sharedHiddenTabs : [];
       panelEntries = raw.panel ?? [];
       withdrawals = raw.withdrawals ?? [];
       changeRequests = raw.requests ?? [];
@@ -864,6 +869,7 @@ async function loadState() {
   adminTotpSecret = meta?.adminTotpSecret ?? null;
   dupDismissed = Array.isArray(meta?.dupDismissed) ? meta.dupDismissed : [];
   lastAutoBackup = meta?.lastAutoBackup ?? null;
+  sharedHiddenTabs = Array.isArray(meta?.sharedHiddenTabs) ? meta.sharedHiddenTabs : [];
   panelEntries = loaded.panel as PanelEntry[];
   withdrawals = loaded.withdrawals as Withdrawal[];
   changeRequests = loaded.requests as ChangeRequest[];
@@ -881,7 +887,7 @@ async function persist() {
     fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
     fs.writeFileSync(
       DATA_FILE,
-      JSON.stringify({ editions, activeEditionId, magistrates, units, matches, activityLog, faq, adminTotpSecret, panel: panelEntries, withdrawals, transfers, requests: changeRequests, dupDismissed, admins, lastAutoBackup, catalog: catalogUnits, comarcas: catalogComarcas, sessions: liveSessions() }),
+      JSON.stringify({ editions, activeEditionId, magistrates, units, matches, activityLog, faq, adminTotpSecret, panel: panelEntries, withdrawals, transfers, requests: changeRequests, dupDismissed, admins, lastAutoBackup, sharedHiddenTabs, catalog: catalogUnits, comarcas: catalogComarcas, sessions: liveSessions() }),
     );
     return;
   }
@@ -1185,7 +1191,7 @@ async function startServer() {
     if (session) {
       // Perfis: Consulta só lê; Gestor opera o mutirão; Administrador também gere usuários, backup e exclusões em lote
       const adminOnly = /^\/(admin\/users|backup)/.test(req.path) || /\/delete-all$/.test(req.path) || /^\/editions\/[^/]+\/delete$/.test(req.path);
-      const selfService = req.path === '/admin/me/password' || req.path === '/admin/logout' || req.path === '/admin/me' || req.path === '/admin/me/sessions/end-others';
+      const selfService = req.path === '/admin/me/password' || req.path === '/admin/me/tabs' || req.path === '/admin/logout' || req.path === '/admin/me' || req.path === '/admin/me/sessions/end-others';
       if (adminOnly && session.role !== 'admin') return res.status(403).json({ error: 'Ação restrita ao perfil Administrador.' });
       if (session.role === 'consulta' && req.method !== 'GET' && !selfService) return res.status(403).json({ error: 'Seu perfil é somente consulta.' });
       return next();
@@ -1346,7 +1352,18 @@ async function startServer() {
   app.get('/api/admin/me', (req, res) => {
     const s = sessionOf(req)!;
     const others = [...sessions.values()].filter((x) => x.userId === s.userId && x.id !== s.id && x.exp > Date.now()).length;
-    res.json({ name: s.name, role: s.role, shared: s.userId === null, users: admins.some((a) => a.active), sessionExpiresAt: new Date(s.exp).toISOString(), keep: s.keep === true, otherSessions: others });
+    const hiddenTabs = s.userId ? admins.find((a) => a.id === s.userId)?.hiddenTabs ?? [] : sharedHiddenTabs;
+    res.json({ name: s.name, role: s.role, shared: s.userId === null, users: admins.some((a) => a.active), sessionExpiresAt: new Date(s.exp).toISOString(), keep: s.keep === true, otherSessions: others, hiddenTabs });
+  });
+  // Abas que o próprio usuário quer esconder na tela da administração (preferência pessoal, não restringe acesso)
+  app.put('/api/admin/me/tabs', (req, res) => {
+    const s = sessionOf(req)!;
+    const raw = req.body?.hidden;
+    if (!Array.isArray(raw) || raw.length > 40 || !raw.every((t) => typeof t === 'string' && /^[a-z]{1,30}$/.test(t))) return res.status(400).json({ error: 'Lista de abas inválida.' });
+    const hidden = [...new Set(raw as string[])];
+    if (s.userId) { const u = admins.find((a) => a.id === s.userId); if (u) u.hiddenTabs = hidden.length ? hidden : undefined; }
+    else sharedHiddenTabs = hidden;
+    res.json({ success: true, hiddenTabs: hidden });
   });
   app.get('/api/admin/users', (_req, res) => res.json(admins.map(publicUser)));
 
