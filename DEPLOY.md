@@ -300,3 +300,16 @@ curl -s -w "\nHTTP %{http_code}\n" -H "x-bi-token: COLE_A_CHAVE" "$URL/api/bi/de
 npm install
 ADMIN_PASSWORD=minha-senha npm run dev      # usa data/state.json; o primeiro acesso cadastra o 2FA
 ```
+
+## Organização do código
+
+- `server.ts`: ponto de entrada (chama `startServer` de `server/app.ts`).
+- `server/app.ts`: cabeçalhos de segurança, leitura do corpo, carga dos dados, controle de acesso e registro das rotas.
+- `server/routes/*.ts`: rotas por assunto (auth, users, editions, faq, panel, standardize, duplicates, units, dashboard,
+  catalog, bi, backup, log, magistrates, matches, requests, exports), cada uma com uma função `register(app)`.
+- `server/*.ts`: regras e infraestrutura — `types` (tipos do domínio), `state` (estado em memória `S`, ids e registro de
+  atividades), `persistence` (Firestore / `data/state.json`), `auth` (senha, 2FA, sessões), `ratelimit`, `validation`,
+  `catalog` (lista oficial), `editions` (janelas de inscrição) e `links` (vinculações, painel e histórico de atuação).
+- `src/App.tsx`: portal público; `src/Admin.tsx`: área administrativa (login, filtro de janela, abas e listas);
+  `src/admin/*.tsx`: telas por assunto (painel, vinculações, pedidos, padronização, catálogo, usuários, backup) e a tabela
+  com filtros (`table.tsx`).
