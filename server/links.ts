@@ -181,9 +181,9 @@ export const describeMatch = (mt: Match) => {
 /**
  * Altera uma vinculação (troca de magistrado, unidade, área, tipo ou data de início).
  * Com data de vigência, a troca de unidade, área ou tipo do mesmo magistrado é uma alteração de vinculação:
- * o período anterior vai até a véspera e o novo começa na data. Usada pela edição manual e pelo deferimento de pedidos.
+ * o período anterior vai até a véspera e o novo começa na data. Usada pela edição da vinculação e pelo painel (alterar vara/área/tipo).
  */
-export function updateMatch(match: Match, body: any, origin = ''): { status: number; error: string } | { match: Match } {
+export function updateMatch(match: Match, body: any): { status: number; error: string } | { match: Match } {
   const fail = (status: number, error: string) => ({ status, error });
 
   const before = describeMatch(match);
@@ -228,7 +228,7 @@ export function updateMatch(match: Match, body: any, origin = ''): { status: num
   const changingArea = !!newArea && newArea !== match.assignedArea;
   const changingWorkType = !!workType && workType !== match.workType;
   // Trocar a unidade do mesmo magistrado é uma alteração de vinculação e exige a data de vigência. A área e o tipo também,
-  // quando informada a data (painel de vinculações e deferimento de pedidos) ou na edição das vinculações iniciais.
+  // quando informada a data (painel de vinculações) ou na edição das vinculações iniciais.
   const isTransfer = !changedMag && (movingUnit || ((changingArea || changingWorkType) && (initialMatch || !!effectiveDate)));
   if (isTransfer && (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveDate) || Number.isNaN(Date.parse(`${effectiveDate}T00:00:00${BRT}`)) || effectiveDate < '2000-01-01')) {
     return fail(400, 'Informe a partir de quando o magistrado atuará na nova unidade.');
@@ -264,7 +264,7 @@ export function updateMatch(match: Match, body: any, origin = ''): { status: num
   const startNote = !isTransfer && match.startDate !== startBefore
     ? ` (início da atuação: ${(match.startDate ?? editionById(match.editionId)?.startDate)?.split('-').reverse().join('/') ?? 'não informado'})` : '';
   const what = [movingUnit && 'nova unidade', changingArea && 'nova área', changingWorkType && 'novo tipo'].filter(Boolean).join(', ');
-  log(match.editionId, 'Administração', 'Vinculação', `Vinculação alterada${origin}${startNote}${isTransfer ? ` (${what} a partir de ${effectiveDate.split('-').reverse().join('/')}${transferSei ? `; SEI ${transferSei}` : ''})` : ''}: de ${before} para ${describeMatch(match)}.`);
+  log(match.editionId, 'Administração', 'Vinculação', `Vinculação alterada${startNote}${isTransfer ? ` (${what} a partir de ${effectiveDate.split('-').reverse().join('/')}${transferSei ? `; SEI ${transferSei}` : ''})` : ''}: de ${before} para ${describeMatch(match)}.`);
   return { match };
 }
 export const fullUnitOf = (u?: Unit) => (u ? fullUnitName(u) : 'unidade removida');

@@ -163,16 +163,6 @@ export interface FaqItem {
 
 export interface PanelRow { id: string; editionId: string; editionTitle: string; magistrateId: string; unitId: string; startDate?: string; /** início efetivo (o da vinculação ou o da edição) */ since?: string; note?: string; postit?: string; postitUpdatedAt?: string; name: string; area: string; unit: string; comarca?: string; separator?: string; workType?: string; firstPreference?: string; secondPreference?: string; preference?: 0 | 1 | 2; /** outras designações vigentes da mesma pessoa */ duplicates?: { editionTitle: string; unit: string; area: string }[] }
 export interface Withdrawal { id: string; editionId: string; name: string; area: string; unit: string; sei: string; requestDate?: string; endedAt?: string; createdAt: string }
-/** Pedido de alteração (visão pública: protocolo, situação e decisão) */
-export interface ChangeRequestPublic { protocol: string; kind: 'magistrado' | 'unidade'; name: string; unit: string; createdAt: string; status: 'Pendente' | 'Deferido' | 'Indeferido'; summary: string; decidedAt?: string; decisionReason?: string; outcome?: string }
-/** Pedido de alteração na administração, com a situação atual da designação ou da unidade */
-export interface ChangeRequest extends ChangeRequestPublic {
-  id: string; editionId: string; editionTitle: string; isInitial: boolean; matchId?: string; magistrateId?: string; unitId?: string;
-  current: { unit: string; area?: string; workType?: string; areas?: string[]; slots?: number };
-  requested: { area?: string; workType?: string; areas?: string[]; extraSlots?: number };
-  justification: string; notes?: string; decidedBy?: string; ip?: string;
-  live: ({ unitId: string; unit: string; area: string; workType: string; comarca: string } | { unitId: string; unit: string; areas: string[]; slots: number; linked: number }) | null;
-}
 /** Período de atuação de um magistrado numa unidade (sem fim = em curso) */
 export interface ActingPeriod { id: string; name: string; editionId: string; editionTitle: string; area: string; unit: string; workType: string; start?: string; end?: string; endReason: '' | 'Alteração de vinculação' | 'Desistência' | 'Exclusão'; sei?: string }
 export interface Transfer { id: string; editionId: string; magistrateId: string; name: string; area: string; toArea?: string; sei?: string; fromUnit: string; toUnit: string; fromWorkType: string; toWorkType: string; effectiveDate: string; createdAt: string }

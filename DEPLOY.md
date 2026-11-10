@@ -155,7 +155,7 @@ Exemplo: `gcloud run services update mutiraocgj --region europe-west1 --update-e
 ## 8. Regras de funcionamento
 
 - **Aba Vinculações (administração):** reúne em seções as designações vigentes e o histórico de atuação, a vinculação das
-  unidades escolhidas, a lista de espera e os pedidos de alteração (com o número de pendentes na própria aba).
+  unidades escolhidas e a lista de espera.
 
 - **Mutirão único e janelas de inscrição:** magistrados, unidades, lista de espera e vinculações formam um só conjunto. As
   antigas edições são *janelas de inscrição* (*Administração → Janelas de inscrição*), cada uma com abertura, encerramento e
@@ -186,11 +186,6 @@ Exemplo: `gcloud run services update mutiraocgj --region europe-west1 --update-e
   motivo não aparece na consulta pública.
 - **Backup:** *Administração → Backup* exporta todos os dados em um arquivo .json (contém dados pessoais: guarde com segurança, não
   inclui senha nem segredo do 2FA) e restaura a partir dele, substituindo os dados atuais (o registro de atividades é preservado).
-- **Pedidos de alteração:** no portal, *Pedir alteração* permite que o magistrado já vinculado peça outra área ou outro
-  tipo de atuação, e que a unidade atendida peça outras áreas ou mais magistrados (justificativa obrigatória e observações).
-  A análise fica em *Administração → Vinculações → Pedidos de alteração*: ao deferir o pedido de um magistrado, define-se a área, o tipo, a
-  vara e a data de início (a atuação anterior vai até a véspera e um novo período começa na data); ao indeferir, o motivo
-  aparece para quem pediu.
 - **Inscrições:** os campos de escolha do magistrado (1ª e 2ª escolha e aceite de audiências) e as áreas da unidade começam
   sem seleção; todos são obrigatórios (o servidor também valida).
 
@@ -306,10 +301,10 @@ ADMIN_PASSWORD=minha-senha npm run dev      # usa data/state.json; o primeiro ac
 - `server.ts`: ponto de entrada (chama `startServer` de `server/app.ts`).
 - `server/app.ts`: cabeçalhos de segurança, leitura do corpo, carga dos dados, controle de acesso e registro das rotas.
 - `server/routes/*.ts`: rotas por assunto (auth, users, editions, faq, panel, standardize, duplicates, units, dashboard,
-  catalog, bi, backup, log, magistrates, matches, requests, exports), cada uma com uma função `register(app)`.
+  catalog, bi, backup, log, magistrates, matches, exports), cada uma com uma função `register(app)`.
 - `server/*.ts`: regras e infraestrutura — `types` (tipos do domínio), `state` (estado em memória `S`, ids e registro de
   atividades), `persistence` (Firestore / `data/state.json`), `auth` (senha, 2FA, sessões), `ratelimit`, `validation`,
   `catalog` (lista oficial), `editions` (janelas de inscrição) e `links` (vinculações, painel e histórico de atuação).
 - `src/App.tsx`: portal público; `src/Admin.tsx`: área administrativa (login, filtro de janela, abas e listas);
-  `src/admin/*.tsx`: telas por assunto (painel, vinculações, pedidos, padronização, catálogo, usuários, backup) e a tabela
+  `src/admin/*.tsx`: telas por assunto (painel, vinculações, padronização, catálogo, usuários, backup) e a tabela
   com filtros (`table.tsx`).

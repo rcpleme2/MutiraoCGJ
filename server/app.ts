@@ -24,7 +24,6 @@ import { register as registerBackup } from './routes/backup.ts';
 import { register as registerLog } from './routes/log.ts';
 import { register as registerMagistrates } from './routes/magistrates.ts';
 import { register as registerMatches } from './routes/matches.ts';
-import { register as registerRequests } from './routes/requests.ts';
 import { register as registerExports } from './routes/exports.ts';
 
 export async function startServer() {
@@ -81,22 +80,10 @@ export async function startServer() {
     if (session) { const store = reqCtx.getStore(); if (store) store.user = session.name; }
     const publicRead = (req.method === 'GET' && ['/settings', '/faq', '/admin/login-mode', '/catalog'].includes(req.path)) || (req.method === 'POST' && req.path === '/status');
     const publicSignup = req.method === 'POST' && (req.path === '/magistrates' || req.path === '/units');
-    const publicRequestPost = req.method === 'POST' && (req.path === '/requests' || req.path === '/requests/lookup');
     const login = req.method === 'POST' && (req.path === '/admin/login' || req.path === '/admin/login/verify');
 
     if (req.method === 'POST' && req.path === '/status' && rateLimited(`status:${ip}`, 30, 60_000)) {
       return res.status(429).json({ error: 'Muitas consultas. Aguarde um instante.' });
-    }
-    if (req.method === 'POST' && req.path === '/requests/lookup' && rateLimited(`status:${ip}`, 30, 60_000)) {
-      return res.status(429).json({ error: 'Muitas consultas. Aguarde um instante.' });
-    }
-    if (req.method === 'POST' && req.path === '/requests') {
-      // Pedido de alteração pelo portal: campo-isca e limite por IP (a análise é sempre da administração)
-      if (typeof req.body?.website === 'string' && req.body.website.trim() !== '') return res.status(201).json({ success: true, protocol: '—' });
-      const key = `chreq:${ip}`;
-      res.on('finish', () => { if (res.statusCode !== 201) refund(key); });
-      if (rateLimited(key, 10, 10 * 60_000)) return res.status(429).json({ error: 'Muitos pedidos em pouco tempo. Aguarde alguns minutos.' });
-      return next();
     }
     if (publicSignup && !admin) {
       // Anti-spam: campo-isca preenchido só por robôs (finge sucesso e descarta) e limites por IP e globais.
@@ -125,7 +112,7 @@ export async function startServer() {
       req.query = {};
       return next();
     }
-    if (publicRead || login || publicRequestPost) return next();
+    if (publicRead || login) return next();
     // Chamada do Cloud Scheduler: autenticada pelo token próprio, conferido na rota
     // Leitura pelo Qlik Sense (REST Connector): autenticada pela chave BI_TOKEN, conferida na rota
     if (req.method === 'GET' && req.path === '/bi/designacoes') {
@@ -149,7 +136,7 @@ export async function startServer() {
   // Em requisições que alteram dados, grava antes de responder.
   app.use('/api', (req, res, next) => {
     // Consultas e a etapa 1 do login não alteram dados: só gravam se gerarem registro de segurança (res.locals.persist)
-    const readOnlyPost = ['/status', '/requests/lookup', '/admin/login', '/admin/logout'].includes(req.path);
+    const readOnlyPost = ['/status', '/admin/login', '/admin/logout'].includes(req.path);
     if (req.method !== 'GET') {
       const json = res.json.bind(res);
       res.json = (body: any) => {
@@ -183,7 +170,6 @@ export async function startServer() {
   registerLog(app);
   registerMagistrates(app);
   registerMatches(app);
-  registerRequests(app);
   registerExports(app);
 
   if (process.env.NODE_ENV !== 'production') {

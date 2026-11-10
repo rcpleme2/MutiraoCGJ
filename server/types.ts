@@ -155,25 +155,6 @@ export interface Withdrawal { id: string; editionId: string; name: string; area:
   designations?: { editionId: string; area: string; unit: string; workType?: string; startDate?: string }[]; createdAt: string }
 /** Alteração de vinculação (troca de unidade): a vinculação antiga vale até o dia anterior à data informada; a nova, a partir dela. */
 export interface Transfer { id: string; editionId: string; magistrateId: string; name: string; /** início da atuação na unidade anterior, se diferente do da edição */ fromStartDate?: string; /** área de atuação anterior */ area: string; /** nova área de atuação (ausente em registros antigos: a área não mudou) */ toArea?: string; /** processo SEI da alteração (opcional) */ sei?: string; fromUnit: string; toUnit: string; fromWorkType: string; toWorkType: string; effectiveDate: string; createdAt: string }
-/**
- * Pedido de alteração feito pelo portal por quem já está vinculado: o magistrado pede outra área e/ou outro tipo de atuação;
- * a unidade pede outras áreas e/ou mais magistrados. Nada muda até a análise da administração (deferido ou indeferido).
- */
-export interface ChangeRequest {
-  id: string; protocol: string; kind: 'magistrado' | 'unidade'; editionId: string;
-  /** Designação (magistrado) ou unidade a que o pedido se refere */
-  matchId?: string; magistrateId?: string; unitId?: string;
-  /** Nome do magistrado ou da unidade, como estava no pedido */
-  name: string;
-  current: { unit: string; area?: string; workType?: string; areas?: string[]; slots?: number };
-  requested: { area?: string; workType?: string; areas?: string[]; extraSlots?: number };
-  justification: string; notes?: string;
-  status: 'Pendente' | 'Deferido' | 'Indeferido';
-  decidedAt?: string; decidedBy?: string; decisionReason?: string;
-  /** Resumo do que foi efetivamente aplicado no deferimento */
-  outcome?: string;
-  ip?: string; createdAt: string;
-}
 export type Parsed<T> = { error: string } | { value: T };
 /** Escopo das consultas da administração: uma janela de inscrição (?edition=id) ou todas (?edition=all). */
 export interface Scope { all: boolean; edition?: Edition; title: string; has: (x: { editionId: string }) => boolean }

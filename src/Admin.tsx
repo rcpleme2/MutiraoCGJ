@@ -2,7 +2,7 @@
 import { Badge, Field, Modal, Notice, formatDate, formatDateTime, magistrateTone, useFeedback } from './ui';
 import React, { useCallback, useEffect, useState } from 'react';
 import { api, download, getToken, setToken } from './api';
-import { ChangeRequest, Edition, FaqItem, LogEntry, Magistrate, Match, Unit, WorkType, hearingPeriodLabel } from './types';
+import { Edition, FaqItem, LogEntry, Magistrate, Match, Unit, WorkType, hearingPeriodLabel } from './types';
 import { Lock, Unlock, Plus, Trash2, Check, Pencil, Download, LogOut, Radio, Archive, RotateCcw, ChevronDown, ChevronRight, X, ArrowUp, ArrowDown, Settings2 } from 'lucide-react';
 import { MagistrateForm, UnitForm } from './Forms';
 import { BackupAdmin } from './admin/backup';
@@ -11,7 +11,6 @@ import { AttendedUnits, type Presence, PresenceNote, SupplyDemand } from './admi
 import { EditionForm, ExcludeModal, FaqForm } from './admin/forms';
 import { SlotsControl, UnitDetail, UnitLinkRow, unitMatchesOf } from './admin/linking';
 import { PanelAdmin } from './admin/panel';
-import { RequestsAdmin } from './admin/requests';
 import { dmy, readPref, SELECTION_ORDER, type Sub, unitLabel, writePref } from './admin/shared';
 import { StandardizeAdmin } from './admin/standardize';
 import { DateCell, SmartTable, Toolbar } from './admin/table';
@@ -31,8 +30,8 @@ const SUBS: { id: Sub; label: string }[] = [
   { id: 'users', label: 'Usuários' },
 ];
 
-/** Seções da aba Vinculações: designações vigentes e histórico, vincular unidades, lista de espera e pedidos de alteração */
-type LinkView = 'panel' | 'link' | 'waiting' | 'requests';
+/** Seções da aba Vinculações: designações vigentes e histórico, vincular unidades e lista de espera */
+type LinkView = 'panel' | 'link' | 'waiting';
 
 export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => void }) {
   const { toast, confirm } = useFeedback();
@@ -65,7 +64,6 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   useEffect(() => { if (!authed) api<{ users: boolean; shared: boolean }>('/admin/login-mode').then(setLoginMode).catch(() => {}); }, [authed]);
 
   const [sub, setSub] = useState<Sub>('overview');
-  const [pendingRequests, setPendingRequests] = useState(0);
   const [linkView, setLinkView] = useState<LinkView>('panel');
   const [editions, setEditions] = useState<Edition[]>([]);
   // Filtro por janela de inscrição ('all' = todo o mutirão). Magistrados, unidades e vinculações ficam sempre completos na memória
@@ -134,7 +132,6 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
     ]));
     if (!r) return;
     api<Record<string, Presence>>('/panel/presence').then(setPresence).catch(() => setPresence({}));
-    api<ChangeRequest[]>('/requests').then(l => setPendingRequests(l.filter(x => x.status === 'Pendente').length)).catch(() => {});
     [setMagistrates, setUnits, setMatches, setWaiting, setLog].forEach((set, i) => (set as any)(r[i]));
   }, [selectedId, run]);
 
@@ -416,7 +413,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
         {allowedSubs.filter(t => !hiddenTabs.includes(t.id)).map(t => (
           <button key={t.id} onClick={() => setSub(t.id)}
             className={`px-4 py-2.5 text-sm whitespace-nowrap border-b-2 -mb-px transition-colors ${sub === t.id ? 'border-navy text-navy font-medium' : 'border-transparent text-muted hover:text-ink'}`}>
-            {t.label}{t.id === 'matches' && pendingRequests > 0 && <span className="ml-1.5 inline-block min-w-5 px-1.5 rounded-full bg-warn text-white text-[11px] leading-5 text-center">{pendingRequests}</span>}
+            {t.label}
           </button>
         ))}
         <button type="button" title="Escolher as abas que aparecem na sua tela" aria-label="Personalizar abas" onClick={() => { setTabsDraft(hiddenTabs); setTabsOpen(true); }}
@@ -665,7 +662,6 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             ['panel', 'Vigentes e histórico'],
             ['link', `Vincular unidades (${units.filter(u => inScope(u) && u.selection === 'Escolhida' && !matches.some(m => m.unitId === u.id)).length} sem magistrado)`],
             ['waiting', `Lista de espera (${waiting.length})`],
-            ['requests', `Pedidos de alteração${pendingRequests ? ` (${pendingRequests} pendente${pendingRequests > 1 ? 's' : ''})` : ''}`],
           ] as [LinkView, string][]).map(([id, text]) => (
             <button key={id} type="button" role="tab" aria-selected={linkView === id} onClick={() => setLinkView(id)}
               className={`px-3.5 py-2 rounded-md text-sm border transition-colors ${linkView === id ? 'bg-navy text-white border-navy' : 'bg-surface text-muted border-line hover:text-ink'}`}>{text}</button>
@@ -741,7 +737,6 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       {sub === 'users' && me?.role === 'admin' && <UsersAdmin run={run} confirm={confirm} />}
       {sub === 'backup' && <BackupAdmin run={run} confirm={confirm} onRestored={refresh} />}
       {sub === 'matches' && linkView === 'panel' && <PanelAdmin run={run} confirm={confirm} onChanged={refresh} />}
-      {sub === 'matches' && linkView === 'requests' && <RequestsAdmin run={run} readOnly={me?.role === 'consulta'} onChanged={refresh} />}
 
       {/* ---------- Perguntas frequentes ---------- */}
       {sub === 'faq' && (

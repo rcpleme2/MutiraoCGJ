@@ -1,7 +1,7 @@
 // Estado em memória do sistema, dados iniciais de demonstração, geração de ids e registro de atividades.
 import { type CatalogRecord } from '../src/catalogo-tjpr';
 import { AsyncLocalStorage } from 'async_hooks';
-import { type AdminUser, type ChangeRequest, type Edition, type FaqItem, type LogCategory, type LogEntry, type Magistrate, type Match, type PanelEntry, type Transfer, type Unit, type Withdrawal } from './types.ts';
+import { type AdminUser, type Edition, type FaqItem, type LogCategory, type LogEntry, type Magistrate, type Match, type PanelEntry, type Transfer, type Unit, type Withdrawal } from './types.ts';
 
 /** Estado do sistema em memória (gravado no Firestore ou em data/state.json pela persistência) */
 export interface State {
@@ -15,7 +15,6 @@ export interface State {
   panelEntries: PanelEntry[];
   withdrawals: Withdrawal[];
   transfers: Transfer[];
-  changeRequests: ChangeRequest[];
   dupDismissed: string[];
   catalogUnits: CatalogRecord[];
   catalogComarcas: { id: string; name: string }[];
@@ -143,7 +142,6 @@ S.faq = [];
 S.panelEntries = [];
 S.withdrawals = [];
 S.transfers = [];
-S.changeRequests = [];
 /** Pares de nomes parecidos que a administração indicou NÃO serem a mesma pessoa (chave "nomeA|nomeB") */
 S.dupDismissed = [];
 /** Lista oficial de comarcas e unidades, editável pelo painel. Vazia = ainda não editada: vale a lista embutida. */

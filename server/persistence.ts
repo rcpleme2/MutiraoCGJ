@@ -6,7 +6,7 @@ import { type CatalogRecord } from '../src/catalogo-tjpr';
 import { liveSessions, loadSessions } from './auth.ts';
 import { applyCatalog } from './catalog.ts';
 import { S } from './state.ts';
-import { type AdminUser, type ChangeRequest, type Edition, type FaqItem, type LogEntry, type Magistrate, type Match, type PanelEntry, type Transfer, type Unit, type Withdrawal } from './types.ts';
+import { type AdminUser, type Edition, type FaqItem, type LogEntry, type Magistrate, type Match, type PanelEntry, type Transfer, type Unit, type Withdrawal } from './types.ts';
 
 // Persistência em arquivo (desenvolvimento local)
 export const DATA_FILE = path.join(process.cwd(), 'data', 'state.json');
@@ -22,7 +22,7 @@ export let persistedLogIds = new Set<string>();
 export let lastMeta = '';
 export const metaJson = () => JSON.stringify({ activeEditionId: S.activeEditionId, adminTotpSecret: S.adminTotpSecret, dupDismissed: S.dupDismissed, lastAutoBackup: S.lastAutoBackup, sharedHiddenTabs: S.sharedHiddenTabs });
 export const collectionsNow = (): Record<string, { id: string }[]> => ({
-  editions: S.editions, magistrates: S.magistrates, units: S.units, matches: S.matches, log: S.activityLog, faq: S.faq, panel: S.panelEntries, withdrawals: S.withdrawals, transfers: S.transfers, requests: S.changeRequests, admins: S.admins,
+  editions: S.editions, magistrates: S.magistrates, units: S.units, matches: S.matches, log: S.activityLog, faq: S.faq, panel: S.panelEntries, withdrawals: S.withdrawals, transfers: S.transfers, admins: S.admins,
   catalog: S.catalogUnits, comarcas: S.catalogComarcas, sessions: liveSessions(),
 });
 export async function loadState() {
@@ -42,7 +42,6 @@ export async function loadState() {
       S.sharedHiddenTabs = Array.isArray(raw.sharedHiddenTabs) ? raw.sharedHiddenTabs : [];
       S.panelEntries = raw.panel ?? [];
       S.withdrawals = raw.withdrawals ?? [];
-      S.changeRequests = raw.requests ?? [];
       S.transfers = raw.transfers ?? [];
       S.admins = raw.admins ?? [];
       S.catalogUnits = raw.catalog ?? [];
@@ -86,7 +85,6 @@ export async function loadState() {
   S.sharedHiddenTabs = Array.isArray(meta?.sharedHiddenTabs) ? meta.sharedHiddenTabs : [];
   S.panelEntries = loaded.panel as PanelEntry[];
   S.withdrawals = loaded.withdrawals as Withdrawal[];
-  S.changeRequests = loaded.requests as ChangeRequest[];
   S.transfers = loaded.transfers as Transfer[];
   S.admins = loaded.admins as AdminUser[];
   S.catalogUnits = loaded.catalog as CatalogRecord[];
@@ -100,7 +98,7 @@ export async function persist() {
     fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
     fs.writeFileSync(
       DATA_FILE,
-      JSON.stringify({ editions: S.editions, activeEditionId: S.activeEditionId, magistrates: S.magistrates, units: S.units, matches: S.matches, activityLog: S.activityLog, faq: S.faq, adminTotpSecret: S.adminTotpSecret, panel: S.panelEntries, withdrawals: S.withdrawals, transfers: S.transfers, requests: S.changeRequests, dupDismissed: S.dupDismissed, admins: S.admins, lastAutoBackup: S.lastAutoBackup, sharedHiddenTabs: S.sharedHiddenTabs, catalog: S.catalogUnits, comarcas: S.catalogComarcas, sessions: liveSessions() }),
+      JSON.stringify({ editions: S.editions, activeEditionId: S.activeEditionId, magistrates: S.magistrates, units: S.units, matches: S.matches, activityLog: S.activityLog, faq: S.faq, adminTotpSecret: S.adminTotpSecret, panel: S.panelEntries, withdrawals: S.withdrawals, transfers: S.transfers, dupDismissed: S.dupDismissed, admins: S.admins, lastAutoBackup: S.lastAutoBackup, sharedHiddenTabs: S.sharedHiddenTabs, catalog: S.catalogUnits, comarcas: S.catalogComarcas, sessions: liveSessions() }),
     );
     return;
   }

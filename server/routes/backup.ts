@@ -16,7 +16,7 @@ export const BACKUP_APP = 'mutirao-cgj';
 /** Conteúdo do backup (sem usuários, senhas nem segredos do 2FA). */
 export const backupJson = () => JSON.stringify({
   app: BACKUP_APP, version: 1, exportedAt: new Date().toISOString(), activeEditionId: S.activeEditionId,
-  editions: S.editions, magistrates: S.magistrates, units: S.units, matches: S.matches, faq: S.faq, withdrawals: S.withdrawals, transfers: S.transfers, requests: S.changeRequests, log: S.activityLog,
+  editions: S.editions, magistrates: S.magistrates, units: S.units, matches: S.matches, faq: S.faq, withdrawals: S.withdrawals, transfers: S.transfers, log: S.activityLog,
   catalog: S.catalogUnits, comarcas: S.catalogComarcas,
 });
 // O Cloud Scheduler chama POST /api/backup/auto 1x/dia com o cabeçalho x-backup-token (= BACKUP_CRON_TOKEN).
@@ -107,8 +107,8 @@ export function register(app: express.Express) {
       if (v === undefined && !required) return [];
       return Array.isArray(v) && v.every((x) => x && typeof x === 'object' && typeof x.id === 'string' && x.id) ? v : null;
     };
-    const [eds, mags, uns, mts, fq, wds, lg, trs, rqs] = [arr('editions', true), arr('magistrates', true), arr('units', true), arr('matches', true), arr('faq'), arr('withdrawals'), arr('log'), arr('transfers'), arr('requests')];
-    if (!eds || !mags || !uns || !mts || !fq || !wds || !lg || !trs || !rqs) return res.status(400).json({ error: 'O arquivo está incompleto ou com registros inválidos.' });
+    const [eds, mags, uns, mts, fq, wds, lg, trs] = [arr('editions', true), arr('magistrates', true), arr('units', true), arr('matches', true), arr('faq'), arr('withdrawals'), arr('log'), arr('transfers')];
+    if (!eds || !mags || !uns || !mts || !fq || !wds || !lg || !trs) return res.status(400).json({ error: 'O arquivo está incompleto ou com registros inválidos.' });
     if (eds.length === 0 || !eds.every((e) => typeof e.title === 'string')) return res.status(400).json({ error: 'O backup precisa conter ao menos uma edição.' });
     const unique = (xs: any[]) => new Set(xs.map((x) => x.id)).size === xs.length;
     if (![eds, mags, uns, mts, fq, wds].every(unique)) return res.status(400).json({ error: 'O arquivo contém registros duplicados.' });
@@ -119,7 +119,7 @@ export function register(app: express.Express) {
     }
 
     const before = { editions: S.editions.length, magistrates: S.magistrates.length, units: S.units.length, matches: S.matches.length };
-    S.editions = eds; S.magistrates = mags; S.units = uns; S.matches = mts; S.faq = fq; S.withdrawals = wds; S.transfers = trs; S.changeRequests = rqs ?? []; S.panelEntries = [];
+    S.editions = eds; S.magistrates = mags; S.units = uns; S.matches = mts; S.faq = fq; S.withdrawals = wds; S.transfers = trs; S.panelEntries = [];
     S.activeEditionId = edIds.has(d.activeEditionId) ? d.activeEditionId : eds[0].id;
     // Lista de comarcas e unidades: só é trocada se o backup a trouxer (backups antigos mantêm a atual)
     const cat = arr('catalog'), cms = arr('comarcas');

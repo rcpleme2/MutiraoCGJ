@@ -125,7 +125,6 @@ export function register(app: express.Express) {
     S.panelEntries = S.panelEntries.filter((p) => p.editionId !== id);
     S.withdrawals = S.withdrawals.filter((w) => w.editionId !== id);
     S.transfers = S.transfers.filter((t) => t.editionId !== id);
-    S.changeRequests = S.changeRequests.filter((r) => r.editionId !== id);
     S.units.forEach((u) => {
       // Pedido que tinha sido transportado para a edição excluída volta a aguardar a próxima edição
       if (u.carriedToEditionId === id) { u.carriedToEditionId = undefined; u.carryOver = true; }
