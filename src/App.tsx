@@ -1,19 +1,21 @@
 import React, { useEffect, useState } from 'react';
-import { Scale, UserCheck, Building2, ShieldCheck, Search, ArrowRight, Menu, X, ChevronDown, HelpCircle } from 'lucide-react';
+import { Scale, UserCheck, Building2, ShieldCheck, Search, ArrowRight, Menu, X, ChevronDown, HelpCircle, FilePenLine } from 'lucide-react';
 import { api, reloadCatalog } from './api';
 import { Edition, FaqItem, Magistrate, Unit, hearingPeriodLabel } from './types';
 import { Badge, FeedbackProvider, Notice, formatDate, magistrateTone } from './ui';
 import { MagistrateForm, UnitForm } from './Forms';
 import Admin from './Admin';
 import ErrorBoundary from './ErrorBoundary';
+import ChangeRequestPage from './ChangeRequest';
 
-type Tab = 'home' | 'magistrate' | 'unit' | 'status' | 'faq' | 'admin';
+type Tab = 'home' | 'magistrate' | 'unit' | 'status' | 'change' | 'faq' | 'admin';
 
 const NAV: { id: Tab; label: string }[] = [
   { id: 'home', label: 'Início' },
   { id: 'magistrate', label: 'Inscrição de Magistrados' },
   { id: 'unit', label: 'Inscrição de Unidades' },
   { id: 'status', label: 'Consultar Status' },
+  { id: 'change', label: 'Pedir Alteração' },
 ];
 
 function PageCard({ icon: Icon, title, subtitle, children }: { icon: React.ElementType; title: string; subtitle: string; children: React.ReactNode }) {
@@ -190,11 +192,12 @@ function AppInner() {
                 </p>
               </>
             )}
-            <div className="grid sm:grid-cols-3 gap-4">
+            <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
               {[
                 { t: 'magistrate' as Tab, icon: UserCheck, title: 'Sou magistrado(a)', desc: 'Inscrever-me como voluntário(a).' },
                 { t: 'unit' as Tab, icon: Building2, title: 'Represento uma unidade', desc: 'Solicitar apoio do mutirão.' },
                 { t: 'status' as Tab, icon: Search, title: 'Consultar status', desc: 'Acompanhar uma inscrição.' },
+                { t: 'change' as Tab, icon: FilePenLine, title: 'Pedir alteração', desc: 'Já vinculado: outra área, tipo ou mais magistrados.' },
               ].map(c => (
                 <button key={c.t} onClick={() => go(c.t)} className="card p-5 text-left hover:border-navy/40 transition-colors group">
                   <c.icon className="w-5 h-5 text-bronze mb-4" />
@@ -348,6 +351,16 @@ function AppInner() {
               )}
               {nameResult === 'revogada' && <div className="mt-4"><Notice tone="danger"><strong>Vinculação revogada por desistência.</strong></Notice></div>}
               {nameResult === 'nao_consta' && <div className="mt-4"><div className="rounded-md px-4 py-3 text-sm bg-paper text-muted border border-line">Não consta vinculação ativa nem revogada para o nome informado.</div></div>}
+            </div>
+          </PageCard>
+        )}
+
+        {tab === 'change' && (
+          <PageCard icon={FilePenLine} title="Pedir alteração"
+            subtitle="Para quem já está vinculado: o magistrado pode pedir outra área ou outro tipo de atuação (audiências ou sentença); a unidade atendida pode pedir outras áreas ou mais magistrados. Nada muda até a análise da coordenação.">
+            <div className="space-y-5">
+              <RecordNotice />
+              <ChangeRequestPage />
             </div>
           </PageCard>
         )}

@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Lock, Unlock, Plus, Trash2, Check, Pencil, Download, Sparkles, LogOut, Radio, Archive, RotateCcw, ChevronDown, ChevronRight, X, ArrowUp, ArrowDown, ArrowUpDown, Filter, StickyNote } from 'lucide-react';
 import { api, download, getToken, reloadCatalog, setToken } from './api';
-import { PREFERENCE_AREAS, ActingPeriod, Edition, FaqItem, LogEntry, Magistrate, Match, PanelRow, Transfer, Unit, Withdrawal, WorkType, WORK_TYPES, hearingPeriodLabel, periodsClash } from './types';
+import { PREFERENCE_AREAS, ActingPeriod, ChangeRequest, Edition, FaqItem, LogEntry, Magistrate, Match, PanelRow, Transfer, Unit, Withdrawal, WorkType, WORK_TYPES, hearingPeriodLabel, periodsClash } from './types';
 import { CATALOG, COMARCAS, canonicalComarca, catalogById, fullUnitName, unitsOfComarca, type CatalogUnit } from './catalogo-tjpr';
 import { Badge, EmptyRow, Field, Modal, Notice, formatDate, formatDateTime, magistrateTone, useFeedback } from './ui';
 import { MagistrateForm, UnitForm } from './Forms';
 
-type Sub = 'overview' | 'editions' | 'magistrates' | 'units' | 'matches' | 'waiting' | 'panel' | 'faq' | 'log' | 'backup' | 'standardize' | 'catalog' | 'users';
+type Sub = 'overview' | 'editions' | 'magistrates' | 'units' | 'matches' | 'waiting' | 'panel' | 'requests' | 'faq' | 'log' | 'backup' | 'standardize' | 'catalog' | 'users';
 
 const SUBS: { id: Sub; label: string }[] = [
   { id: 'overview', label: 'Painel' },
@@ -16,6 +16,7 @@ const SUBS: { id: Sub; label: string }[] = [
   { id: 'matches', label: 'Vinculações' },
   { id: 'waiting', label: 'Lista de espera' },
   { id: 'panel', label: 'Painel de vinculações' },
+  { id: 'requests', label: 'Pedidos de alteração' },
   { id: 'standardize', label: 'Padronizar nomes' },
   { id: 'catalog', label: 'Comarcas e unidades' },
   { id: 'faq', label: 'Perguntas frequentes' },
@@ -673,6 +674,189 @@ function PostIt({ row, run, onSaved }: { row: PanelRow; run: RunFn; onSaved: () 
   );
 }
 
+/* ---------- Pedidos de alteração (feitos pelo portal por quem já está vinculado) ---------- */
+type Decision =
+  | { kind: 'reject'; r: ChangeRequest; reason: string }
+  | { kind: 'mag'; r: ChangeRequest; units: Unit[]; area: string; workType: string; comarca: string; unit: string; newName: string; date: string; sei: string; reason: string }
+  | { kind: 'unit'; r: ChangeRequest; areas: string[]; slots: number; reason: string };
+
+function RequestsAdmin({ run, readOnly, onChanged }: { run: RunFn; readOnly: boolean; onChanged: () => void }) {
+  const [list, setList] = useState<ChangeRequest[] | null>(null);
+  const [all, setAll] = useState(false);
+  const [d, setD] = useState<Decision | null>(null);
+  const load = useCallback(async () => { const r = await run(() => api<ChangeRequest[]>('/requests')); if (r) setList(r); }, [run]);
+  useEffect(() => { load(); }, []);
+
+  const work = (w?: string) => (w === 'Audiência' ? 'Audiências' : w || '—');
+  const openDefer = async (r: ChangeRequest) => {
+    if (r.kind === 'unidade') {
+      const live = r.live as { areas: string[]; slots: number } | null;
+      setD({ kind: 'unit', r, areas: r.requested.areas ?? live?.areas ?? [], slots: (live?.slots ?? 1) + (r.requested.extraSlots ?? 0), reason: '' });
+      return;
+    }
+    const live = r.live as { unitId: string; area: string; workType: string } | null;
+    const us = await run(() => api<Unit[]>(`/units?edition=${encodeURIComponent(r.editionId)}`));
+    if (!us) return;
+    setD({ kind: 'mag', r, units: us.filter(u => u.selection === 'Escolhida').sort((a, b) => a.unitName.localeCompare(b.unitName, 'pt-BR')),
+      area: r.requested.area ?? live?.area ?? '', workType: r.requested.workType ?? live?.workType ?? 'Sentença', comarca: '', unit: '', newName: '', date: '', sei: '', reason: '' });
+  };
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!d) return;
+    let body: Record<string, unknown>;
+    if (d.kind === 'reject') body = { decision: 'Indeferido', reason: d.reason };
+    else if (d.kind === 'unit') body = { decision: 'Deferido', areas: d.areas, slots: d.slots, reason: d.reason };
+    else {
+      const cat = d.unit.startsWith('cat:') ? catalogById(d.unit.slice(4)) : undefined;
+      body = { decision: 'Deferido', area: d.area, workType: d.workType, effectiveDate: d.date, sei: d.sei, reason: d.reason,
+        ...(d.newName.trim() ? { newUnitName: d.newName.trim() } : cat ? { newUnitName: fullUnitName(cat) } : d.unit ? { unitId: d.unit } : {}) };
+    }
+    const r = await run(() => api(`/requests/${d.r.id}/decide`, { method: 'POST', json: body }), d.kind === 'reject' ? 'Pedido indeferido.' : 'Pedido deferido e alteração aplicada.');
+    if (r) { setD(null); await load(); onChanged(); }
+  };
+
+  if (!list) return <div className="card p-8 text-sm text-muted">Carregando…</div>;
+  const pending = list.filter(r => r.status === 'Pendente');
+  const shown = all ? list : pending;
+  return (
+    <div className="space-y-6">
+      <Toolbar title="Pedidos de alteração">
+        <button type="button" aria-pressed={all} onClick={() => setAll(!all)}
+          className={`px-3 py-1.5 rounded-full text-xs border transition-colors ${all ? 'bg-navy text-white border-navy' : 'bg-surface text-muted border-line hover:text-ink'}`}>
+          {all ? `Todos (${list.length})` : `Mostrar também os analisados (${list.length - pending.length})`}
+        </button>
+      </Toolbar>
+      <p className="text-sm text-muted -mt-2">
+        Pedidos feitos no portal ("Pedir alteração") por magistrados vinculados (outra área ou outro tipo de atuação) e por unidades atendidas (outras áreas ou mais magistrados).
+        Ao deferir o pedido de um magistrado, defina a área, o tipo, a vara e a data de início: a atuação anterior fica registrada até a véspera e um novo período começa na data.
+      </p>
+      {shown.length === 0 && <div className="card p-8 text-center text-sm text-muted">{all ? 'Nenhum pedido recebido.' : 'Nenhum pedido pendente.'}</div>}
+      {shown.map(r => {
+        const live = r.live as any;
+        return (
+          <div key={r.id} className="card p-5 space-y-3">
+            <div className="flex flex-wrap justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <strong className="text-navy">{r.protocol}</strong>
+                  <Badge tone="neutral">{r.kind === 'magistrado' ? 'Magistrado' : 'Unidade'}</Badge>
+                  <Badge tone={r.status === 'Deferido' ? 'ok' : r.status === 'Indeferido' ? 'danger' : 'warn'}>{r.status}</Badge>
+                </div>
+                <div className="font-medium mt-1">{r.name}</div>
+                <div className="text-xs text-muted">{r.editionTitle} · recebido em {formatDateTime(r.createdAt)}{r.ip ? ` · IP ${r.ip}` : ''}</div>
+              </div>
+              {r.status === 'Pendente' && !readOnly && (
+                <div className="flex gap-2 self-start">
+                  <button className="btn-primary btn-sm" disabled={!live} title={live ? '' : 'A designação ou a unidade não está mais vigente'} onClick={() => openDefer(r)}><Check className="w-4 h-4" /> Deferir</button>
+                  <button className="btn-secondary btn-sm" onClick={() => setD({ kind: 'reject', r, reason: '' })}><X className="w-4 h-4" /> Indeferir</button>
+                </div>
+              )}
+            </div>
+            <div className="grid sm:grid-cols-2 gap-3 text-sm">
+              <div className="rounded-md bg-paper border border-line px-3 py-2">
+                <div className="text-[11px] uppercase tracking-wider text-muted mb-1">Como está</div>
+                {r.kind === 'magistrado'
+                  ? <>{r.current.unit}<div className="text-xs text-muted">Área: {r.current.area} · Tipo: {work(r.current.workType)}</div></>
+                  : <>{r.current.unit}<div className="text-xs text-muted">Áreas: {r.current.areas?.join(', ') || '—'} · {r.current.slots} magistrado(s)</div></>}
+              </div>
+              <div className="rounded-md bg-bronze-soft/50 border border-line px-3 py-2">
+                <div className="text-[11px] uppercase tracking-wider text-muted mb-1">O que foi pedido</div>
+                {r.summary}
+              </div>
+            </div>
+            <div className="text-sm"><span className="text-muted">Justificativa:</span> <span className="whitespace-pre-wrap">{r.justification}</span></div>
+            {r.notes && <div className="text-sm"><span className="text-muted">Observações:</span> <span className="whitespace-pre-wrap">{r.notes}</span></div>}
+            {r.status === 'Pendente' && !live && <Notice tone="danger">A designação ou a unidade deste pedido não está mais vigente. Indefira informando o motivo.</Notice>}
+            {r.status !== 'Pendente' && (
+              <div className={`text-sm rounded-md px-3 py-2 ${r.status === 'Deferido' ? 'bg-ok-soft text-ok' : 'bg-danger-soft text-danger'}`}>
+                {r.status} em {r.decidedAt ? formatDateTime(r.decidedAt) : '—'}{r.decidedBy ? ` por ${r.decidedBy}` : ''}.
+                {r.outcome && <> Aplicado: {r.outcome}.</>}{r.decisionReason && <> {r.status === 'Indeferido' ? 'Motivo' : 'Observação'}: {r.decisionReason}</>}
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {d && (
+        <Modal title={d.kind === 'reject' ? `Indeferir pedido ${d.r.protocol}` : `Deferir pedido ${d.r.protocol}`} onClose={() => setD(null)}>
+          <form onSubmit={submit} className="space-y-4">
+            <p className="text-sm text-muted"><strong className="text-ink">{d.r.name}</strong> · pedido: {d.r.summary}</p>
+            {d.kind === 'mag' && (() => {
+              const live = d.r.live as { unitId: string; unit: string } | null;
+              const comarcas = d.r.isInitial ? COMARCAS : [...new Set(d.units.map(u => u.comarca))].sort((x, y) => x.localeCompare(y, 'pt-BR'));
+              const existing = d.units.filter(u => u.comarca === d.comarca);
+              const have = new Set(existing.map(u => u.catalogId).filter(Boolean));
+              const fromCatalog = d.r.isInitial && d.comarca ? unitsOfComarca(d.comarca).filter(c => !have.has(c.id)) : [];
+              return <>
+                <div className="grid sm:grid-cols-2 gap-4">
+                  <Field label="Área de atuação">
+                    <select className="input" required value={d.area} onChange={e => setD({ ...d, area: e.target.value })}>
+                      {d.area && !PREFERENCE_AREAS.includes(d.area) && <option value={d.area}>{d.area}</option>}
+                      {PREFERENCE_AREAS.map(a => <option key={a} value={a}>{a}</option>)}
+                    </select>
+                  </Field>
+                  <Field label="Tipo de atuação">
+                    <select className="input" value={d.workType} onChange={e => setD({ ...d, workType: e.target.value })}>
+                      {WORK_TYPES.map(w => <option key={w} value={w}>{work(w)}</option>)}
+                    </select>
+                  </Field>
+                </div>
+                <p className="text-xs text-muted">Vara atual: <strong className="text-ink">{live?.unit ?? '—'}</strong>. Para manter, deixe a comarca em branco.</p>
+                <div className="grid sm:grid-cols-2 gap-4">
+                  <Field label="Nova comarca">
+                    <select className="input" value={d.comarca} onChange={e => setD({ ...d, comarca: e.target.value, unit: '' })} disabled={!!d.newName.trim()}>
+                      <option value="">Manter a vara atual</option>
+                      {comarcas.map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </Field>
+                  <Field label="Nova vara">
+                    <select className="input" value={d.unit} onChange={e => setD({ ...d, unit: e.target.value })} disabled={!d.comarca || !!d.newName.trim()}>
+                      <option value="">{d.comarca ? 'Manter a vara atual' : 'Escolha a comarca primeiro'}</option>
+                      {existing.filter(u => u.id !== live?.unitId).map(u => <option key={u.id} value={u.id}>{u.unitName}</option>)}
+                      {fromCatalog.map(c => <option key={c.id} value={`cat:${c.id}`}>{c.unitName}</option>)}
+                    </select>
+                  </Field>
+                </div>
+                {d.r.isInitial && (
+                  <Field label="Ou digite o nome da nova vara (se ainda não estiver na lista)">
+                    <input className="input" maxLength={300} value={d.newName} onChange={e => setD({ ...d, newName: e.target.value })} placeholder="Ex.: 2ª Vara Cível de Londrina" />
+                  </Field>
+                )}
+                <div className="grid sm:grid-cols-2 gap-4">
+                  <Field label="A partir de"><input className="input" type="date" required value={d.date} onChange={e => setD({ ...d, date: e.target.value })} /></Field>
+                  <Field label="Processo SEI (opcional)"><input className="input" maxLength={100} value={d.sei} onChange={e => setD({ ...d, sei: e.target.value })} /></Field>
+                </div>
+              </>;
+            })()}
+            {d.kind === 'unit' && <>
+              <fieldset>
+                <legend className="text-xs font-medium text-muted mb-2">Áreas da unidade</legend>
+                <div className="grid sm:grid-cols-2 gap-2">
+                  {[...PREFERENCE_AREAS, ...d.areas.filter(a => !PREFERENCE_AREAS.includes(a))].map(a => (
+                    <label key={a} className="flex items-center gap-2 text-sm">
+                      <input type="checkbox" checked={d.areas.includes(a)} onChange={e => setD({ ...d, areas: e.target.checked ? [...d.areas, a] : d.areas.filter(x => x !== a) })} /> {a}
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+              <Field label={`Número de magistrados da unidade (hoje: ${(d.r.live as any)?.slots ?? '—'}; vinculados: ${(d.r.live as any)?.linked ?? '—'})`}>
+                <input className="input max-w-[8rem]" type="number" min={1} max={50} required value={d.slots} onChange={e => setD({ ...d, slots: Number(e.target.value) || 1 })} />
+              </Field>
+            </>}
+            <Field label={d.kind === 'reject' ? 'Motivo do indeferimento (aparece para quem pediu)' : 'Observação (opcional; aparece para quem pediu)'}>
+              <textarea className="input" rows={3} required={d.kind === 'reject'} maxLength={2000} value={d.reason} onChange={e => setD({ ...d, reason: e.target.value })} />
+            </Field>
+            <div className="flex justify-end gap-2">
+              <button type="button" className="btn-ghost" onClick={() => setD(null)}>Cancelar</button>
+              <button className={d.kind === 'reject' ? 'btn-danger px-4' : 'btn-primary'} disabled={d.kind === 'unit' && d.areas.length === 0}>{d.kind === 'reject' ? 'Indeferir' : 'Deferir e aplicar'}</button>
+            </div>
+          </form>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 function PanelAdmin({ run, confirm, onChanged }: {
   run: RunFn; confirm: (m: string, label?: string) => Promise<boolean>; onChanged: () => void;
 }) {
@@ -691,6 +875,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
   const [moveComarca, setMoveComarca] = useState('');
   const [moveNewName, setMoveNewName] = useState('');
   const [moveArea, setMoveArea] = useState('');
+  const [moveWork, setMoveWork] = useState('');
   const [moveSei, setMoveSei] = useState('');
   const [moveDate, setMoveDate] = useState('');
   const [sei, setSei] = useState('');
@@ -738,7 +923,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
     const list = await run(() => api<Unit[]>(`/units?edition=${encodeURIComponent(r.editionId)}`));
     if (!list) return;
     setMoving({ row: r, units: list.filter(u => u.selection === 'Escolhida' && u.id !== r.unitId).sort((a, b) => a.unitName.localeCompare(b.unitName, 'pt-BR')) });
-    setMoveUnit(''); setMoveComarca(''); setMoveNewName(''); setMoveArea(r.area); setMoveSei(''); setMoveDate(today());
+    setMoveUnit(''); setMoveComarca(''); setMoveNewName(''); setMoveArea(r.area); setMoveWork(r.workType ?? ''); setMoveSei(''); setMoveDate(today());
   };
   const submitMove = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -748,6 +933,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
     const cat = moveUnit.startsWith('cat:') ? catalogById(moveUnit.slice(4)) : undefined;
     if (moveNewName.trim()) body.newUnitName = moveNewName.trim(); else if (cat) body.newUnitName = fullUnitName(cat); else if (moveUnit) body.unitId = moveUnit;
     if (moveArea.trim() && moveArea.trim() !== moving.row.area.trim()) body.assignedArea = moveArea.trim();
+    if (moveWork && moveWork !== moving.row.workType) body.workType = moveWork;
     const r = await run(() => api(`/matches/${moving.row.id}`, { method: 'PUT', json: body }), 'Vinculação alterada.');
     if (r) { setMoving(null); await load(); onChanged(); }
   };
@@ -792,7 +978,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
       </Toolbar>
       <p className="text-sm text-muted -mt-2">
         Relação total das vinculações vigentes de <strong className="text-ink">todas as edições</strong>, de uso restrito da administração. As designações de edições anteriores continuam valendo até que seja registrada a desistência.
-        Ao desfazer uma vinculação, a linha sai daqui automaticamente. Para trocar a vara e/ou a área de atuação de alguém, use "Alterar vara/área" (informa a partir de quando atua na nova unidade; a anterior fica registrada até o dia anterior).
+        Ao desfazer uma vinculação, a linha sai daqui automaticamente. Para trocar a vara, a área ou o tipo de atuação de alguém, use "Alterar vara/área/tipo" (informa a partir de quando atua na nova unidade; a anterior fica registrada até o dia anterior).
       </p>
 
       <div className="card overflow-hidden">
@@ -854,7 +1040,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
             { id: 'postit', label: 'Observações', optional: true, sort: r => r.postit ?? '', filter: r => (r.postit ? 'Com observação' : 'Sem observação'), render: r => <PostIt key={`${r.id}:${r.postit ?? ''}`} row={r} run={run} onSaved={load} /> },
             { id: 'actions', label: '', align: 'right', render: r => (
               <div className="flex flex-wrap justify-end gap-1">
-                <button className="btn-secondary btn-sm" onClick={() => openMove(r)}>Alterar vara/área</button>
+                <button className="btn-secondary btn-sm" onClick={() => openMove(r)}>Alterar vara/área/tipo</button>
                 <button className="btn-secondary btn-sm" onClick={() => setExcludingRow(r)}>Excluir</button>
                 <button className="btn-secondary btn-sm" onClick={() => { setDropping(r); setSei(''); setRequestDate(today()); }}>Desistência</button>
                 <button className="btn-danger" title="Desfazer vinculação" aria-label="Desfazer vinculação" onClick={() => removeRow(r)}><Trash2 className="w-4 h-4" /></button>
@@ -869,8 +1055,8 @@ function PanelAdmin({ run, confirm, onChanged }: {
           <div className="p-4 border-b border-line"><h4 className="font-semibold text-navy">Alterações de vinculação <span className="text-muted font-normal">({data.transfers.length})</span></h4></div>
           <SmartTable bare picker={false} id="alteracoes" rows={data.transfers} rowKey={t => t.id} empty="" defaultSort={{ key: 'date', dir: 'desc' }} cols={[
             { id: 'name', label: 'Magistrado(a)', sort: t => t.name, tdClass: 'font-medium', render: t => t.name },
-            { id: 'from', label: 'Vinculação anterior', sort: t => t.fromUnit, render: t => { const d = new Date(`${t.effectiveDate}T00:00:00Z`); d.setUTCDate(d.getUTCDate() - 1); return <>{t.fromUnit}<div className="text-xs text-muted">{t.area} · até {d.toISOString().slice(0, 10).split('-').reverse().join('/')}</div></>; } },
-            { id: 'to', label: 'Nova vinculação', sort: t => t.toUnit, render: t => <>{t.toUnit}<div className="text-xs text-bronze">{t.toArea || t.area}{t.toArea && t.toArea.trim() !== t.area.trim() ? ' (alterada)' : ''} · a partir de {t.effectiveDate.split('-').reverse().join('/')}</div>{t.sei && <div className="text-xs text-muted font-mono">SEI {t.sei}</div>}</> },
+            { id: 'from', label: 'Vinculação anterior', sort: t => t.fromUnit, render: t => { const d = new Date(`${t.effectiveDate}T00:00:00Z`); d.setUTCDate(d.getUTCDate() - 1); return <>{t.fromUnit}<div className="text-xs text-muted">{t.area} · {t.fromWorkType === 'Audiência' ? 'Audiências' : t.fromWorkType} · até {d.toISOString().slice(0, 10).split('-').reverse().join('/')}</div></>; } },
+            { id: 'to', label: 'Nova vinculação', sort: t => t.toUnit, render: t => <>{t.toUnit}<div className="text-xs text-bronze">{t.toArea || t.area}{t.toArea && t.toArea.trim() !== t.area.trim() ? ' (alterada)' : ''} · {t.toWorkType === 'Audiência' ? 'Audiências' : t.toWorkType}{t.toWorkType !== t.fromWorkType ? ' (alterado)' : ''} · a partir de {t.effectiveDate.split('-').reverse().join('/')}</div>{t.sei && <div className="text-xs text-muted font-mono">SEI {t.sei}</div>}</> },
             { id: 'date', label: 'Vigência', sort: t => t.effectiveDate, tdClass: 'text-xs text-muted whitespace-nowrap', render: t => t.effectiveDate.split('-').reverse().join('/') },
           ]} />
         </div>
@@ -960,9 +1146,9 @@ function PanelAdmin({ run, confirm, onChanged }: {
       </details>
 
       {moving && (
-        <Modal title="Alterar vara e/ou área de atuação" onClose={() => setMoving(null)}>
+        <Modal title="Alterar vara, área ou tipo de atuação" onClose={() => setMoving(null)}>
           <form onSubmit={submitMove} className="space-y-4">
-            <p className="text-sm text-muted"><strong className="text-ink">{moving.row.name}</strong> atua hoje em <strong className="text-ink">{moving.row.unit}</strong> (área: <strong className="text-ink">{moving.row.area}</strong>). Altere a vara, a área ou ambas. A vinculação anterior ficará registrada como válida até o dia anterior à data informada.</p>
+            <p className="text-sm text-muted"><strong className="text-ink">{moving.row.name}</strong> atua hoje em <strong className="text-ink">{moving.row.unit}</strong> (área: <strong className="text-ink">{moving.row.area}</strong>; tipo: <strong className="text-ink">{moving.row.workType === 'Audiência' ? 'Audiências' : moving.row.workType || '—'}</strong>). Altere a vara, a área e/ou o tipo. A vinculação anterior ficará registrada como válida até o dia anterior à data informada.</p>
             {(() => {
               const initial = moving.row.editionId === data.initialEdition.id;
               const comarcas = initial ? COMARCAS : [...new Set(moving.units.map(u => u.comarca))].sort((x, y) => x.localeCompare(y, 'pt-BR'));
@@ -998,6 +1184,12 @@ function PanelAdmin({ run, confirm, onChanged }: {
                 {PREFERENCE_AREAS.map(a => <option key={a} value={a}>{a}</option>)}
               </select>
             </Field>
+            <Field label="Tipo de atuação">
+              <select className="input" value={moveWork} onChange={e => setMoveWork(e.target.value)}>
+                {moveWork && !WORK_TYPES.includes(moveWork as WorkType) && <option value={moveWork}>{moveWork}</option>}
+                {WORK_TYPES.map(w => <option key={w} value={w}>{w === 'Audiência' ? 'Audiências' : w}</option>)}
+              </select>
+            </Field>
             <Field label="Processo SEI da alteração (opcional)">
               <input className="input" maxLength={100} value={moveSei} onChange={e => setMoveSei(e.target.value)} placeholder="0000000-00.2026.8.16.6000" />
             </Field>
@@ -1006,7 +1198,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
             </Field>
             <div className="flex justify-end gap-2">
               <button type="button" className="btn-ghost" onClick={() => setMoving(null)}>Cancelar</button>
-              <button className="btn-primary" disabled={(!moveUnit && !moveNewName.trim() && moveArea.trim() === moving.row.area.trim()) || !moveArea.trim() || !moveDate}>Registrar alteração</button>
+              <button className="btn-primary" disabled={(!moveUnit && !moveNewName.trim() && moveArea.trim() === moving.row.area.trim() && moveWork === (moving.row.workType ?? '')) || !moveArea.trim() || !moveDate}>Registrar alteração</button>
             </div>
           </form>
         </Modal>
@@ -1015,7 +1207,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
       {startEdit && (
         <Modal title="Data de início da atuação" onClose={() => setStartEdit(null)}>
           <form onSubmit={submitStart} className="space-y-4">
-            <p className="text-sm text-muted"><strong className="text-ink">{startEdit.row.name}</strong> em <strong className="text-ink">{fullUnitName({ unitName: startEdit.row.unit, comarca: startEdit.row.comarca, separator: startEdit.row.separator })}</strong>. Use para corrigir a data (ex.: substituto que começou depois). Para mudar de vara ou área, use "Alterar vara/área".</p>
+            <p className="text-sm text-muted"><strong className="text-ink">{startEdit.row.name}</strong> em <strong className="text-ink">{fullUnitName({ unitName: startEdit.row.unit, comarca: startEdit.row.comarca, separator: startEdit.row.separator })}</strong>. Use para corrigir a data (ex.: substituto que começou depois). Para mudar de vara, área ou tipo, use "Alterar vara/área/tipo".</p>
             <Field label="Atua desde (em branco = início da edição)">
               <input className="input" type="date" autoFocus value={startEdit.date} onChange={e => setStartEdit({ ...startEdit, date: e.target.value })} />
             </Field>
@@ -1685,6 +1877,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   useEffect(() => { if (!authed) api<{ users: boolean; shared: boolean }>('/admin/login-mode').then(setLoginMode).catch(() => {}); }, [authed]);
 
   const [sub, setSub] = useState<Sub>('overview');
+  const [pendingRequests, setPendingRequests] = useState(0);
   const [editions, setEditions] = useState<Edition[]>([]);
   const [selectedId, setSelectedId] = useState('');
   const [viewAll, setViewAll] = useState(false); // abas Magistrados/Unidades: todas as edições
@@ -1753,6 +1946,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
     ]));
     if (!r) return;
     api<Record<string, Presence>>('/panel/presence').then(setPresence).catch(() => setPresence({}));
+    api<ChangeRequest[]>('/requests').then(l => setPendingRequests(l.filter(x => x.status === 'Pendente').length)).catch(() => {});
     [setMagistrates, setUnits, setMatches, setWaiting, setLog].forEach((set, i) => (set as any)(r[i]));
   }, [selectedId, viewAll, run]);
 
@@ -2042,7 +2236,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
         {SUBS.filter(t => me?.role === 'admin' || (t.id !== 'users' && t.id !== 'backup')).map(t => (
           <button key={t.id} onClick={() => setSub(t.id)}
             className={`px-4 py-2.5 text-sm whitespace-nowrap border-b-2 -mb-px transition-colors ${sub === t.id ? 'border-navy text-navy font-medium' : 'border-transparent text-muted hover:text-ink'}`}>
-            {t.label}
+            {t.label}{t.id === 'requests' && pendingRequests > 0 && <span className="ml-1.5 inline-block min-w-5 px-1.5 rounded-full bg-warn text-white text-[11px] leading-5 text-center">{pendingRequests}</span>}
           </button>
         ))}
       </div>
@@ -2337,6 +2531,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       {sub === 'users' && me?.role === 'admin' && <UsersAdmin run={run} confirm={confirm} />}
       {sub === 'backup' && <BackupAdmin run={run} confirm={confirm} onRestored={refresh} />}
       {sub === 'panel' && <PanelAdmin run={run} confirm={confirm} onChanged={refresh} />}
+      {sub === 'requests' && <RequestsAdmin run={run} readOnly={me?.role === 'consulta'} onChanged={refresh} />}
 
       {/* ---------- Perguntas frequentes ---------- */}
       {sub === 'faq' && (
