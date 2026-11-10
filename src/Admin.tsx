@@ -2757,7 +2757,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
               {rejecting.kind === 'units' ? 'Unidade' : 'Inscrição de'} <strong className="text-ink">{rejecting.name}</strong>.
               {rejecting.linked && <span className="block mt-1 text-warn">{rejecting.kind === 'units' ? 'A unidade está vinculada a um magistrado: a vinculação será desfeita e ele voltará à lista de espera.' : 'O magistrado está vinculado a uma unidade: a vinculação será desfeita e a unidade voltará a ficar sem magistrado.'}</span>}
             </p>
-            <Field label="Motivo da rejeição (uso interno; o inscrito vê apenas o status)">
+            <Field label="Motivo da rejeição (aparece para o inscrito na consulta de status)">
               <textarea required autoFocus rows={4} className="input" value={rejectReason} onChange={e => setRejectReason(e.target.value)} placeholder={rejecting.kind === 'units' ? 'Ex.: Demanda não se enquadra nos critérios do mutirão.' : 'Ex.: Declaração de regularidade incompatível com os registros funcionais.'} />
             </Field>
             {rejecting.kind === 'units' && (

@@ -2844,6 +2844,8 @@ async function startServer() {
           acceptsHearings: mag.acceptsHearings,
           hearingPeriod: mag.hearingPeriod,
           status: mag.status,
+          // Motivo da rejeição é informado a quem se inscreveu (o da exclusão, não)
+          ...(mag.status === 'Rejeitado' && mag.rejectionReason ? { rejectionReason: mag.rejectionReason } : {}),
           createdAt: mag.createdAt,
           editionTitle: titleOf(mag.editionId),
           match: match
@@ -2861,6 +2863,7 @@ async function startServer() {
         hearingPeriod: u.hearingPeriod,
         status: u.status,
         selection: u.selection,
+        ...(u.selection === 'Rejeitada' && u.rejectionReason ? { rejectionReason: u.rejectionReason } : {}),
         createdAt: u.createdAt,
         editionTitle: titleOf(u.editionId),
         ...(linksElsewhere.has(u.id) ? { linksElsewhere: linksElsewhere.get(u.id) } : {}),

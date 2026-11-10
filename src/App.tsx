@@ -285,7 +285,7 @@ function AppInner() {
                             <div className="font-serif font-semibold text-navy">{m.name}</div>
                             <div className="text-xs text-muted">{m.editionTitle} · {m.currentLocation}</div>
                           </div>
-                          {m.status !== 'Lista de Espera' && <Badge tone={magistrateTone(m.status)}>{m.status}</Badge>}
+                          {m.status !== 'Lista de Espera' && <div className="shrink-0 self-start"><Badge tone={magistrateTone(m.status)}>{m.status}</Badge></div>}
                         </div>
                         {m.status === 'Lista de Espera' && (
                           <div className="bg-bronze-soft text-bronze text-sm rounded-md px-3 py-2.5">Aguardando consolidação das inscrições e vinculação a uma unidade.</div>
@@ -293,6 +293,9 @@ function AppInner() {
                         <div className="text-xs text-muted">
                           1ª: <span className="text-ink">{m.firstPreference}</span> · 2ª: <span className="text-ink">{m.secondPreference || '—'}</span> · Audiências: <span className="text-ink">{m.acceptsHearings ? `aceita${m.hearingPeriod ? ` (${hearingPeriodLabel(m.hearingPeriod).toLowerCase()})` : ''}` : 'não aceita'}</span>
                         </div>
+                        {m.status === 'Rejeitado' && m.rejectionReason && (
+                          <div className="bg-danger-soft text-danger text-sm rounded-md px-3 py-2.5 whitespace-pre-wrap"><strong>Motivo da rejeição:</strong> {m.rejectionReason}</div>
+                        )}
                         {m.match && (
                           <div className="bg-ok-soft text-ok text-sm rounded-md px-3 py-2.5">
                             <strong>Unidade atribuída:</strong> {m.match.unit?.unitName} ({m.match.unit?.comarca}) · {m.match.assignedArea} · <strong>{m.match.workType}</strong>
@@ -317,6 +320,9 @@ function AppInner() {
                           </Badge></div>
                         </div>
                         <div className="text-xs text-muted">Áreas: <span className="text-ink">{u.areas.join(', ')}</span> · Auxílio: <span className="text-ink">{u.supportNeeded}{u.hearingPeriod ? ` (audiências: ${hearingPeriodLabel(u.hearingPeriod).toLowerCase()})` : ''}</span></div>
+                        {u.selection === 'Rejeitada' && u.rejectionReason && (
+                          <div className="bg-danger-soft text-danger text-sm rounded-md px-3 py-2.5 whitespace-pre-wrap"><strong>Motivo da rejeição:</strong> {u.rejectionReason}</div>
+                        )}
                         {u.linksElsewhere && u.linksElsewhere.length > 0 && (
                           <div className="bg-ok-soft text-ok text-sm rounded-md px-3 py-2.5 space-y-1">
                             <div>O pedido desta edição foi rejeitado, mas a unidade mantém {u.linksElsewhere.length === 1 ? 'vinculação ativa' : 'vinculações ativas'} de outra edição:</div>
