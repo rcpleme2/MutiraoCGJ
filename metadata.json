@@ -2,5 +2,5 @@
   "name": "Sistema de Gestão de Mutirões de Julgamento",
   "description": "Plataforma integrada para inscrição de magistrados voluntários, unidades judiciais e gestão administrativa do mutirão de julgamento.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": []
 }
