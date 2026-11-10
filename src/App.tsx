@@ -14,8 +14,8 @@ const NAV: { id: Tab; label: string }[] = [
   { id: 'home', label: 'Início' },
   { id: 'magistrate', label: 'Inscrição de Magistrados' },
   { id: 'unit', label: 'Inscrição de Unidades' },
-  { id: 'status', label: 'Consultar Status' },
   { id: 'change', label: 'Pedir Alteração' },
+  { id: 'status', label: 'Consultar Status' },
 ];
 
 function PageCard({ icon: Icon, title, subtitle, children }: { icon: React.ElementType; title: string; subtitle: string; children: React.ReactNode }) {
@@ -132,7 +132,8 @@ function AppInner() {
   const open = regState === 'open';
   const regMessage = edition?.registration?.message || 'As inscrições não estão abertas no momento.';
   // A página só aparece no menu quando há perguntas publicadas
-  const nav = [...NAV, ...(faq.length ? [{ id: 'faq' as Tab, label: 'Perguntas Frequentes' }] : [])];
+  // "Consultar Status" fica sempre por último; as perguntas frequentes, quando houver, entram antes dele
+  const nav = [...NAV.filter(n => n.id !== 'status'), ...(faq.length ? [{ id: 'faq' as Tab, label: 'Perguntas Frequentes' }] : []), ...NAV.filter(n => n.id === 'status')];
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -196,8 +197,8 @@ function AppInner() {
               {[
                 { t: 'magistrate' as Tab, icon: UserCheck, title: 'Sou magistrado(a)', desc: 'Inscrever-me como voluntário(a).' },
                 { t: 'unit' as Tab, icon: Building2, title: 'Represento uma unidade', desc: 'Solicitar apoio do mutirão.' },
-                { t: 'status' as Tab, icon: Search, title: 'Consultar status', desc: 'Acompanhar uma inscrição.' },
                 { t: 'change' as Tab, icon: FilePenLine, title: 'Pedir alteração', desc: 'Já vinculado: outra área, tipo ou mais magistrados.' },
+                { t: 'status' as Tab, icon: Search, title: 'Consultar status', desc: 'Acompanhar uma inscrição.' },
               ].map(c => (
                 <button key={c.t} onClick={() => go(c.t)} className="card p-5 text-left hover:border-navy/40 transition-colors group">
                   <c.icon className="w-5 h-5 text-bronze mb-4" />

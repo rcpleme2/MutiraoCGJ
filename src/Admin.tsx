@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Lock, Unlock, Plus, Trash2, Check, Pencil, Download, Sparkles, LogOut, Radio, Archive, RotateCcw, ChevronDown, ChevronRight, X, ArrowUp, ArrowDown, ArrowUpDown, Filter, StickyNote } from 'lucide-react';
+import { Lock, Unlock, Plus, Trash2, Check, Pencil, Download, Sparkles, LogOut, Radio, Archive, RotateCcw, ChevronDown, ChevronRight, X, ArrowUp, ArrowDown, ArrowUpDown, Filter, StickyNote, Settings2 } from 'lucide-react';
 import { api, download, getToken, reloadCatalog, setToken } from './api';
 import { PREFERENCE_AREAS, ActingPeriod, ChangeRequest, Edition, FaqItem, LogEntry, Magistrate, Match, PanelRow, Transfer, Unit, Withdrawal, WorkType, WORK_TYPES, hearingPeriodLabel, periodsClash } from './types';
 import { CATALOG, COMARCAS, canonicalComarca, catalogById, fullUnitName, unitsOfComarca, type CatalogUnit } from './catalogo-tjpr';
@@ -1860,7 +1860,9 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const [keepSession, setKeepSession] = useState(() => readPref<{ on: boolean }>('mutirao-keep-session', { on: false }).on);
   const [loginEmail, setLoginEmail] = useState('');
   const [loginMode, setLoginMode] = useState<{ users: boolean; shared: boolean }>({ users: false, shared: true });
-  const [me, setMe] = useState<{ name: string; role: 'admin' | 'gestor' | 'consulta'; shared: boolean; users: boolean; sessionExpiresAt?: string; keep?: boolean; otherSessions?: number } | null>(null);
+  const [me, setMe] = useState<{ name: string; role: 'admin' | 'gestor' | 'consulta'; shared: boolean; users: boolean; sessionExpiresAt?: string; keep?: boolean; otherSessions?: number; hiddenTabs?: string[] } | null>(null);
+  const [tabsOpen, setTabsOpen] = useState(false);
+  const [tabsDraft, setTabsDraft] = useState<string[]>([]);
   const [myPw, setMyPw] = useState<null | { current: string; next: string }>(null);
   const [excluding, setExcluding] = useState<Magistrate | null>(null);
   const [backupWarn, setBackupWarn] = useState('');
@@ -1986,6 +1988,15 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const withEdition = (body: object) => ({ ...body, editionId: selectedId, source: 'admin' });
 
   /* ---------- Login ---------- */
+  // Abas que o perfil pode ver e, delas, as que o usuário escolheu esconder na própria tela
+  const allowedSubs = SUBS.filter(t => me?.role === 'admin' || (t.id !== 'users' && t.id !== 'backup'));
+  const hiddenTabs = (me?.hiddenTabs ?? []).filter(id => allowedSubs.some(t => t.id === id));
+  useEffect(() => {
+    if (!hiddenTabs.includes(sub)) return;
+    const first = allowedSubs.find(t => !hiddenTabs.includes(t.id));
+    if (first) setSub(first.id);
+  }, [me?.hiddenTabs, me?.role]);
+
   if (!authed) {
     return (
       <div className="card max-w-sm mx-auto p-8 mt-6">
@@ -2233,13 +2244,41 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       {readOnlyEdition && <Notice tone="danger">Esta edição está encerrada. Os dados continuam editáveis aqui, mas o portal público não aceita novas inscrições.</Notice>}
 
       <div className="flex flex-wrap gap-x-1 border-b border-line">
-        {SUBS.filter(t => me?.role === 'admin' || (t.id !== 'users' && t.id !== 'backup')).map(t => (
+        {allowedSubs.filter(t => !hiddenTabs.includes(t.id)).map(t => (
           <button key={t.id} onClick={() => setSub(t.id)}
             className={`px-4 py-2.5 text-sm whitespace-nowrap border-b-2 -mb-px transition-colors ${sub === t.id ? 'border-navy text-navy font-medium' : 'border-transparent text-muted hover:text-ink'}`}>
             {t.label}{t.id === 'requests' && pendingRequests > 0 && <span className="ml-1.5 inline-block min-w-5 px-1.5 rounded-full bg-warn text-white text-[11px] leading-5 text-center">{pendingRequests}</span>}
           </button>
         ))}
+        <button type="button" title="Escolher as abas que aparecem na sua tela" aria-label="Personalizar abas" onClick={() => { setTabsDraft(hiddenTabs); setTabsOpen(true); }}
+          className="ml-auto px-3 py-2.5 text-sm text-muted hover:text-ink flex items-center gap-1.5 whitespace-nowrap"><Settings2 className="w-4 h-4" /> Personalizar abas</button>
       </div>
+
+      {tabsOpen && (
+        <Modal title="Abas da sua tela" onClose={() => setTabsOpen(false)}>
+          <form className="space-y-4" onSubmit={async e => {
+            e.preventDefault();
+            const r = await run(() => api<{ hiddenTabs: string[] }>('/admin/me/tabs', { method: 'PUT', json: { hidden: tabsDraft } }), 'Abas atualizadas.');
+            if (r && me) { setMe({ ...me, hiddenTabs: r.hiddenTabs }); setTabsOpen(false); }
+          }}>
+            <p className="text-sm text-muted">Marque as abas que devem aparecer. A escolha vale só para você (em qualquer computador) e não muda o que o seu perfil pode acessar.</p>
+            <div className="grid sm:grid-cols-2 gap-2">
+              {allowedSubs.map(t => (
+                <label key={t.id} className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={!tabsDraft.includes(t.id)} onChange={e => setTabsDraft(e.target.checked ? tabsDraft.filter(x => x !== t.id) : [...tabsDraft, t.id])} /> {t.label}
+                </label>
+              ))}
+            </div>
+            <div className="flex justify-between gap-2">
+              <button type="button" className="btn-ghost" onClick={() => setTabsDraft([])}>Mostrar todas</button>
+              <div className="flex gap-2">
+                <button type="button" className="btn-ghost" onClick={() => setTabsOpen(false)}>Cancelar</button>
+                <button className="btn-primary" disabled={allowedSubs.every(t => tabsDraft.includes(t.id))}>Salvar</button>
+              </div>
+            </div>
+          </form>
+        </Modal>
+      )}
 
       {/* ---------- Painel ---------- */}
       {sub === 'overview' && selected && (
