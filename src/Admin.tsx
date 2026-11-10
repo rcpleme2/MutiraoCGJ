@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Lock, Unlock, Plus, Trash2, Check, Pencil, Download, Sparkles, LogOut, Radio, Archive, RotateCcw, ChevronDown, ChevronRight, X, ArrowUp, ArrowDown, ArrowUpDown, Filter, StickyNote, Settings2 } from 'lucide-react';
+import { Lock, Unlock, Plus, Trash2, Check, Pencil, Download, LogOut, Radio, Archive, RotateCcw, ChevronDown, ChevronRight, X, ArrowUp, ArrowDown, ArrowUpDown, Filter, StickyNote, Settings2 } from 'lucide-react';
 import { api, download, getToken, reloadCatalog, setToken } from './api';
 import { PREFERENCE_AREAS, ActingPeriod, ChangeRequest, Edition, FaqItem, LogEntry, Magistrate, Match, PanelRow, Transfer, Unit, Withdrawal, WorkType, WORK_TYPES, hearingPeriodLabel, periodsClash } from './types';
 import { CATALOG, COMARCAS, canonicalComarca, catalogById, fullUnitName, unitsOfComarca, type CatalogUnit } from './catalogo-tjpr';
 import { Badge, EmptyRow, Field, Modal, Notice, formatDate, formatDateTime, magistrateTone, useFeedback } from './ui';
 import { MagistrateForm, UnitForm } from './Forms';
 
-type Sub = 'overview' | 'editions' | 'magistrates' | 'units' | 'matches' | 'waiting' | 'panel' | 'requests' | 'faq' | 'log' | 'backup' | 'standardize' | 'catalog' | 'users';
+type Sub = 'overview' | 'editions' | 'magistrates' | 'units' | 'matches' | 'faq' | 'log' | 'backup' | 'standardize' | 'catalog' | 'users';
 
 const SUBS: { id: Sub; label: string }[] = [
   { id: 'overview', label: 'Painel' },
@@ -14,9 +14,6 @@ const SUBS: { id: Sub; label: string }[] = [
   { id: 'magistrates', label: 'Magistrados' },
   { id: 'units', label: 'Unidades' },
   { id: 'matches', label: 'Vinculações' },
-  { id: 'waiting', label: 'Lista de espera' },
-  { id: 'panel', label: 'Painel de vinculações' },
-  { id: 'requests', label: 'Pedidos de alteração' },
   { id: 'standardize', label: 'Padronizar nomes' },
   { id: 'catalog', label: 'Comarcas e unidades' },
   { id: 'faq', label: 'Perguntas frequentes' },
@@ -29,6 +26,9 @@ const toLocalInput = (iso: string) => iso.slice(0, 16);
 
 type SortDir = 'asc' | 'desc';
 
+
+/** Seções da aba Vinculações: designações vigentes e histórico, vincular unidades, lista de espera e pedidos de alteração */
+type LinkView = 'panel' | 'link' | 'waiting' | 'requests';
 
 /** Data e hora da inscrição em duas linhas (a hora com segundos ajuda a desempatar). */
 function DateCell({ iso }: { iso: string }) {
@@ -960,7 +960,7 @@ function PanelAdmin({ run, confirm, onChanged }: {
 
   return (
     <div className="space-y-6">
-      <Toolbar title="Painel de vinculações">
+      <Toolbar title="Vinculações vigentes e histórico">
         <button className="btn-secondary btn-sm" onClick={exportPdfByArea} title="Só as designações, um bloco por área (respeita o filtro de áreas escolhido)"><Download className="w-4 h-4" /> PDF por área de atuação</button>
         <button className="btn-secondary btn-sm" onClick={exportXlsx} title="Planilha das designações vigentes (respeita o filtro de áreas)"><Download className="w-4 h-4" /> Planilha (XLSX)</button>
         <button className="btn-secondary btn-sm" onClick={exportPdf}><Download className="w-4 h-4" /> Exportar relatório em PDF</button>
@@ -1869,6 +1869,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
 
   const [sub, setSub] = useState<Sub>('overview');
   const [pendingRequests, setPendingRequests] = useState(0);
+  const [linkView, setLinkView] = useState<LinkView>('panel');
   const [editions, setEditions] = useState<Edition[]>([]);
   // Filtro por janela de inscrição ('all' = todo o mutirão). Magistrados, unidades e vinculações ficam sempre completos na memória
   // (a vinculação pode unir janelas diferentes); o filtro só restringe o que é exibido.
@@ -1897,9 +1898,6 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const [deletingEdition, setDeletingEdition] = useState<Edition | null>(null);
   const [deleteText, setDeleteText] = useState('');
   const [linking, setLinking] = useState(false);
-  interface AiBalance { available: number; openSlots: number; balance: number; pendingUnits: number; suggestions: { unitId: string; unit: string; comarca: string; areas: string[]; slots: number; candidates: string[]; reason: string }[] }
-  const [ai, setAi] = useState<{ loading: boolean; open: boolean; items: any[]; balance: AiBalance | null; error: string; picked: number[] }>({ loading: false, open: false, items: [], balance: null, error: '', picked: [] });
-  const aiClosed = { loading: false, open: false, items: [] as any[], balance: null, error: '', picked: [] as number[] };
 
   const selected = editions.find(e => e.id === selectedId);
   const allScope = selectedId === 'all';
@@ -1946,7 +1944,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const refresh = useCallback(async () => { await loadEditions(); await loadScoped(); onEditionsChanged(); }, [loadEditions, loadScoped, onEditionsChanged]);
 
   useEffect(() => { if (authed) { loadEditions(); loadFaq(); api<typeof me>('/admin/me').then(setMe).catch(() => setMe(null)); } }, [authed]);
-  useEffect(() => { if (authed) { loadScoped(); setAi(aiClosed); } }, [authed, selectedId]);
+  useEffect(() => { if (authed) loadScoped(); }, [authed, selectedId]);
 
   const login = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -2054,24 +2052,6 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
     refresh();
   };
   const approve = async (id: string) => { await run(() => api(`/magistrates/${id}/approve`, { method: 'POST' }), 'Inscrição aprovada.'); refresh(); };
-  const askAi = async () => {
-    setAi({ ...aiClosed, loading: true });
-    const r = await run(() => api<{ recommendations: any[]; balance: AiBalance; aiError?: string }>(`/ai/match-recommendations?${q}`, { method: 'POST' }));
-    const items = r?.recommendations || [];
-    setAi({ loading: false, open: !!r, items, balance: r?.balance ?? null, error: r?.aiError ?? '', picked: items.map((_, i) => i) });
-  };
-  /** Vincula as sugestões marcadas na revisão (nada é vinculado antes disso) */
-  const applyAi = async () => {
-    const chosen = ai.items.filter((_, i) => ai.picked.includes(i));
-    if (!chosen.length) return;
-    if (!(await confirm(`Vincular as ${chosen.length} sugestão(ões) marcada(s)?`, 'Vincular'))) return;
-    let ok = 0;
-    for (const rec of chosen) {
-      if (await run(() => api('/matches', { method: 'POST', json: { magistrateId: rec.magistrateId, unitId: rec.unitId, assignedArea: rec.assignedArea, source: 'ai' } }))) ok++;
-    }
-    toast(`${ok} de ${chosen.length} vinculação(ões) efetivada(s).`);
-    setAi(aiClosed); refresh();
-  };
   const exportFile = (path: string, name: string) => run(() => download(path, name)).then(loadScoped);
 
   const saveFaq = async (v: { question: string; answer: string; published: boolean }) => {
@@ -2239,7 +2219,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
         {allowedSubs.filter(t => !hiddenTabs.includes(t.id)).map(t => (
           <button key={t.id} onClick={() => setSub(t.id)}
             className={`px-4 py-2.5 text-sm whitespace-nowrap border-b-2 -mb-px transition-colors ${sub === t.id ? 'border-navy text-navy font-medium' : 'border-transparent text-muted hover:text-ink'}`}>
-            {t.label}{t.id === 'requests' && pendingRequests > 0 && <span className="ml-1.5 inline-block min-w-5 px-1.5 rounded-full bg-warn text-white text-[11px] leading-5 text-center">{pendingRequests}</span>}
+            {t.label}{t.id === 'matches' && pendingRequests > 0 && <span className="ml-1.5 inline-block min-w-5 px-1.5 rounded-full bg-warn text-white text-[11px] leading-5 text-center">{pendingRequests}</span>}
           </button>
         ))}
         <button type="button" title="Escolher as abas que aparecem na sua tela" aria-label="Personalizar abas" onClick={() => { setTabsDraft(hiddenTabs); setTabsOpen(true); }}
@@ -2288,11 +2268,6 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             ))}
           </div>
           <div className="grid md:grid-cols-2 gap-4">
-            <div className="card p-5 space-y-3">
-              <h4 className="font-semibold text-navy">Sugestões por IA</h4>
-              <p className="text-sm text-muted">Mostra o resultado na tela para revisão antes de qualquer vinculação e, havendo saldo de magistrados, sugere quais unidades em análise atender. Dados de inscritos são enviados ao serviço de IA.</p>
-              <button className="btn-secondary btn-sm" onClick={askAi} disabled={ai.loading}><Sparkles className="w-4 h-4" /> {ai.loading ? 'Gerando…' : 'Gerar sugestões'}</button>
-            </div>
             <div className="card p-5 space-y-3">
               <h4 className="font-semibold text-navy">Exportação</h4>
               <p className="text-sm text-muted">Dados {allScope ? 'de todo o mutirão' : 'desta janela de inscrição'}, incluindo o registro de atividades.</p>
@@ -2487,7 +2462,21 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       )}
 
       {/* ---------- Vinculações ---------- */}
-      {sub === 'matches' && (() => {
+      {sub === 'matches' && (
+        <div className="flex flex-wrap gap-2" role="tablist" aria-label="Seções de vinculações">
+          {([
+            ['panel', 'Vigentes e histórico'],
+            ['link', `Vincular unidades (${units.filter(u => inScope(u) && u.selection === 'Escolhida' && !matches.some(m => m.unitId === u.id)).length} sem magistrado)`],
+            ['waiting', `Lista de espera (${waiting.length})`],
+            ['requests', `Pedidos de alteração${pendingRequests ? ` (${pendingRequests} pendente${pendingRequests > 1 ? 's' : ''})` : ''}`],
+          ] as [LinkView, string][]).map(([id, text]) => (
+            <button key={id} type="button" role="tab" aria-selected={linkView === id} onClick={() => setLinkView(id)}
+              className={`px-3.5 py-2 rounded-md text-sm border transition-colors ${linkView === id ? 'bg-navy text-white border-navy' : 'bg-surface text-muted border-line hover:text-ink'}`}>{text}</button>
+          ))}
+        </div>
+      )}
+
+      {sub === 'matches' && linkView === 'link' && (() => {
         const chosenUnits = units.filter(u => inScope(u) && u.selection === 'Escolhida');
         const linkedCount = chosenUnits.filter(u => matches.some(m => m.unitId === u.id)).length;
         const rows = chosenUnits.filter(u => {
@@ -2496,7 +2485,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
         });
         return (
           <div>
-            <Toolbar title="Vinculações">
+            <Toolbar title="Vincular unidades">
             {!allScope && matches.some(inScope) && (
               <button className="btn-secondary btn-sm !text-danger" onClick={() => startWipe('matches')}><Trash2 className="w-4 h-4" /> Excluir tudo da janela ({matches.filter(inScope).length})</button>
             )}
@@ -2535,7 +2524,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       })()}
 
       {/* ---------- Espera ---------- */}
-      {sub === 'waiting' && (
+      {sub === 'matches' && linkView === 'waiting' && (
         <div>
           <Toolbar title="Lista de espera" />
           <SmartTable id="espera" rows={waiting} rowKey={m => m.id} empty="Nenhum magistrado em espera." defaultSort={{ key: 'createdAt', dir: 'asc' }} cols={[
@@ -2550,13 +2539,12 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
         </div>
       )}
 
-      {/* ---------- Painel público ---------- */}
       {sub === 'standardize' && <StandardizeAdmin run={run} confirm={confirm} onChanged={refresh} />}
       {sub === 'catalog' && <CatalogAdmin run={run} confirm={confirm} readOnly={me?.role === 'consulta'} onChanged={refresh} />}
       {sub === 'users' && me?.role === 'admin' && <UsersAdmin run={run} confirm={confirm} />}
       {sub === 'backup' && <BackupAdmin run={run} confirm={confirm} onRestored={refresh} />}
-      {sub === 'panel' && <PanelAdmin run={run} confirm={confirm} onChanged={refresh} />}
-      {sub === 'requests' && <RequestsAdmin run={run} readOnly={me?.role === 'consulta'} onChanged={refresh} />}
+      {sub === 'matches' && linkView === 'panel' && <PanelAdmin run={run} confirm={confirm} onChanged={refresh} />}
+      {sub === 'matches' && linkView === 'requests' && <RequestsAdmin run={run} readOnly={me?.role === 'consulta'} onChanged={refresh} />}
 
       {/* ---------- Perguntas frequentes ---------- */}
       {sub === 'faq' && (
@@ -2671,69 +2659,6 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
               <button className="btn-primary !bg-danger" disabled={deleteText.trim() !== 'EXCLUIR'}>Excluir janela</button>
             </div>
           </form>
-        </Modal>
-      )}
-      {ai.open && (
-        <Modal wide title="Sugestões para revisão" onClose={() => setAi(aiClosed)}>
-          <div className="space-y-6 max-h-[70vh] overflow-y-auto pr-2">
-            <p className="text-sm text-muted">Nada foi vinculado ainda. Revise as sugestões abaixo e confirme apenas o que fizer sentido.</p>
-            {ai.error && <Notice tone="danger">{ai.error}</Notice>}
-            <section>
-              <h4 className="font-semibold text-navy mb-2">Alocações sugeridas <span className="text-muted font-normal">({ai.items.length})</span></h4>
-              {ai.items.length === 0 ? <p className="text-sm text-muted">Nenhuma alocação sugerida para os magistrados disponíveis e as unidades escolhidas com vaga.</p> : (
-                <>
-                  <div className="divide-y divide-line border border-line rounded-md">
-                    {ai.items.map((rec, i) => {
-                      const mag = magistrates.find(m => m.id === rec.magistrateId);
-                      const unit = units.find(u => u.id === rec.unitId);
-                      return (
-                        <label key={i} className="flex items-start gap-3 p-3 cursor-pointer">
-                          <input type="checkbox" className="mt-1" checked={ai.picked.includes(i)} onChange={() => setAi(a => ({ ...a, picked: a.picked.includes(i) ? a.picked.filter(x => x !== i) : [...a.picked, i] }))} />
-                          <span className="text-sm min-w-0">
-                            <span className="font-medium block">{mag?.name || 'Magistrado'} → {unit ? unitLabel(unit) : 'Unidade'}</span>
-                            <span className="block text-xs text-bronze">{rec.assignedArea}</span>
-                            <span className="block text-xs text-muted mt-1">{rec.justification}</span>
-                          </span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                  <div className="flex justify-end mt-3">
-                    <button className="btn-primary btn-sm" disabled={!ai.picked.length} onClick={applyAi}><Check className="w-4 h-4" /> Vincular {ai.picked.length} selecionada(s)</button>
-                  </div>
-                </>
-              )}
-            </section>
-            <section>
-              <h4 className="font-semibold text-navy mb-1">Unidades em análise a atender</h4>
-              {ai.balance && (
-                <p className="text-xs text-muted mb-2">
-                  {ai.balance.available} magistrado(s) disponível(is) · {ai.balance.openSlots} vaga(s) aberta(s) nas unidades escolhidas · saldo de <strong className="text-ink">{ai.balance.balance}</strong> · {ai.balance.pendingUnits} unidade(s) em análise
-                </p>
-              )}
-              {!ai.balance || ai.balance.suggestions.length === 0 ? (
-                <p className="text-sm text-muted">{ai.balance && ai.balance.balance > 0 ? 'Não há unidades em análise para atender.' : 'Sem saldo de magistrados: as vagas abertas nas unidades já escolhidas absorvem os magistrados disponíveis.'}</p>
-              ) : (
-                <div className="divide-y divide-line border border-line rounded-md">
-                  {ai.balance.suggestions.map(sg => (
-                    <div key={sg.unitId} className="p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                      <div className="text-sm min-w-0">
-                        <div className="font-medium">{sg.unit}</div>
-                        <div className="text-xs text-bronze">{sg.areas.join(' · ')} · {sg.slots} vaga(s)</div>
-                        <p className="text-xs text-muted mt-1">{sg.reason}</p>
-                        {sg.candidates.length > 0 && <p className="text-xs text-muted">Candidatos: {sg.candidates.join(', ')}</p>}
-                      </div>
-                      <button className="btn-secondary btn-sm shrink-0" onClick={async () => {
-                        if (await run(() => api(`/units/${sg.unitId}/choose`, { method: 'POST' }), 'Unidade escolhida para o mutirão.')) {
-                          setAi(a => ({ ...a, balance: a.balance && { ...a.balance, suggestions: a.balance.suggestions.filter(x => x.unitId !== sg.unitId) } })); refresh();
-                        }
-                      }}>Escolher unidade</button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </section>
-          </div>
         </Modal>
       )}
       {modal === 'reject' && rejecting && (

@@ -1,7 +1,6 @@
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { GoogleGenAI } from '@google/genai';
 import XLSX from 'xlsx';
 import crypto from 'crypto';
 import fs from 'fs';
@@ -14,14 +13,6 @@ import { catalogById, canonicalComarca, fullUnitName, CATALOG_SEPARATOR, CATALOG
 import { comarcaInText, resolveCatalog, suggestCatalog, tokens as nameTokens } from './src/catalogo-match';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-// Initialize Gemini SDK if API key is present
-const ai = process.env.GEMINI_API_KEY
-  ? new GoogleGenAI({
-      apiKey: process.env.GEMINI_API_KEY,
-      httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
-    })
-  : null;
 
 type MagistrateStatus = 'Aguardando Conferência' | 'Aprovado' | 'Lista de Espera' | 'Atribuído' | 'Rejeitado' | 'Desistente' | 'Excluído';
 
@@ -167,7 +158,7 @@ interface LogEntry {
   by?: string;
 }
 
-// Senha administrativa: defina ADMIN_PASSWORD nos Secrets do AI Studio.
+// Senha administrativa: defina ADMIN_PASSWORD (em produção, pelo Secret Manager).
 // Sem ela, uma senha aleatória é gerada e exibida no console do servidor a cada inicialização.
 let adminPassword = process.env.ADMIN_PASSWORD || '';
 if (!adminPassword) {
@@ -288,7 +279,7 @@ setInterval(() => {
   for (const [k, list] of hits) if (!list.some((t) => now - t < 60 * 60_000)) hits.delete(k);
 }, 10 * 60_000).unref();
 
-// Persistência em arquivo (o container do AI Studio pode reiniciar)
+// Persistência em arquivo (desenvolvimento local)
 const DATA_FILE = path.join(process.cwd(), 'data', 'state.json');
 
 let editions: Edition[] = [
@@ -3249,7 +3240,7 @@ async function startServer() {
   };
 
   app.post('/api/matches', (req, res) => {
-    const { magistrateId, unitId, assignedArea, workType, source } = req.body;
+    const { magistrateId, unitId, assignedArea, workType } = req.body;
     if (!magistrateId || !unitId || !assignedArea) {
       return res.status(400).json({ error: 'Magistrado, Unidade e Área são obrigatórios para a vinculação.' });
     }
@@ -3302,8 +3293,7 @@ async function startServer() {
     matches.unshift(newMatch);
     refreshUnitStatus(unit.id);
 
-    log(mag.editionId, source === 'ai' ? 'Sistema' : 'Administração', 'Vinculação',
-      `Vinculação ${source === 'ai' ? 'sugerida por IA e efetivada' : 'manual'}: ${describeMatch(newMatch)}.`);
+    log(mag.editionId, 'Administração', 'Vinculação', `Vinculação manual: ${describeMatch(newMatch)}.`);
     res.status(201).json({ success: true, match: newMatch });
   });
 
@@ -3572,120 +3562,13 @@ async function startServer() {
     res.json(magistrates.filter((m) => scope.has(m) && m.status !== 'Atribuído' && m.status !== 'Rejeitado' && m.status !== 'Desistente' && m.status !== 'Excluído' && !assigned.has(m.id)));
   });
 
-  // ---------- Sugestões (IA) ----------
-  const isAvailableMag = (m: Magistrate, assigned: Set<string>) =>
-    !['Aguardando Conferência', 'Atribuído', 'Rejeitado', 'Desistente', 'Excluído'].includes(m.status) && !assigned.has(m.id);
-
+  // ---------- Comarca (regra de vinculação) ----------
   /** A designação precisa ser para fora da comarca em que o magistrado atua */
   const sameComarcaAs = (m: Magistrate, u: Unit) => {
     const mc = normName(m.locationComarca || '');
     if (mc) return mc === normName(u.comarca);
     return !!u.comarca && normName(m.currentLocation).includes(normName(u.comarca)); // lotação digitada sem comarca da lista
   };
-
-  /** Com saldo de magistrados (disponíveis > vagas abertas nas unidades escolhidas), indica quais unidades "Em análise" atender, priorizando
-   *  a afinidade com as áreas dos magistrados disponíveis e, em seguida, a data da inscrição. Não altera nada: a administração decide. */
-  function unitSuggestions(scope: Scope) {
-    // Magistrados disponíveis e vagas de todo o mutirão; o escopo só restringe quais pedidos "Em análise" são sugeridos
-    const assigned = new Set(matches.map((m) => m.magistrateId));
-    const avail = magistrates.filter((m) => isAvailableMag(m, assigned));
-    const chosen = units.filter((u) => u.selection === 'Escolhida');
-    const openSlots = chosen.reduce((n, u) => n + Math.max(0, (u.slots || 1) - linkedCount(u.id)), 0);
-    const balance = avail.length - openSlots;
-    const pending = units.filter((u) => scope.has(u) && u.selection === 'Em análise');
-    const suggestions: { unitId: string; unit: string; comarca: string; areas: string[]; slots: number; candidates: string[]; reason: string }[] = [];
-    let left = balance;
-    if (balance > 0) {
-      const scored = pending.map((u) => {
-        const cands = avail.filter((m) => !sameComarcaAs(m, u)).filter((m) => u.areas.includes(m.firstPreference) || (!!m.secondPreference && u.areas.includes(m.secondPreference)));
-        return { u, cands };
-      }).sort((x, y) => y.cands.length - x.cands.length || x.u.createdAt.localeCompare(y.u.createdAt));
-      for (const { u, cands } of scored) {
-        if (left <= 0) break;
-        const slots = Math.max(1, u.slots || 1);
-        suggestions.push({
-          unitId: u.id, unit: fullUnitName(u), comarca: u.comarca, areas: u.areas, slots,
-          candidates: cands.slice(0, 5).map((m) => m.name),
-          reason: cands.length
-            ? `${cands.length} magistrado(s) disponível(is) com preferência por ${u.areas.join(' / ')}; inscrita em ${new Date(u.createdAt).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}.`
-            : `Sem magistrado com preferência pelas áreas da unidade (${u.areas.join(' / ')}), mas há saldo de magistrados; inscrita em ${new Date(u.createdAt).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}.`,
-        });
-        left -= slots;
-      }
-    }
-    return { available: avail.length, openSlots, balance, pendingUnits: pending.length, suggestions };
-  }
-
-  app.get('/api/matches/unit-suggestions', (req, res) => {
-    const scope = scopeOf(req);
-    if (!scope) return res.status(404).json({ error: 'Janela de inscrição não encontrada.' });
-    res.json(unitSuggestions(scope));
-  });
-
-  // Mostra as sugestões na tela para revisão; nada é vinculado aqui (a vinculação é feita pela administração em POST /api/matches).
-  app.post('/api/ai/match-recommendations', async (req, res) => {
-    const scope = scopeOf(req);
-    if (!scope) return res.status(404).json({ error: 'Janela de inscrição não encontrada.' });
-    const balance = unitSuggestions(scope);
-    if (!ai) {
-      return res.json({ success: true, recommendations: [], balance, aiError: 'Chave da API Gemini não configurada: sugestões de alocação por IA indisponíveis.' });
-    }
-
-    try {
-      const assigned = new Set(matches.map((m) => m.magistrateId));
-      const unassignedMags = magistrates.filter((m) => isAvailableMag(m, assigned));
-      const pendingUnits = units.filter((u) => u.selection === 'Escolhida' && linkedCount(u.id) < (u.slots || 1));
-
-      const prompt = `
-        Você é o assistente de inteligência artificial de coordenação de um Mutirão de Julgamento do Tribunal de Justiça.
-        Analise os magistrados voluntários aprovados e não alocados e as unidades judiciais pendentes abaixo e sugira as melhores alocações estratégicas.
-        REGRA OBRIGATÓRIA: a designação deve ser, necessariamente, para unidade FORA da comarca em que o magistrado atua (compare "locationComarca"/"currentLocation" do magistrado com a "comarca" da unidade). Jamais sugira um magistrado para unidade da sua própria comarca.
-        Cada magistrado só pode aparecer uma vez; cada unidade só pode receber tantos magistrados quanto o número de vagas ("slots") menos os já vinculados.
-        "assignedArea" deve ser uma das áreas da unidade, de preferência a 1ª ou a 2ª preferência do magistrado.
-
-        Magistrados Disponíveis:
-        ${JSON.stringify(unassignedMags.map((m) => ({ id: m.id, name: m.name, currentLocation: m.currentLocation, locationComarca: m.locationComarca, firstPreference: m.firstPreference, secondPreference: m.secondPreference, acceptsHearings: m.acceptsHearings, hearingPeriod: m.hearingPeriod })), null, 2)}
-
-        Unidades Judiciais Pendentes:
-        ${JSON.stringify(pendingUnits.map((u) => ({ id: u.id, unitName: u.unitName, comarca: u.comarca, areas: u.areas, supportNeeded: u.supportNeeded, hearingPeriod: u.hearingPeriod, slots: u.slots, alreadyLinked: linkedCount(u.id), description: u.description })), null, 2)}
-
-        Responda em JSON contendo um array de recomendações com a estrutura:
-        [
-          {
-            "magistrateId": "...",
-            "unitId": "...",
-            "assignedArea": "...",
-            "justification": "..."
-          }
-        ]
-      `;
-
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: prompt,
-        config: { responseMimeType: 'application/json' },
-      });
-
-      const raw = JSON.parse(response.text || '[]');
-      // Descarta o que a IA inventou ou que não cabe (magistrado/unidade inexistente, repetido, sem vaga ou área estranha à unidade)
-      const used = new Set<string>(); const taken = new Map<string, number>();
-      const result = (Array.isArray(raw) ? raw : []).filter((r: any) => {
-        const mag = unassignedMags.find((m) => m.id === r?.magistrateId);
-        const un = pendingUnits.find((u) => u.id === r?.unitId);
-        if (!mag || !un || used.has(mag.id) || sameComarcaAs(mag, un)) return false; // nunca na comarca de atuação do magistrado
-        if (linkedCount(un.id) + (taken.get(un.id) ?? 0) >= (un.slots || 1)) return false;
-        if (typeof r.assignedArea !== 'string' || !un.areas.includes(r.assignedArea)) r.assignedArea = [mag.firstPreference, mag.secondPreference].find((a) => un.areas.includes(a)) ?? un.areas[0];
-        r.justification = typeof r.justification === 'string' ? r.justification.slice(0, 600) : '';
-        used.add(mag.id); taken.set(un.id, (taken.get(un.id) ?? 0) + 1);
-        return true;
-      });
-      log(scope.edition?.id ?? null, 'Sistema', 'Vinculação', `Sugestões de IA geradas (${result.length}); ${balance.suggestions.length} unidade(s) em análise sugerida(s) por saldo de magistrados. Nada foi vinculado.`);
-      res.json({ success: true, recommendations: result, balance });
-    } catch (err: any) {
-      console.error('Gemini AI error:', err);
-      res.json({ success: true, recommendations: [], balance, aiError: err.message || 'Erro ao gerar recomendações com IA.' });
-    }
-  });
 
   // ---------- Exports ----------
   // Planilha das unidades escolhidas para o mutirão que ainda não têm magistrado: Comarca, Unidade, Juiz(a) responsável.

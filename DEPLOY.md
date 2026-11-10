@@ -62,15 +62,11 @@ referência. Use `printf` (e não `echo`) para não gravar uma quebra de linha n
 
 ```bash
 printf '%s' 'SENHA-FORTE-AQUI' | gcloud secrets create mutirao-admin-password --data-file=-
-printf '%s' 'CHAVE-DO-GEMINI'  | gcloud secrets create mutirao-gemini-key --data-file=-    # opcional
-
-for s in mutirao-admin-password mutirao-gemini-key; do
-  gcloud secrets add-iam-policy-binding $s --member="serviceAccount:$SA" --role="roles/secretmanager.secretAccessor"
-done
+gcloud secrets add-iam-policy-binding mutirao-admin-password --member="serviceAccount:$SA" --role="roles/secretmanager.secretAccessor"
 
 gcloud run services update mutiraocgj --region europe-west1 \
-  --remove-env-vars=ADMIN_PASSWORD,GEMINI_API_KEY \
-  --update-secrets=ADMIN_PASSWORD=mutirao-admin-password:latest,GEMINI_API_KEY=mutirao-gemini-key:latest
+  --remove-env-vars=ADMIN_PASSWORD \
+  --update-secrets=ADMIN_PASSWORD=mutirao-admin-password:latest
 ```
 
 Para trocar a senha: `printf '%s' 'NOVA' | gcloud secrets versions add mutirao-admin-password --data-file=-` e publique
@@ -143,7 +139,6 @@ curl -s "https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(d
 | Variável | Para quê | Padrão |
 |---|---|---|
 | `ADMIN_PASSWORD` | Senha do painel (use Secret Manager) | aleatória a cada início (aparece no log) |
-| `GEMINI_API_KEY` | Sugestões por IA (opcional; use Secret Manager) | — |
 | `ALLOWED_EMAIL_DOMAINS` | Domínios de e-mail aceitos nas inscrições (lista por vírgula; subdomínios valem; vazio = sem restrição) | `tjpr.jus.br` |
 | `SIGNUP_MAX_PER_IP` | Inscrições concluídas por IP a cada 10 min | `30` |
 | `SIGNUP_MAX_ERRORS_PER_IP` | Tentativas com erro por IP a cada 10 min | `120` |
@@ -159,6 +154,9 @@ Exemplo: `gcloud run services update mutiraocgj --region europe-west1 --update-e
 
 ## 8. Regras de funcionamento
 
+- **Aba Vinculações (administração):** reúne em seções as designações vigentes e o histórico de atuação, a vinculação das
+  unidades escolhidas, a lista de espera e os pedidos de alteração (com o número de pendentes na própria aba).
+
 - **Mutirão único e janelas de inscrição:** magistrados, unidades, lista de espera e vinculações formam um só conjunto. As
   antigas edições são *janelas de inscrição* (*Administração → Janelas de inscrição*), cada uma com abertura, encerramento e
   **início padrão da atuação**. Um magistrado de qualquer janela pode ser vinculado a uma unidade de qualquer janela; a
@@ -169,7 +167,7 @@ Exemplo: `gcloud run services update mutiraocgj --region europe-west1 --update-e
 - **Unidade rejeitada com o pedido mantido:** volta para "Em análise" na próxima janela de inscrição (na seguinte, se já existir,
   ou assim que for criada).
 
-- **Painel de vinculações (restrito à administração):** *Administração → Painel de vinculações*. Tabela única com as designações vigentes de
+- **Painel de vinculações (restrito à administração):** *Administração → Vinculações → Vigentes e histórico*. Tabela única com as designações vigentes de
   **todas as edições** (valem até o registro da desistência). Planilhas coladas viram vinculações reais na edição **Vinculações iniciais**
   (criada automaticamente; nunca é a edição vigente), onde as varas podem ser alteradas ("Alterar vara", com a data de início) e o painel reflete na hora. A atuação é sempre para audiências ou para sentença (nas vinculações iniciais, sentença).
   *Desistência* pede o SEI e a data do pedido; se o magistrado fizer nova inscrição (comparação de nomes sem acento e sem diferença de
@@ -190,7 +188,7 @@ Exemplo: `gcloud run services update mutiraocgj --region europe-west1 --update-e
   inclui senha nem segredo do 2FA) e restaura a partir dele, substituindo os dados atuais (o registro de atividades é preservado).
 - **Pedidos de alteração:** no portal, *Pedir alteração* permite que o magistrado já vinculado peça outra área ou outro
   tipo de atuação, e que a unidade atendida peça outras áreas ou mais magistrados (justificativa obrigatória e observações).
-  A análise fica em *Administração → Pedidos de alteração*: ao deferir o pedido de um magistrado, define-se a área, o tipo, a
+  A análise fica em *Administração → Vinculações → Pedidos de alteração*: ao deferir o pedido de um magistrado, define-se a área, o tipo, a
   vara e a data de início (a atuação anterior vai até a véspera e um novo período começa na data); ao indeferir, o motivo
   aparece para quem pediu.
 - **Inscrições:** os campos de escolha do magistrado (1ª e 2ª escolha e aceite de audiências) e as áreas da unidade começam
