@@ -19,7 +19,7 @@ export const prefLabel = (m: Magistrate | undefined, area: string) => {
   return !m ? '' : eq(m.firstPreference) ? '1ª preferência atendida' : eq(m.secondPreference) ? '2ª preferência atendida' : 'fora das preferências';
 };
 
-/** Magistrados já vinculados em outra(s) unidade(s), que podem atuar também nesta (acúmulo), com a área sugerida */
+/** Magistrados já vinculados em outra unidade, que podem passar a atuar nesta por sucessão (a partir do início da janela), com a área sugerida */
 export function linkedElsewhereFor(unit: Unit, magistrates: Magistrate[], matches: Match[]): (Eligible & { units: string[] })[] {
   const byMag = new Map<string, Match[]>();
   for (const x of matches) { if (!byMag.has(x.magistrateId)) byMag.set(x.magistrateId, []); byMag.get(x.magistrateId)!.push(x); }
@@ -178,8 +178,8 @@ export function UnitDetail({ unit, magistrates, matches, busy, onLink, onUnlink 
   );
 }
 
-/** accumulate: o magistrado já vinculado passa a atuar também nesta unidade (a partir do início da janela da unidade) */
-export type SaveLink = (unit: Unit, magistrateId: string, area: string, workType: WorkType, match?: Match, accumulate?: boolean) => void;
+/** succession: o magistrado já vinculado deixa a unidade atual na véspera do início da janela desta unidade e passa a atuar nela */
+export type SaveLink = (unit: Unit, magistrateId: string, area: string, workType: WorkType, match?: Match, succession?: boolean) => void;
 
 /* ---------- Uma vaga da unidade: magistrado vinculado ou a vincular ---------- */
 export function LinkSlot({ unit, magistrates, matches, match, busy, onSave, onUnlink, units, windowStart }: {
@@ -192,7 +192,7 @@ export function LinkSlot({ unit, magistrates, matches, match, busy, onSave, onUn
   onUnlink: (matchId: string) => void;
   /** todas as unidades (para mostrar onde atua quem já está vinculado) */
   units: Unit[];
-  /** início da atuação da janela da unidade: data do acúmulo */
+  /** início da atuação da janela da unidade: data da sucessão */
   windowStart?: string;
 }) {
   const { same, other } = eligibleFor(unit, magistrates, matches, match);
@@ -201,12 +201,12 @@ export function LinkSlot({ unit, magistrates, matches, match, busy, onSave, onUn
   const [magId, setMagId] = useState(match?.magistrateId ?? '');
   const [workType, setWorkType] = useState<WorkType | ''>(match?.workType ?? '');
 
-  const acc = magId.startsWith('acc:') ? elsewhere.find(e => e.m.id === magId.slice(4)) : undefined;
-  const sel = acc ?? all.find(e => e.m.id === magId);
+  const succ = magId.startsWith('succ:') ? elsewhere.find(e => e.m.id === magId.slice(5)) : undefined;
+  const sel = succ ?? all.find(e => e.m.id === magId);
   const unitName = (id: string) => { const u = units.find(x => x.id === id); return u ? unitLabel(u) : 'unidade removida'; };
   const dmyStart = windowStart ? windowStart.split('-').reverse().join('/') : '';
   const effective: WorkType | '' = workType || (sel ? defaultWorkType(unit, sel.m) : '');
-  const changed = !!sel && (!match || match.magistrateId !== magId || match.workType !== effective) && (!acc || !!windowStart);
+  const changed = !!sel && (!match || match.magistrateId !== magId || match.workType !== effective) && (!succ || !!windowStart);
 
   const label = (e: Eligible) =>
     `${e.m.name}${e.rank ? ` — ${e.rank}ª preferência` : ''}${e.m.acceptsHearings ? (e.m.hearingPeriod && unit.hearingPeriod ? ` — audiências: ${hearingPeriodLabel(e.m.hearingPeriod).toLowerCase()}${periodsClash(e.m.hearingPeriod, unit.hearingPeriod) ? ' (período diferente)' : ''}` : '') : ' — não aceita audiências'}`;
@@ -229,8 +229,8 @@ export function LinkSlot({ unit, magistrates, matches, match, busy, onSave, onUn
               </optgroup>
             )}
             {elsewhere.length > 0 && (
-              <optgroup label={`Já vinculados em outra unidade (acúmulo${dmyStart ? ` a partir de ${dmyStart}` : ''})`}>
-                {elsewhere.map(e => <option key={e.m.id} value={`acc:${e.m.id}`}>{e.m.name} — atua em {e.units.map(unitName).join(' / ')}{e.rank ? ` — ${e.rank}ª preferência` : ''}</option>)}
+              <optgroup label={`Já vinculados em outra unidade (sucessão${dmyStart ? ` a partir de ${dmyStart}` : ''})`}>
+                {elsewhere.map(e => <option key={e.m.id} value={`succ:${e.m.id}`}>{e.m.name} — atua em {e.units.map(unitName).join(' / ')}{e.rank ? ` — ${e.rank}ª preferência` : ''}</option>)}
               </optgroup>
             )}
           </select>
@@ -241,15 +241,15 @@ export function LinkSlot({ unit, magistrates, matches, match, busy, onSave, onUn
         </div>
         <div className="flex flex-wrap items-end gap-2 md:pt-[1.55rem]">
           <button className="btn-primary btn-sm" disabled={!changed || busy}
-            onClick={() => sel && effective && onSave(unit, sel.m.id, sel.area, effective, match, !!acc)}>
-            <Check className="w-4 h-4" /> {match ? 'Salvar' : acc ? 'Vincular (acúmulo)' : 'Vincular'}
+            onClick={() => sel && effective && onSave(unit, sel.m.id, sel.area, effective, match, !!succ)}>
+            <Check className="w-4 h-4" /> {match ? 'Salvar' : succ ? 'Vincular (sucessão)' : 'Vincular'}
           </button>
           {match && <button className="btn-secondary btn-sm" disabled={busy} onClick={() => onUnlink(match.id)}>Desfazer</button>}
         </div>
       </div>
-      {acc && (windowStart
-        ? <p className="text-[11px] text-bronze mt-1.5">Acúmulo: <strong>{acc.m.name}</strong> mantém a atuação em {acc.units.map(unitName).join(' / ')} e passa a atuar também nesta unidade <strong>a partir de {dmyStart}</strong> (início da atuação da janela). A alteração fica registrada no histórico.</p>
-        : <p className="text-[11px] text-danger mt-1.5">Para registrar o acúmulo, defina o início da atuação da janela desta unidade (aba Janelas de inscrição).</p>)}
+      {succ && (windowStart
+        ? <p className="text-[11px] text-bronze mt-1.5">Sucessão: <strong>{succ.m.name}</strong> atua em {succ.units.map(unitName).join(' / ')} até a véspera do início da janela desta unidade e passa a atuar <strong>somente aqui a partir de {dmyStart}</strong>. A alteração de vinculação fica registrada no histórico.</p>
+        : <p className="text-[11px] text-danger mt-1.5">Para registrar a sucessão, defina o início da atuação da janela desta unidade (aba Janelas de inscrição).</p>)}
       {sel && effective && <WorkTypeWarnings unit={unit} mag={sel.m} workType={effective} />}
       {sel && sel.rank > 0 && <p className="text-[11px] text-ok mt-1.5">Atende a {sel.rank}ª preferência do magistrado: {sel.area}.</p>}
       {sel && sel.rank === 0 && <p className="text-[11px] text-warn mt-1.5">Área fora das preferências do magistrado; será registrada como {sel.area}.</p>}

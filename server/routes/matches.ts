@@ -4,7 +4,6 @@ import { editionById, resolveEdition, scopeOf } from '../editions.ts';
 import { defaultWorkType, describeMatch, refreshUnitStatus, releaseIfUnlinked, undoMatch, updateMatch } from '../links.ts';
 import { log, newId, S } from '../state.ts';
 import { type Match, MATCH_WORK_TYPES } from '../types.ts';
-import { fullUnitName } from '../../src/catalogo-tjpr';
 import { isYmd } from '../util.ts';
 import { confirmedWipe } from '../validation.ts';
 
@@ -59,44 +58,47 @@ export function register(app: express.Express) {
       return res.status(409).json({ error: `Todas as ${unit.slots || 1} vaga(s) desta unidade já estão preenchidas. Aumente o número de magistrados da unidade para vincular outro.` });
     }
 
-    // Acúmulo: o magistrado já vinculado passa a atuar também nesta unidade, sem deixar a(s) atual(is).
-    // A nova designação pertence à janela da unidade e vale a partir do início da atuação dessa janela.
-    const accumulate = req.body?.accumulate === true;
+    // Sucessão: quem já está vinculado continua na unidade atual até a véspera do início da atuação da janela desta
+    // unidade e, a partir dessa data, passa a atuar só nela (vínculo único: nunca em duas unidades no mesmo dia).
+    // É uma alteração de vinculação com vigência no início da janela.
     const current = S.matches.filter((m) => m.magistrateId === magistrateId);
-    const unitWindow = editionById(unit.editionId);
-    if (accumulate) {
-      if (!current.length) return res.status(400).json({ error: 'Este magistrado não tem vinculação vigente: faça a vinculação normal.' });
-      if (current.some((m) => m.unitId === unitId)) return res.status(409).json({ error: 'O magistrado já atua nesta unidade.' });
-      if (!unitWindow?.startDate) {
-        return res.status(400).json({ error: `Defina o início da atuação da janela "${unitWindow?.title ?? ''}" (aba Janelas de inscrição) para registrar o acúmulo.` });
+    if (req.body?.succession === true) {
+      const unitWindow = editionById(unit.editionId);
+      const cur = current[0];
+      if (!cur) return res.status(400).json({ error: 'Este magistrado não tem vinculação vigente: faça a vinculação normal.' });
+      if (current.length > 1) return res.status(409).json({ error: 'Este magistrado tem mais de uma vinculação registrada. Corrija no painel antes da sucessão.' });
+      if (cur.unitId === unitId) return res.status(409).json({ error: 'O magistrado já atua nesta unidade.' });
+      const from = unitWindow?.startDate;
+      if (!from) return res.status(400).json({ error: `Defina o início da atuação da janela "${unitWindow?.title ?? ''}" (aba Janelas de inscrição) para registrar a sucessão.` });
+      const since = cur.startDate ?? editionById(cur.editionId)?.startDate;
+      if (since && from <= since) {
+        return res.status(400).json({ error: `A janela desta unidade começa em ${from.split('-').reverse().join('/')}, antes ou no mesmo dia do início da atuação atual (${since.split('-').reverse().join('/')}).` });
       }
-    } else if (current.length) {
-      return res.status(409).json({ error: 'Este magistrado já está vinculado a outra unidade. Para que atue também nesta, escolha-o entre os já vinculados (acúmulo).' });
+      const done = updateMatch(cur, { unitId, assignedArea, workType: workType || defaultWorkType(unit, mag), effectiveDate: from }, 'sucessao');
+      if ('error' in done) return res.status(done.status).json({ error: done.error });
+      done.match.editionId = unit.editionId; // a partir da sucessão, a designação é da janela da unidade
+      return res.status(201).json({ success: true, match: done.match });
+    }
+    if (current.length) {
+      return res.status(409).json({ error: 'Este magistrado já está vinculado a outra unidade. Para que passe a atuar nesta a partir do início da janela, escolha-o entre os já vinculados (sucessão).' });
     }
 
     mag.status = 'Atribuído';
     const newMatch: Match = {
       id: newId('match'),
-      editionId: accumulate ? unit.editionId : mag.editionId,
+      editionId: mag.editionId,
       magistrateId,
       unitId,
       assignedArea,
       workType: workType || defaultWorkType(unit, mag),
-      ...(!accumulate && startDate && startDate !== editionById(mag.editionId)?.startDate ? { startDate } : {}),
+      ...(startDate && startDate !== editionById(mag.editionId)?.startDate ? { startDate } : {}),
       status: 'Vinculado',
       createdAt: new Date().toISOString(),
     };
     S.matches.unshift(newMatch);
     refreshUnitStatus(unit.id);
 
-    if (accumulate) {
-      const label = (id: string) => { const u = S.units.find((x) => x.id === id); return u ? fullUnitName(u) : 'unidade removida'; };
-      const kept = current.map((m) => label(m.unitId)).join(' / ');
-      S.transfers.push({ id: newId('tr'), kind: 'acumulo', editionId: unit.editionId, magistrateId, name: mag.name, area: current.map((m) => m.assignedArea).join(' / '), toArea: newMatch.assignedArea,
-        fromUnit: kept, toUnit: label(unit.id), fromWorkType: current.map((m) => m.workType).join(' / '), toWorkType: newMatch.workType, effectiveDate: unitWindow!.startDate!, createdAt: new Date().toISOString() });
-      log(unit.editionId, 'Administração', 'Vinculação',
-        `Vinculação adicional (acúmulo): ${mag.name} mantém a atuação em ${kept} e passa a atuar também em ${label(unit.id)} (${newMatch.assignedArea}; ${newMatch.workType}) a partir de ${unitWindow!.startDate!.split('-').reverse().join('/')}.`);
-    } else log(mag.editionId, 'Administração', 'Vinculação', `Vinculação manual: ${describeMatch(newMatch)}.`);
+    log(mag.editionId, 'Administração', 'Vinculação', `Vinculação manual: ${describeMatch(newMatch)}.`);
     res.status(201).json({ success: true, match: newMatch });
   });
   app.put('/api/matches/:id', (req, res) => {

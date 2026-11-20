@@ -134,7 +134,6 @@ export function actingPeriods(): ActingPeriod[] {
       comarca: canonicalComarca(hint) ?? comarcaInText(unit) ?? hint ?? '' });
   }
   for (const t of S.transfers) {
-    if (t.kind === 'acumulo') continue; // acúmulo não encerra a atuação anterior: a nova designação é outra linha vigente
     const end = ymdDayBefore(t.effectiveDate);
     out.push({ id: `${t.id}:de`, name: t.name, editionId: t.editionId, editionTitle: title(t.editionId), area: t.area, unit: t.fromUnit, workType: t.fromWorkType,
       start: startOf(t.editionId, t.fromStartDate, { ids: [t.magistrateId], name: t.name }, t.fromUnit, end), end, endReason: 'Alteração de vinculação', ...(t.sei ? { sei: t.sei } : {}) });
@@ -188,7 +187,7 @@ export const describeMatch = (mt: Match) => {
  * Com data de vigência, a troca de unidade, área ou tipo do mesmo magistrado é uma alteração de vinculação:
  * o período anterior vai até a véspera e o novo começa na data. Usada pela edição da vinculação e pelo painel (alterar vara/área/tipo).
  */
-export function updateMatch(match: Match, body: any): { status: number; error: string } | { match: Match } {
+export function updateMatch(match: Match, body: any, kind?: 'sucessao'): { status: number; error: string } | { match: Match } {
   const fail = (status: number, error: string) => ({ status, error });
 
   const before = describeMatch(match);
@@ -211,7 +210,7 @@ export function updateMatch(match: Match, body: any): { status: number; error: s
     return fail(400, 'Só é possível vincular unidades escolhidas para o mutirão.');
   }
 
-  // Trocar o magistrado da vaga: o novo não pode já estar vinculado (para mais de uma unidade, use o acúmulo ao vincular).
+  // Trocar o magistrado da vaga: o novo não pode já estar vinculado (vínculo único; para mudar de unidade, use a sucessão).
   // Mover o mesmo magistrado: não pode ir para uma unidade em que ele já atua. Mover para outra unidade exige vaga livre.
   if (nextMag.id !== match.magistrateId && S.matches.some((m) => m.id !== match.id && m.magistrateId === nextMag.id)) {
     return fail(409, 'Este magistrado já está vinculado a outra unidade. Desfaça essa vinculação antes.');
@@ -265,14 +264,14 @@ export function updateMatch(match: Match, body: any): { status: number; error: s
   if (isTransfer) {
     match.startDate = effectiveDate;
     const label = (u?: Unit) => (u ? fullUnitName(u) : 'unidade removida');
-    S.transfers.push({ id: newId('tr'), editionId: match.editionId, magistrateId: nextMag.id, name: nextMag.name, ...(oldStart ? { fromStartDate: oldStart } : {}), area: oldArea, toArea: match.assignedArea, ...(transferSei ? { sei: transferSei } : {}), fromUnit: label(oldUnit), toUnit: label(nextUnit),
+    S.transfers.push({ id: newId('tr'), ...(kind ? { kind } : {}), editionId: match.editionId, magistrateId: nextMag.id, name: nextMag.name, ...(oldStart ? { fromStartDate: oldStart } : {}), area: oldArea, toArea: match.assignedArea, ...(transferSei ? { sei: transferSei } : {}), fromUnit: label(oldUnit), toUnit: label(nextUnit),
       fromWorkType: oldWorkType, toWorkType: match.workType, effectiveDate, createdAt: new Date().toISOString() });
   }
 
   const startNote = !isTransfer && match.startDate !== startBefore
     ? ` (início da atuação: ${(match.startDate ?? editionById(match.editionId)?.startDate)?.split('-').reverse().join('/') ?? 'não informado'})` : '';
   const what = [movingUnit && 'nova unidade', changingArea && 'nova área', changingWorkType && 'novo tipo'].filter(Boolean).join(', ');
-  log(match.editionId, 'Administração', 'Vinculação', `Vinculação alterada${startNote}${isTransfer ? ` (${what} a partir de ${effectiveDate.split('-').reverse().join('/')}${transferSei ? `; SEI ${transferSei}` : ''})` : ''}: de ${before} para ${describeMatch(match)}.`);
+  log(match.editionId, 'Administração', 'Vinculação', `Vinculação alterada${kind ? ' por sucessão (nova janela)' : ''}${startNote}${isTransfer ? ` (${what} a partir de ${effectiveDate.split('-').reverse().join('/')}${transferSei ? `; SEI ${transferSei}` : ''})` : ''}: de ${before} para ${describeMatch(match)}.`);
   return { match };
 }
 export const fullUnitOf = (u?: Unit) => (u ? fullUnitName(u) : 'unidade removida');

@@ -89,8 +89,7 @@ export interface Magistrate {
   /** Mesma pessoa já vinculada e ativa em outra edição (painel de vinculações) */
   linkedElsewhere?: { editionTitle: string; unit: string; area: string }[];
   editionTitle?: string;
-  /** Consulta de status: designações do magistrado (pode atuar em mais de uma unidade) */
-  matches?: { assignedArea: string; workType: string; unit: { unitName: string; comarca: string } | null }[];
+  match?: (Match & { unit?: Unit | null }) | null;
 }
 
 export interface Unit {
@@ -168,4 +167,4 @@ export interface PanelRow { id: string; editionId: string; editionTitle: string;
 export interface Withdrawal { id: string; editionId: string; name: string; area: string; unit: string; sei: string; requestDate?: string; endedAt?: string; createdAt: string }
 /** Período de atuação de um magistrado numa unidade (sem fim = em curso) */
 export interface ActingPeriod { id: string; name: string; editionId: string; editionTitle: string; area: string; unit: string; workType: string; start?: string; end?: string; endReason: '' | 'Alteração de vinculação' | 'Desistência' | 'Exclusão'; sei?: string }
-export interface Transfer { id: string; editionId: string; magistrateId: string; name: string; /** 'acumulo': nova designação mantendo a(s) atual(is) */ kind?: 'acumulo'; area: string; toArea?: string; sei?: string; fromUnit: string; toUnit: string; fromWorkType: string; toWorkType: string; effectiveDate: string; createdAt: string }
+export interface Transfer { id: string; editionId: string; magistrateId: string; name: string; /** 'sucessao': mudança para a unidade de uma nova janela, a partir do início da atuação dessa janela */ kind?: 'sucessao'; area: string; toArea?: string; sei?: string; fromUnit: string; toUnit: string; fromWorkType: string; toWorkType: string; effectiveDate: string; createdAt: string }

@@ -338,13 +338,13 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const chooseUnit = async (id: string) => { await run(() => api(`/units/${id}/choose`, { method: 'POST' }), 'Unidade escolhida para o mutirão.'); refresh(); };
 
   /** Cria ou altera uma vinculação (magistrado, área e atuação: audiência e/ou sentença) */
-  const saveLink = async (unit: Unit, magistrateId: string, area: string, workType: WorkType, match?: Match, accumulate?: boolean) => {
+  const saveLink = async (unit: Unit, magistrateId: string, area: string, workType: WorkType, match?: Match, succession?: boolean) => {
     setLinking(true);
-    const body = { magistrateId, unitId: unit.id, assignedArea: area, workType, ...(accumulate ? { accumulate: true } : {}) };
+    const body = { magistrateId, unitId: unit.id, assignedArea: area, workType, ...(succession ? { succession: true } : {}) };
     const r = await run(() => match
       ? api(`/matches/${match.id}`, { method: 'PUT', json: body })
       : api('/matches', { method: 'POST', json: withEdition(body) }),
-      match ? 'Vinculação atualizada.' : accumulate ? 'Acúmulo registrado: o magistrado mantém a atuação atual.' : 'Vinculação efetivada.');
+      match ? 'Vinculação atualizada.' : succession ? 'Sucessão registrada: a nova unidade vale a partir do início da janela.' : 'Vinculação efetivada.');
     setLinking(false);
     if (r) refresh();
   };

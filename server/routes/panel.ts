@@ -52,8 +52,7 @@ export function register(app: express.Express) {
     const people = rows.map((r) => personOf(r.magistrateId, r.name));
     res.json({
       rows: rows.map((r, i) => {
-        // Mesmo registro em mais de uma unidade é acúmulo (intencional), não duplicidade
-        const others = rows.filter((o, j) => j !== i && o.magistrateId !== r.magistrateId && samePerson(people[i], people[j]));
+        const others = rows.filter((_, j) => j !== i && samePerson(people[i], people[j]));
         return others.length ? { ...r, duplicates: others.map((o) => ({ editionTitle: o.editionTitle, unit: unitLabel(o), area: o.area })) } : r;
       }),
       withdrawals: [...S.withdrawals].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
@@ -378,12 +377,12 @@ export function register(app: express.Express) {
         });
         table(desigCols, data);
       }
-      section('2. Alterações de vinculação', 'Alterações de vara, de área ou de tipo de atuação: a vinculação anterior vale até o dia anterior à data informada e a nova, a partir dela. No acúmulo, o magistrado mantém a atuação anterior e passa a atuar também na nova unidade.');
+      section('2. Alterações de vinculação', 'Alterações de vara, de área ou de tipo de atuação: a vinculação anterior vale até o dia anterior à data informada e a nova, a partir dela. Na sucessão, a mudança vale a partir do início da atuação da nova janela.');
       if (moves.length === 0) empty('Nenhuma alteração de vinculação registrada.');
       else table([{ label: 'Magistrado(a)', w: 105 }, { label: 'Vinculação anterior', w: (W - 105) / 2 }, { label: 'Nova vinculação', w: (W - 105) / 2 }],
         moves.map((m) => [m.name,
-          m.kind === 'acumulo' ? `${m.fromUnit}\nMantém a atuação (acúmulo)` : `${m.fromUnit}\nÁrea: ${m.area || '—'} · ${acting(m.fromWorkType)} · até ${dmy(dayBefore(m.effectiveDate))}`,
-          `${m.toUnit}\nÁrea: ${m.toArea || m.area || '—'}${m.toArea && m.toArea.trim() !== m.area.trim() ? ' (alterada)' : ''} · ${acting(m.toWorkType)} · a partir de ${dmy(m.effectiveDate)}${m.sei ? `\nSEI: ${m.sei}` : ''}`]));
+          `${m.fromUnit}\nÁrea: ${m.area || '—'} · ${acting(m.fromWorkType)} · até ${dmy(dayBefore(m.effectiveDate))}`,
+          `${m.toUnit}\nÁrea: ${m.toArea || m.area || '—'}${m.toArea && m.toArea.trim() !== m.area.trim() ? ' (alterada)' : ''} · ${acting(m.toWorkType)} · a partir de ${dmy(m.effectiveDate)}${m.kind === 'sucessao' ? ' (sucessão: nova janela)' : ''}${m.sei ? `\nSEI: ${m.sei}` : ''}`]));
       section('3. Desistentes', 'Magistrados que desistiram da participação, com o processo SEI e a data do pedido. Havendo nova inscrição deferida, a desistência vale apenas para o período anterior.');
       if (drops.length === 0) empty('Nenhuma desistência registrada.');
       else table([{ label: 'Magistrado(a)', w: 95 }, { label: 'Área e unidade', w: 100 }, { label: 'Processo SEI', w: 100 }, { label: 'Pedido', w: 62 }, { label: 'Situação', w: W - 357 }],

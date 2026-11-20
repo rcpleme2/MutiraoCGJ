@@ -105,11 +105,8 @@ export function register(app: express.Express) {
 
     res.json({
       magistrates: matchedMagistrates.map((mag) => {
-        // Todas as designações do magistrado (pode atuar em mais de uma unidade)
-        const links = S.matches.filter((m) => m.magistrateId === mag.id).map((match) => {
-          const assigned = S.units.find((u) => u.id === match.unitId);
-          return { assignedArea: match.assignedArea, workType: match.workType, unit: assigned ? { unitName: assigned.unitName, comarca: assigned.comarca } : null };
-        });
+        const match = S.matches.find((m) => m.magistrateId === mag.id);
+        const assigned = match ? S.units.find((u) => u.id === match.unitId) : undefined;
         // Inscrição posterior a uma desistência ainda em vigor, aguardando análise
         const priorWithdrawal = mag.status === 'Aguardando Conferência'
           ? S.withdrawals.find((w) => !w.endedAt && personKey(w.name) === personKey(mag.name) && !(w.magistrateIds ?? []).includes(mag.id) && mag.createdAt > w.createdAt)
@@ -127,7 +124,9 @@ export function register(app: express.Express) {
           ...(mag.status === 'Rejeitado' && mag.rejectionReason ? { rejectionReason: mag.rejectionReason } : {}),
           createdAt: mag.createdAt,
           editionTitle: titleOf(mag.editionId),
-          matches: links,
+          match: match
+            ? { assignedArea: match.assignedArea, workType: match.workType, unit: assigned ? { unitName: assigned.unitName, comarca: assigned.comarca } : null }
+            : null,
           ...(priorWithdrawal ? { afterWithdrawal: { requestDate: priorWithdrawal.requestDate ?? priorWithdrawal.createdAt.slice(0, 10) } } : {}),
         };
       }),

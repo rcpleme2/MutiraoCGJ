@@ -294,11 +294,11 @@ function AppInner() {
                         {m.status === 'Rejeitado' && m.rejectionReason && (
                           <div className="bg-danger-soft text-danger text-sm rounded-md px-3 py-2.5 whitespace-pre-wrap"><strong>Motivo da rejeição:</strong> {m.rejectionReason}</div>
                         )}
-                        {(m.matches ?? []).map((mt, i) => (
-                          <div key={i} className="bg-ok-soft text-ok text-sm rounded-md px-3 py-2.5">
-                            <strong>Unidade atribuída:</strong> {mt.unit?.unitName} ({mt.unit?.comarca}) · {mt.assignedArea} · <strong>{mt.workType}</strong>
+                        {m.match && (
+                          <div className="bg-ok-soft text-ok text-sm rounded-md px-3 py-2.5">
+                            <strong>Unidade atribuída:</strong> {m.match.unit?.unitName} ({m.match.unit?.comarca}) · {m.match.assignedArea} · <strong>{m.match.workType}</strong>
                           </div>
-                        ))}
+                        )}
                       </div>
                     ))}
                   </div>
