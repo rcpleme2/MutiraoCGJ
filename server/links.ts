@@ -134,6 +134,7 @@ export function actingPeriods(): ActingPeriod[] {
       comarca: canonicalComarca(hint) ?? comarcaInText(unit) ?? hint ?? '' });
   }
   for (const t of S.transfers) {
+    if (t.kind === 'acumulo') continue; // acúmulo não encerra a atuação anterior: a nova designação é outra linha vigente
     const end = ymdDayBefore(t.effectiveDate);
     out.push({ id: `${t.id}:de`, name: t.name, editionId: t.editionId, editionTitle: title(t.editionId), area: t.area, unit: t.fromUnit, workType: t.fromWorkType,
       start: startOf(t.editionId, t.fromStartDate, { ids: [t.magistrateId], name: t.name }, t.fromUnit, end), end, endReason: 'Alteração de vinculação', ...(t.sei ? { sei: t.sei } : {}) });
@@ -162,14 +163,18 @@ export const periodDays = (p: { start?: string; end?: string }) => {
 export const personOf = (magistrateId: string, name: string): Person =>
   ({ key: personKey(name), email: S.magistrates.find((m) => m.id === magistrateId)?.email?.trim().toLowerCase() ?? '' });
 export const samePerson = (a: Person, b: Person) => a.key === b.key || (!!a.email && a.email === b.email);
+/** Magistrado sem nenhuma vinculação restante volta a "aprovado e aguardando vinculação" (pode atuar em mais de uma unidade). */
+export function releaseIfUnlinked(magistrateId: string) {
+  const mag = S.magistrates.find((m) => m.id === magistrateId);
+  if (mag && mag.status === 'Atribuído' && !S.matches.some((m) => m.magistrateId === magistrateId)) mag.status = 'Lista de Espera';
+}
 /** Desfaz uma vinculação (o painel é calculado a partir delas, então a linha some automaticamente). */
 export function undoMatch(id: string, reason = 'Vinculação desfeita') {
   const match = S.matches.find((m) => m.id === id);
   if (!match) return;
-  const mag = S.magistrates.find((m) => m.id === match.magistrateId);
-  if (mag && mag.status === 'Atribuído') mag.status = 'Lista de Espera';
   log(match.editionId, 'Administração', 'Vinculação', `${reason}: ${describeMatch(match)}.`);
   S.matches = S.matches.filter((m) => m.id !== id);
+  releaseIfUnlinked(match.magistrateId);
   refreshUnitStatus(match.unitId);
 }
 export const unitLabel = (r: { unit: string; comarca?: string; separator?: string }) => fullUnitName({ unitName: r.unit, comarca: r.comarca, separator: r.separator });
@@ -206,11 +211,15 @@ export function updateMatch(match: Match, body: any): { status: number; error: s
     return fail(400, 'Só é possível vincular unidades escolhidas para o mutirão.');
   }
 
-  // O magistrado escolhido não pode estar vinculado em outra unidade; mover para outra unidade exige vaga livre
-  if (S.matches.some((m) => m.id !== match.id && m.magistrateId === nextMag.id)) {
+  // Trocar o magistrado da vaga: o novo não pode já estar vinculado (para mais de uma unidade, use o acúmulo ao vincular).
+  // Mover o mesmo magistrado: não pode ir para uma unidade em que ele já atua. Mover para outra unidade exige vaga livre.
+  if (nextMag.id !== match.magistrateId && S.matches.some((m) => m.id !== match.id && m.magistrateId === nextMag.id)) {
     return fail(409, 'Este magistrado já está vinculado a outra unidade. Desfaça essa vinculação antes.');
   }
   const movingUnit = nextUnit.id !== match.unitId;
+  if (movingUnit && S.matches.some((m) => m.id !== match.id && m.magistrateId === nextMag.id && m.unitId === nextUnit.id)) {
+    return fail(409, 'O magistrado já atua nesta unidade.');
+  }
   if (movingUnit && initialMatch && linkedCount(nextUnit.id) >= (nextUnit.slots || 1)) nextUnit.slots = linkedCount(nextUnit.id) + 1; // varas das vinculações iniciais não limitam o número de magistrados
   if (movingUnit && linkedCount(nextUnit.id) >= (nextUnit.slots || 1)) {
     return fail(409, `Todas as ${nextUnit.slots || 1} vaga(s) da unidade de destino já estão preenchidas.`);
@@ -239,9 +248,8 @@ export function updateMatch(match: Match, body: any): { status: number; error: s
   if (newStart !== null && isTransfer) return fail(400, 'Na alteração de vara/área, o início na nova unidade é a data de vigência.');
   const oldUnit = S.units.find((u) => u.id === oldUnitId);
   const oldWorkType = match.workType; const oldArea = match.assignedArea; const oldStart = match.startDate;
-  if (oldMag && changedMag) oldMag.status = 'Lista de Espera';
-
   match.magistrateId = nextMag.id;
+  if (oldMag && changedMag) releaseIfUnlinked(oldMag.id);
   if (changedMag) match.editionId = nextMag.editionId; // a vinculação pertence à janela de inscrição do magistrado
   match.unitId = nextUnit.id;
   match.assignedArea = newArea || match.assignedArea;

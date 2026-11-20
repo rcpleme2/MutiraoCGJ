@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Scale, UserCheck, Building2, ShieldCheck, Search, ArrowRight, Menu, X, ChevronDown, HelpCircle } from 'lucide-react';
 import { api, reloadCatalog } from './api';
 import { Edition, FaqItem, Magistrate, Unit, hearingPeriodLabel } from './types';
-import { Badge, FeedbackProvider, Notice, formatDate, magistrateTone } from './ui';
+import { Badge, FeedbackProvider, Notice, formatDate, magistrateStatusLabel, magistrateTone } from './ui';
 import { MagistrateForm, UnitForm } from './Forms';
 import Admin from './Admin';
 import ErrorBoundary from './ErrorBoundary';
@@ -107,14 +107,15 @@ function AppInner() {
   const [personName, setPersonName] = useState('');
   const [nameResult, setNameResult] = useState<'ativa' | 'revogada' | 'nao_consta' | null>(null);
   const [designations, setDesignations] = useState<{ area: string; unit: string }[]>([]);
+  const [pendingAfter, setPendingAfter] = useState<string | null>(null);
   const [nameError, setNameError] = useState('');
   const [nameBusy, setNameBusy] = useState(false);
   const consultName = async (e: React.FormEvent) => {
     e.preventDefault();
-    setNameError(''); setNameResult(null); setDesignations([]); setNameBusy(true);
+    setNameError(''); setNameResult(null); setDesignations([]); setPendingAfter(null); setNameBusy(true);
     try {
-      const r = await api<{ situation: 'ativa' | 'revogada' | 'nao_consta'; designations?: { area: string; unit: string }[] }>('/status', { method: 'POST', json: { name: personName } });
-      setNameResult(r.situation); setDesignations(r.designations ?? []);
+      const r = await api<{ situation: 'ativa' | 'revogada' | 'nao_consta'; designations?: { area: string; unit: string }[]; pendingAfterWithdrawal?: { createdAt: string } }>('/status', { method: 'POST', json: { name: personName } });
+      setNameResult(r.situation); setDesignations(r.designations ?? []); setPendingAfter(r.pendingAfterWithdrawal?.createdAt ?? null);
     } catch (err: any) {
       setNameError(err.message);
     } finally {
@@ -282,10 +283,10 @@ function AppInner() {
                             <div className="font-serif font-semibold text-navy">{m.name}</div>
                             <div className="text-xs text-muted">{m.editionTitle} · {m.currentLocation}</div>
                           </div>
-                          {m.status !== 'Lista de Espera' && <div className="shrink-0 self-start"><Badge tone={magistrateTone(m.status)}>{m.status}</Badge></div>}
+                          <div className="shrink-0 self-start"><Badge tone={magistrateTone(m.status)}>{magistrateStatusLabel(m.status)}</Badge></div>
                         </div>
-                        {m.status === 'Lista de Espera' && (
-                          <div className="bg-bronze-soft text-bronze text-sm rounded-md px-3 py-2.5">Aguardando consolidação das inscrições e vinculação a uma unidade.</div>
+                        {m.afterWithdrawal && (
+                          <div className="bg-warn-soft text-warn text-sm rounded-md px-3 py-2.5">Há desistência registrada (pedido em {m.afterWithdrawal.requestDate.split('-').reverse().join('/')}). Esta inscrição é <strong>posterior à desistência</strong> e está pendente de análise.</div>
                         )}
                         <div className="text-xs text-muted">
                           1ª: <span className="text-ink">{m.firstPreference}</span> · 2ª: <span className="text-ink">{m.secondPreference || '—'}</span> · Audiências: <span className="text-ink">{m.acceptsHearings ? `aceita${m.hearingPeriod ? ` (${hearingPeriodLabel(m.hearingPeriod).toLowerCase()})` : ''}` : 'não aceita'}</span>
@@ -293,11 +294,11 @@ function AppInner() {
                         {m.status === 'Rejeitado' && m.rejectionReason && (
                           <div className="bg-danger-soft text-danger text-sm rounded-md px-3 py-2.5 whitespace-pre-wrap"><strong>Motivo da rejeição:</strong> {m.rejectionReason}</div>
                         )}
-                        {m.match && (
-                          <div className="bg-ok-soft text-ok text-sm rounded-md px-3 py-2.5">
-                            <strong>Unidade atribuída:</strong> {m.match.unit?.unitName} ({m.match.unit?.comarca}) · {m.match.assignedArea} · <strong>{m.match.workType}</strong>
+                        {(m.matches ?? []).map((mt, i) => (
+                          <div key={i} className="bg-ok-soft text-ok text-sm rounded-md px-3 py-2.5">
+                            <strong>Unidade atribuída:</strong> {mt.unit?.unitName} ({mt.unit?.comarca}) · {mt.assignedArea} · <strong>{mt.workType}</strong>
                           </div>
-                        )}
+                        ))}
                       </div>
                     ))}
                   </div>
@@ -353,7 +354,10 @@ function AppInner() {
                   ))}
                 </div>
               )}
-              {nameResult === 'revogada' && <div className="mt-4"><Notice tone="danger"><strong>Vinculação revogada por desistência.</strong></Notice></div>}
+              {nameResult === 'revogada' && <div className="mt-4 space-y-2">
+                <Notice tone="danger"><strong>Vinculação revogada por desistência.</strong></Notice>
+                {pendingAfter && <div className="rounded-md px-4 py-3 text-sm bg-warn-soft text-warn">Há <strong>pedido de inscrição pendente de análise</strong>, feito em {formatDate(pendingAfter)}, posterior à desistência.</div>}
+              </div>}
               {nameResult === 'nao_consta' && <div className="mt-4"><div className="rounded-md px-4 py-3 text-sm bg-paper text-muted border border-line">Não consta vinculação ativa nem revogada para o nome informado.</div></div>}
             </div>
           </PageCard>

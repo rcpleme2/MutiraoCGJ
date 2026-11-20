@@ -2,7 +2,7 @@
 import express from 'express';
 import { mergeCatalogDuplicates } from '../catalog.ts';
 import { carryUnitTo, editionById, nextEditionAfter, registrationMessage, registrationState, resolveEdition, scopeOf } from '../editions.ts';
-import { linkedCount, refreshUnitStatus } from '../links.ts';
+import { linkedCount, refreshUnitStatus, releaseIfUnlinked } from '../links.ts';
 import { log, newId, S } from '../state.ts';
 import { type Unit } from '../types.ts';
 import { clientIp, freeText } from '../util.ts';
@@ -23,12 +23,9 @@ export function register(app: express.Express) {
 
     const ids = new Set(S.units.filter((u) => u.editionId === edition.id).map((u) => u.id));
     const removed = S.matches.filter((m) => ids.has(m.unitId));
-    removed.forEach((m) => {
-      const g = S.magistrates.find((x) => x.id === m.magistrateId);
-      if (g) g.status = 'Lista de Espera';
-    });
     S.units = S.units.filter((u) => !ids.has(u.id));
     S.matches = S.matches.filter((m) => !ids.has(m.unitId));
+    removed.forEach((m) => releaseIfUnlinked(m.magistrateId)); // quem atua em outra unidade continua vinculado
     log(edition.id, 'Administração', 'Unidade',
       `EXCLUSÃO EM LOTE: ${ids.size} unidade(s) excluída(s)${removed.length ? `, com ${removed.length} vinculação(ões)` : ''}.`);
     res.json({ success: true, count: ids.size, removedMatches: removed.length });
@@ -97,13 +94,10 @@ export function register(app: express.Express) {
     const reason = freeText(req.body?.reason, 1000);
     if (!reason) return res.status(400).json({ error: 'Informe o motivo da rejeição.' });
 
-    // Se havia magistrado vinculado, a vinculação é desfeita e ele volta à lista de espera
+    // Se havia magistrado vinculado, a vinculação é desfeita e ele volta a aguardar vinculação (se não atuar em outra unidade)
     const linked = S.matches.filter((m) => m.unitId === unit.id);
-    linked.forEach((m) => {
-      const g = S.magistrates.find((x) => x.id === m.magistrateId);
-      if (g) g.status = 'Lista de Espera';
-    });
     S.matches = S.matches.filter((m) => m.unitId !== unit.id);
+    linked.forEach((m) => releaseIfUnlinked(m.magistrateId));
 
     unit.selection = 'Rejeitada';
     unit.status = 'Pendente';
@@ -154,15 +148,11 @@ export function register(app: express.Express) {
   app.delete('/api/units/:id', (req, res) => {
     const { id } = req.params;
     const unit = S.units.find((u) => u.id === id);
-    if (unit) {
-      S.matches.filter((m) => m.unitId === id).forEach((m) => {
-        const mag = S.magistrates.find((x) => x.id === m.magistrateId);
-        if (mag) mag.status = 'Lista de Espera';
-      });
-      log(unit.editionId, 'Administração', 'Unidade', `Inscrição da unidade "${unit.unitName}" excluída.`);
-    }
+    const freed = S.matches.filter((m) => m.unitId === id).map((m) => m.magistrateId);
+    if (unit) log(unit.editionId, 'Administração', 'Unidade', `Inscrição da unidade "${unit.unitName}" excluída.`);
     S.units = S.units.filter((u) => u.id !== id);
     S.matches = S.matches.filter((m) => m.unitId !== id);
+    freed.forEach(releaseIfUnlinked);
     res.json({ success: true, id });
   });
 }

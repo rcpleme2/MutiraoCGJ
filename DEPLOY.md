@@ -164,6 +164,14 @@ Exemplo: `gcloud run services update mutiraocgj --region europe-west1 --update-e
   dentro do prazo. No topo da administração, o filtro "Janela de inscrição" restringe o que é exibido (padrão: todas).
 - **Nova inscrição da mesma pessoa:** um e-mail só pode ter uma inscrição de magistrado em aberto; quem foi rejeitado, desistiu
   ou foi excluído pode se inscrever de novo (a inscrição antiga fica no histórico).
+- **Acúmulo (magistrado em mais de uma unidade):** em *Vinculações → Vincular unidades*, a vaga vazia de uma unidade oferece
+  também os magistrados já vinculados em outra unidade. Escolhido um deles, ele **mantém** a atuação atual e passa a atuar
+  também nesta unidade a partir do **início da atuação da janela da unidade** (que precisa estar definido); a alteração fica
+  registrada (tipo "acúmulo") e cada unidade é uma linha vigente no painel, no histórico e no Qlik. O magistrado só volta a
+  aguardar vinculação quando a última das suas vinculações é desfeita.
+- **Status "Aprovado e aguardando vinculação":** é o rótulo exibido para os status internos "Lista de Espera" e "Aprovado".
+- **Nova inscrição depois de desistência:** a consulta de status (pelo nome ou pelo e-mail) informa que há pedido de
+  inscrição pendente de análise, posterior à desistência.
 - **Unidade rejeitada com o pedido mantido:** volta para "Em análise" na próxima janela de inscrição (na seguinte, se já existir,
   ou assim que for criada).
 

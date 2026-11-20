@@ -5,7 +5,7 @@ import { scopeOf } from '../editions.ts';
 import { saveState } from '../persistence.ts';
 import { log, S } from '../state.ts';
 import { hearingPeriodLabel } from '../types.ts';
-import { csvCell } from '../util.ts';
+import { csvCell, magistrateStatusLabel } from '../util.ts';
 
 export function register(app: express.Express) {
   // Planilha das unidades escolhidas para o mutirão que ainda não têm magistrado: Comarca, Unidade, Juiz(a) responsável.
@@ -67,7 +67,7 @@ export function register(app: express.Express) {
       csv += '=== MAGISTRADOS VOLUNTARIOS ===\n';
       csv += 'ID,Nome,Email,Lotacao Atual,1ª Preferencia,2ª Preferencia,Aceita Audiencia,Periodo Audiencias,IP,Declaracao,Status,Motivo Rejeicao,Data Inscr.\n';
       S.magistrates.filter(scope.has).forEach((m) => {
-        csv += [m.id, m.name, m.email, m.currentLocation, m.firstPreference, m.secondPreference, m.acceptsHearings ? 'Sim' : 'Nao', hearingPeriodLabel(m.hearingPeriod), m.registeredIp ?? '', m.declaration ? 'Sim' : '', m.status, m.rejectionReason ?? '', m.createdAt].map(csvCell).join(',') + '\n';
+        csv += [m.id, m.name, m.email, m.currentLocation, m.firstPreference, m.secondPreference, m.acceptsHearings ? 'Sim' : 'Nao', hearingPeriodLabel(m.hearingPeriod), m.registeredIp ?? '', m.declaration ? 'Sim' : '', magistrateStatusLabel(m.status), m.rejectionReason ?? '', m.createdAt].map(csvCell).join(',') + '\n';
       });
       csv += '\n\n';
     }

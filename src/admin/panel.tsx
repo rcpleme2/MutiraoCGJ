@@ -95,7 +95,7 @@ export function PanelAdmin({ run, confirm, onChanged }: {
     if (r) { setText(''); setPreview(null); await load(); onChanged(); }
   };
   const removeRow = async (r: PanelRow) => {
-    if (!(await confirm(`Desfazer a vinculação de ${r.name} à unidade ${r.unit}? O magistrado volta à lista de espera.`, 'Desfazer vinculação'))) return;
+    if (!(await confirm(`Desfazer a vinculação de ${r.name} à unidade ${r.unit}? O magistrado volta a aguardar vinculação (se não atuar em outra unidade).`, 'Desfazer vinculação'))) return;
     await run(() => api(`/panel/rows/${r.id}`, { method: 'DELETE' }), 'Vinculação desfeita.');
     await load(); onChanged();
   };
@@ -137,7 +137,7 @@ export function PanelAdmin({ run, confirm, onChanged }: {
   };
   const exportPeriods = () => run(() => download('/panel/periods.xlsx', 'historico-atuacao.xlsx'));
   const undoWithdrawal = async (w: Withdrawal) => {
-    if (!(await confirm(`Desfazer a desistência de ${w.name}? O magistrado volta à lista de espera; as designações anteriores não são restauradas.`, 'Desfazer desistência'))) return;
+    if (!(await confirm(`Desfazer a desistência de ${w.name}? O magistrado volta a aguardar vinculação; as designações anteriores não são restauradas.`, 'Desfazer desistência'))) return;
     await run(() => api(`/panel/withdrawals/${w.id}`, { method: 'DELETE' }), 'Registro de desistência desfeito.');
     await load(); onChanged();
   };
@@ -247,8 +247,8 @@ export function PanelAdmin({ run, confirm, onChanged }: {
           <div className="p-4 border-b border-line"><h4 className="font-semibold text-navy">Alterações de vinculação <span className="text-muted font-normal">({data.transfers.length})</span></h4></div>
           <SmartTable bare picker={false} id="alteracoes" rows={data.transfers} rowKey={t => t.id} empty="" defaultSort={{ key: 'date', dir: 'desc' }} cols={[
             { id: 'name', label: 'Magistrado(a)', sort: t => t.name, tdClass: 'font-medium', render: t => t.name },
-            { id: 'from', label: 'Vinculação anterior', sort: t => t.fromUnit, render: t => { const d = new Date(`${t.effectiveDate}T00:00:00Z`); d.setUTCDate(d.getUTCDate() - 1); return <>{t.fromUnit}<div className="text-xs text-muted">{t.area} · {t.fromWorkType === 'Audiência' ? 'Audiências' : t.fromWorkType} · até {d.toISOString().slice(0, 10).split('-').reverse().join('/')}</div></>; } },
-            { id: 'to', label: 'Nova vinculação', sort: t => t.toUnit, render: t => <>{t.toUnit}<div className="text-xs text-bronze">{t.toArea || t.area}{t.toArea && t.toArea.trim() !== t.area.trim() ? ' (alterada)' : ''} · {t.toWorkType === 'Audiência' ? 'Audiências' : t.toWorkType}{t.toWorkType !== t.fromWorkType ? ' (alterado)' : ''} · a partir de {t.effectiveDate.split('-').reverse().join('/')}</div>{t.sei && <div className="text-xs text-muted font-mono">SEI {t.sei}</div>}</> },
+            { id: 'from', label: 'Vinculação anterior', sort: t => t.fromUnit, render: t => { if (t.kind === 'acumulo') return <>{t.fromUnit}<div className="text-xs text-ok">Mantém a atuação (acúmulo)</div></>; const d = new Date(`${t.effectiveDate}T00:00:00Z`); d.setUTCDate(d.getUTCDate() - 1); return <>{t.fromUnit}<div className="text-xs text-muted">{t.area} · {t.fromWorkType === 'Audiência' ? 'Audiências' : t.fromWorkType} · até {d.toISOString().slice(0, 10).split('-').reverse().join('/')}</div></>; } },
+            { id: 'to', label: 'Nova vinculação', sort: t => t.toUnit, render: t => <>{t.toUnit}<div className="text-xs text-bronze">{t.toArea || t.area}{t.kind !== 'acumulo' && t.toArea && t.toArea.trim() !== t.area.trim() ? ' (alterada)' : ''} · {t.toWorkType === 'Audiência' ? 'Audiências' : t.toWorkType}{t.kind !== 'acumulo' && t.toWorkType !== t.fromWorkType ? ' (alterado)' : ''} · a partir de {t.effectiveDate.split('-').reverse().join('/')}</div>{t.sei && <div className="text-xs text-muted font-mono">SEI {t.sei}</div>}</> },
             { id: 'date', label: 'Vigência', sort: t => t.effectiveDate, tdClass: 'text-xs text-muted whitespace-nowrap', render: t => t.effectiveDate.split('-').reverse().join('/') },
           ]} />
         </div>

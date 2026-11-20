@@ -82,12 +82,15 @@ export interface Magistrate {
   status: MagistrateStatus;
   /** Já desistiu antes (mesmo nome): indicação para análise do pedido de nova inscrição */
   priorWithdrawal?: { sei: string; requestDate?: string };
+  /** Consulta de status: inscrição feita depois de uma desistência ainda em vigor, aguardando análise */
+  afterWithdrawal?: { requestDate: string };
   /** Inscrições com o mesmo nome nesta edição (mesma pessoa) */
   duplicateCount?: number;
   /** Mesma pessoa já vinculada e ativa em outra edição (painel de vinculações) */
   linkedElsewhere?: { editionTitle: string; unit: string; area: string }[];
   editionTitle?: string;
-  match?: (Match & { unit?: Unit | null }) | null;
+  /** Consulta de status: designações do magistrado (pode atuar em mais de uma unidade) */
+  matches?: { assignedArea: string; workType: string; unit: { unitName: string; comarca: string } | null }[];
 }
 
 export interface Unit {
@@ -165,4 +168,4 @@ export interface PanelRow { id: string; editionId: string; editionTitle: string;
 export interface Withdrawal { id: string; editionId: string; name: string; area: string; unit: string; sei: string; requestDate?: string; endedAt?: string; createdAt: string }
 /** Período de atuação de um magistrado numa unidade (sem fim = em curso) */
 export interface ActingPeriod { id: string; name: string; editionId: string; editionTitle: string; area: string; unit: string; workType: string; start?: string; end?: string; endReason: '' | 'Alteração de vinculação' | 'Desistência' | 'Exclusão'; sei?: string }
-export interface Transfer { id: string; editionId: string; magistrateId: string; name: string; area: string; toArea?: string; sei?: string; fromUnit: string; toUnit: string; fromWorkType: string; toWorkType: string; effectiveDate: string; createdAt: string }
+export interface Transfer { id: string; editionId: string; magistrateId: string; name: string; /** 'acumulo': nova designação mantendo a(s) atual(is) */ kind?: 'acumulo'; area: string; toArea?: string; sei?: string; fromUnit: string; toUnit: string; fromWorkType: string; toWorkType: string; effectiveDate: string; createdAt: string }
