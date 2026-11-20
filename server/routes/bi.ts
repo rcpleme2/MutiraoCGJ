@@ -3,7 +3,7 @@ import express from 'express';
 import crypto from 'crypto';
 import { canonicalComarca } from '../../src/catalogo-tjpr';
 import { comarcaInText } from '../../src/catalogo-match';
-import { actingPeriods, periodDays } from '../links.ts';
+import { actingPeriods, periodDays, todayYmd } from '../links.ts';
 import { saveState } from '../persistence.ts';
 import { log } from '../state.ts';
 import { brDate, clientIp, csvCell } from '../util.ts';
@@ -34,10 +34,15 @@ export function register(app: express.Express) {
   app.get('/api/bi/designacoes', (req, res) => {
     if (!biAuthorized(req, res)) return;
     const situation = { '': 'Ativo', 'Alteração de vinculação': 'Alterado', 'Desistência': 'Desistente', 'Exclusão': 'Excluído' } as const;
+    // Pela data de hoje: período que ainda não terminou continua "Ativo" (ex.: até a véspera de uma sucessão ou até o fim do
+    // mês da desistência); período que ainda não começou é "Programado".
+    const today = todayYmd();
+    const situationOf = (p: { start?: string; end?: string; endReason: keyof typeof situation }) =>
+      p.start && p.start > today ? 'Programado' : p.endReason && p.end && p.end >= today ? 'Ativo' : situation[p.endReason];
     const rows = actingPeriods().map((p) => ({
       edicao: p.editionTitle, magistrado: p.name, area: p.area, unidade: p.unit,
       comarca: p.comarca ?? (p.unit ? canonicalComarca(comarcaInText(p.unit)) ?? comarcaInText(p.unit) ?? '' : ''), atuacao: p.workType,
-      situacao: situation[p.endReason], inicio: brDate(p.start), fim: brDate(p.end), dias: String(periodDays(p) ?? ''),
+      situacao: situationOf(p), inicio: brDate(p.start), fim: brDate(p.end), dias: String(periodDays(p) ?? ''),
     }));
     console.log(JSON.stringify({ severity: 'INFO', message: `Designações lidas pela integração BI (${rows.length} linhas)`, audit: { category: 'Exportação', ip: clientIp(req) } }));
     if (Date.now() - lastBiLog > 6 * 60 * 60_000) {

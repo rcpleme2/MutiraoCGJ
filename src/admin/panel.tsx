@@ -49,6 +49,9 @@ export function PostIt({ row, run, onSaved }: { row: PanelRow; run: RunFn; onSav
   );
 }
 
+/** Hoje (AAAA-MM-DD) no horário de Brasília */
+const todayYmd = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Sao_Paulo' });
+
 export function PanelAdmin({ run, confirm, onChanged }: {
   run: RunFn; confirm: (m: string, label?: string) => Promise<boolean>; onChanged: () => void;
 }) {
@@ -95,7 +98,7 @@ export function PanelAdmin({ run, confirm, onChanged }: {
     if (r) { setText(''); setPreview(null); await load(); onChanged(); }
   };
   const removeRow = async (r: PanelRow) => {
-    if (!(await confirm(`Desfazer a vinculação de ${r.name} à unidade ${r.unit}? O magistrado volta à lista de espera.`, 'Desfazer vinculação'))) return;
+    if (!(await confirm(`Desfazer a vinculação de ${r.name} à unidade ${r.unit}? O magistrado volta a aguardar vinculação (se não atuar em outra unidade).`, 'Desfazer vinculação'))) return;
     await run(() => api(`/panel/rows/${r.id}`, { method: 'DELETE' }), 'Vinculação desfeita.');
     await load(); onChanged();
   };
@@ -137,7 +140,7 @@ export function PanelAdmin({ run, confirm, onChanged }: {
   };
   const exportPeriods = () => run(() => download('/panel/periods.xlsx', 'historico-atuacao.xlsx'));
   const undoWithdrawal = async (w: Withdrawal) => {
-    if (!(await confirm(`Desfazer a desistência de ${w.name}? O magistrado volta à lista de espera; as designações anteriores não são restauradas.`, 'Desfazer desistência'))) return;
+    if (!(await confirm(`Desfazer a desistência de ${w.name}? O magistrado volta a aguardar vinculação; as designações anteriores não são restauradas.`, 'Desfazer desistência'))) return;
     await run(() => api(`/panel/withdrawals/${w.id}`, { method: 'DELETE' }), 'Registro de desistência desfeito.');
     await load(); onChanged();
   };
@@ -220,6 +223,8 @@ export function PanelAdmin({ run, confirm, onChanged }: {
               <div className="text-[11px] text-muted mt-1 leading-snug">1ª: {r.firstPreference || '—'}{r.secondPreference ? <><br />2ª: {r.secondPreference}</> : null}</div>
             </> },
             { id: 'unit', label: 'Unidade', filter: r => fullUnitName({ unitName: r.unit, comarca: r.comarca, separator: r.separator }), sort: r => fullUnitName({ unitName: r.unit, comarca: r.comarca, separator: r.separator }), render: r => <>
+              {r.previous && <div className="text-xs text-ink mb-1">Atual: <strong>{r.previous.unit}</strong> <span className="text-muted">até {dmy(r.previous.until)}</span></div>}
+              {r.previous && <div className="text-[11px] uppercase tracking-wide text-bronze">A partir de {dmy(r.since!)}:</div>}
               {fullUnitName({ unitName: r.unit, comarca: r.comarca, separator: r.separator })}
               {r.note && <div className="text-xs text-muted">Obs.: {r.note}</div>}
               <button type="button" className="block text-xs text-bronze hover:underline" title="Corrigir a data de início da atuação" onClick={() => setStartEdit({ row: r, date: r.since ?? '' })}>
@@ -248,7 +253,7 @@ export function PanelAdmin({ run, confirm, onChanged }: {
           <SmartTable bare picker={false} id="alteracoes" rows={data.transfers} rowKey={t => t.id} empty="" defaultSort={{ key: 'date', dir: 'desc' }} cols={[
             { id: 'name', label: 'Magistrado(a)', sort: t => t.name, tdClass: 'font-medium', render: t => t.name },
             { id: 'from', label: 'Vinculação anterior', sort: t => t.fromUnit, render: t => { const d = new Date(`${t.effectiveDate}T00:00:00Z`); d.setUTCDate(d.getUTCDate() - 1); return <>{t.fromUnit}<div className="text-xs text-muted">{t.area} · {t.fromWorkType === 'Audiência' ? 'Audiências' : t.fromWorkType} · até {d.toISOString().slice(0, 10).split('-').reverse().join('/')}</div></>; } },
-            { id: 'to', label: 'Nova vinculação', sort: t => t.toUnit, render: t => <>{t.toUnit}<div className="text-xs text-bronze">{t.toArea || t.area}{t.toArea && t.toArea.trim() !== t.area.trim() ? ' (alterada)' : ''} · {t.toWorkType === 'Audiência' ? 'Audiências' : t.toWorkType}{t.toWorkType !== t.fromWorkType ? ' (alterado)' : ''} · a partir de {t.effectiveDate.split('-').reverse().join('/')}</div>{t.sei && <div className="text-xs text-muted font-mono">SEI {t.sei}</div>}</> },
+            { id: 'to', label: 'Nova vinculação', sort: t => t.toUnit, render: t => <>{t.toUnit}<div className="text-xs text-bronze">{t.toArea || t.area}{t.toArea && t.toArea.trim() !== t.area.trim() ? ' (alterada)' : ''} · {t.toWorkType === 'Audiência' ? 'Audiências' : t.toWorkType}{t.toWorkType !== t.fromWorkType ? ' (alterado)' : ''} · a partir de {t.effectiveDate.split('-').reverse().join('/')}{t.kind === 'sucessao' ? ' (sucessão: nova janela)' : ''}</div>{t.sei && <div className="text-xs text-muted font-mono">SEI {t.sei}</div>}</> },
             { id: 'date', label: 'Vigência', sort: t => t.effectiveDate, tdClass: 'text-xs text-muted whitespace-nowrap', render: t => t.effectiveDate.split('-').reverse().join('/') },
           ]} />
         </div>
@@ -287,8 +292,8 @@ export function PanelAdmin({ run, confirm, onChanged }: {
               { id: 'name', label: 'Magistrado(a)', sort: p => `${p.name}|${p.start ?? ''}`, tdClass: 'font-medium', render: p => p.name },
               { id: 'unit', label: 'Unidade', sort: p => p.unit, render: p => <>{p.unit}<div className="text-xs text-muted">{p.area}{p.workType ? ` · ${p.workType === 'Audiência' ? 'Audiências' : p.workType}` : ''}</div></> },
               { id: 'edition', label: 'Janela', optional: true, sort: p => p.editionTitle, filter: p => p.editionTitle, tdClass: 'text-xs text-muted', render: p => p.editionTitle },
-              { id: 'start', label: 'Início', sort: p => p.start ?? '', tdClass: 'whitespace-nowrap', render: p => (p.start ? dmy(p.start) : <span className="text-warn">A informar</span>) },
-              { id: 'end', label: 'Fim', sort: p => p.end ?? (p.endReason ? '0' : '9'), tdClass: 'whitespace-nowrap', render: p => (p.end ? dmy(p.end) : p.endReason ? <span className="text-warn">A informar</span> : <Badge tone="ok">Em curso</Badge>) },
+              { id: 'start', label: 'Início', sort: p => p.start ?? '', tdClass: 'whitespace-nowrap', render: p => (p.start ? <>{dmy(p.start)}{p.start > todayYmd() && <div className="text-[11px] text-bronze">programado</div>}</> : <span className="text-warn">A informar</span>) },
+              { id: 'end', label: 'Fim', sort: p => p.end ?? (p.endReason ? '0' : '9'), tdClass: 'whitespace-nowrap', render: p => (p.end ? <>{dmy(p.end)}{p.end >= todayYmd() && <div className="text-[11px] text-bronze">previsto</div>}</> : p.endReason ? <span className="text-warn">A informar</span> : <Badge tone="ok">Em curso</Badge>) },
               { id: 'reason', label: 'Encerramento', filter: p => p.endReason || 'Em curso', sort: p => p.endReason, tdClass: 'text-xs', render: p => <>{p.endReason || '—'}{p.sei && <div className="text-muted font-mono">SEI {p.sei}</div>}</> },
             ]} />
           );

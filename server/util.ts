@@ -73,3 +73,5 @@ export const brDate = (d?: string) => {
   return Number.isNaN(t.getTime()) ? '' : t.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
 };
 export const workLabel = (w?: string) => (w === 'Audiência' ? 'Audiências' : w || '—');
+/** Rótulo do status do magistrado para exibição ("Lista de Espera" e "Aprovado": aprovado e aguardando vinculação) */
+export const magistrateStatusLabel = (s: string) => (s === 'Lista de Espera' || s === 'Aprovado' ? 'Aprovado e aguardando vinculação' : s);

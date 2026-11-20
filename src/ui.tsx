@@ -13,6 +13,9 @@ export function Badge({ tone = 'neutral', children }: { tone?: keyof typeof TONE
   return <span className={`inline-block whitespace-nowrap px-2.5 py-1 rounded text-[11px] font-medium leading-none ${TONES[tone]}`}>{children}</span>;
 }
 
+/** Rótulo exibido do status do magistrado ("Lista de Espera" e "Aprovado" são o mesmo momento: aprovado, sem vinculação) */
+export const magistrateStatusLabel = (s: string) => (s === 'Lista de Espera' || s === 'Aprovado' ? 'Aprovado e aguardando vinculação' : s);
+
 export const magistrateTone = (s: string) =>
   s === 'Rejeitado' || s === 'Excluído' ? 'danger' : s === 'Desistente' ? 'neutral' : s === 'Atribuído' ? 'ok' : s === 'Aprovado' || s === 'Lista de Espera' ? 'info' : 'warn';
 

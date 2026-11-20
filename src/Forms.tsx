@@ -209,8 +209,8 @@ export function MagistrateForm({
         <Field label="Status inicial">
           <select className="input" value={f.status} onChange={set('status')}>
             <option>Aguardando Conferência</option>
-            <option>Aprovado</option>
-            {initial && <option>Lista de Espera</option>}
+            <option value="Aprovado">Aprovado e aguardando vinculação</option>
+            {initial?.status === 'Lista de Espera' && <option value="Lista de Espera">Aprovado e aguardando vinculação</option>}
             {initial?.status === 'Atribuído' && <option>Atribuído</option>}
             {initial?.status === 'Rejeitado' && <option>Rejeitado</option>}
             {initial?.status === 'Desistente' && <option>Desistente</option>}

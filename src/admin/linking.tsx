@@ -19,6 +19,20 @@ export const prefLabel = (m: Magistrate | undefined, area: string) => {
   return !m ? '' : eq(m.firstPreference) ? '1ª preferência atendida' : eq(m.secondPreference) ? '2ª preferência atendida' : 'fora das preferências';
 };
 
+/** Magistrados já vinculados em outra unidade, que podem passar a atuar nesta por sucessão (a partir do início da janela), com a área sugerida */
+export function linkedElsewhereFor(unit: Unit, magistrates: Magistrate[], matches: Match[]): (Eligible & { units: string[] })[] {
+  const byMag = new Map<string, Match[]>();
+  for (const x of matches) { if (!byMag.has(x.magistrateId)) byMag.set(x.magistrateId, []); byMag.get(x.magistrateId)!.push(x); }
+  return magistrates
+    .filter(m => byMag.has(m.id) && !byMag.get(m.id)!.some(x => x.unitId === unit.id) && m.status !== 'Rejeitado' && m.status !== 'Desistente' && m.status !== 'Excluído')
+    .map(m => {
+      const first = unit.areas.includes(m.firstPreference);
+      const second = !first && !!m.secondPreference && unit.areas.includes(m.secondPreference);
+      return { m, area: first ? m.firstPreference : second ? m.secondPreference : unit.areas[0], rank: (first ? 1 : second ? 2 : 0) as 0 | 1 | 2, units: byMag.get(m.id)!.map(x => x.unitId) };
+    })
+    .sort((x, y) => (x.rank || 3) - (y.rank || 3) || x.m.name.localeCompare(y.m.name));
+}
+
 export function eligibleFor(unit: Unit, magistrates: Magistrate[], matches: Match[], current?: Match) {
   const taken = new Set(matches.filter(x => x.id !== current?.id).map(x => x.magistrateId));
   const list: Eligible[] = magistrates
@@ -164,10 +178,11 @@ export function UnitDetail({ unit, magistrates, matches, busy, onLink, onUnlink 
   );
 }
 
-export type SaveLink = (unit: Unit, magistrateId: string, area: string, workType: WorkType, match?: Match) => void;
+/** succession: o magistrado já vinculado deixa a unidade atual na véspera do início da janela desta unidade e passa a atuar nela */
+export type SaveLink = (unit: Unit, magistrateId: string, area: string, workType: WorkType, match?: Match, succession?: boolean) => void;
 
 /* ---------- Uma vaga da unidade: magistrado vinculado ou a vincular ---------- */
-export function LinkSlot({ unit, magistrates, matches, match, busy, onSave, onUnlink }: {
+export function LinkSlot({ unit, magistrates, matches, match, busy, onSave, onUnlink, units, windowStart }: {
   unit: Unit;
   magistrates: Magistrate[];
   matches: Match[];
@@ -175,15 +190,23 @@ export function LinkSlot({ unit, magistrates, matches, match, busy, onSave, onUn
   busy: boolean;
   onSave: SaveLink;
   onUnlink: (matchId: string) => void;
+  /** todas as unidades (para mostrar onde atua quem já está vinculado) */
+  units: Unit[];
+  /** início da atuação da janela da unidade: data da sucessão */
+  windowStart?: string;
 }) {
   const { same, other } = eligibleFor(unit, magistrates, matches, match);
+  const elsewhere = match ? [] : linkedElsewhereFor(unit, magistrates, matches);
   const all = [...same, ...other];
   const [magId, setMagId] = useState(match?.magistrateId ?? '');
   const [workType, setWorkType] = useState<WorkType | ''>(match?.workType ?? '');
 
-  const sel = all.find(e => e.m.id === magId);
+  const succ = magId.startsWith('succ:') ? elsewhere.find(e => e.m.id === magId.slice(5)) : undefined;
+  const sel = succ ?? all.find(e => e.m.id === magId);
+  const unitName = (id: string) => { const u = units.find(x => x.id === id); return u ? unitLabel(u) : 'unidade removida'; };
+  const dmyStart = windowStart ? windowStart.split('-').reverse().join('/') : '';
   const effective: WorkType | '' = workType || (sel ? defaultWorkType(unit, sel.m) : '');
-  const changed = !!sel && (!match || match.magistrateId !== magId || match.workType !== effective);
+  const changed = !!sel && (!match || match.magistrateId !== magId || match.workType !== effective) && (!succ || !!windowStart);
 
   const label = (e: Eligible) =>
     `${e.m.name}${e.rank ? ` — ${e.rank}ª preferência` : ''}${e.m.acceptsHearings ? (e.m.hearingPeriod && unit.hearingPeriod ? ` — audiências: ${hearingPeriodLabel(e.m.hearingPeriod).toLowerCase()}${periodsClash(e.m.hearingPeriod, unit.hearingPeriod) ? ' (período diferente)' : ''}` : '') : ' — não aceita audiências'}`;
@@ -205,6 +228,11 @@ export function LinkSlot({ unit, magistrates, matches, match, busy, onSave, onUn
                 {other.map(e => <option key={e.m.id} value={e.m.id}>{label(e)}</option>)}
               </optgroup>
             )}
+            {elsewhere.length > 0 && (
+              <optgroup label={`Já vinculados em outra unidade (sucessão${dmyStart ? ` a partir de ${dmyStart}` : ''})`}>
+                {elsewhere.map(e => <option key={e.m.id} value={`succ:${e.m.id}`}>{e.m.name} — atua em {e.units.map(unitName).join(' / ')}{e.rank ? ` — ${e.rank}ª preferência` : ''}</option>)}
+              </optgroup>
+            )}
           </select>
         </div>
         <div>
@@ -213,12 +241,15 @@ export function LinkSlot({ unit, magistrates, matches, match, busy, onSave, onUn
         </div>
         <div className="flex flex-wrap items-end gap-2 md:pt-[1.55rem]">
           <button className="btn-primary btn-sm" disabled={!changed || busy}
-            onClick={() => sel && effective && onSave(unit, sel.m.id, sel.area, effective, match)}>
-            <Check className="w-4 h-4" /> {match ? 'Salvar' : 'Vincular'}
+            onClick={() => sel && effective && onSave(unit, sel.m.id, sel.area, effective, match, !!succ)}>
+            <Check className="w-4 h-4" /> {match ? 'Salvar' : succ ? 'Vincular (sucessão)' : 'Vincular'}
           </button>
           {match && <button className="btn-secondary btn-sm" disabled={busy} onClick={() => onUnlink(match.id)}>Desfazer</button>}
         </div>
       </div>
+      {succ && (windowStart
+        ? <p className="text-[11px] text-bronze mt-1.5">Sucessão: <strong>{succ.m.name}</strong> atua em {succ.units.map(unitName).join(' / ')} até a véspera do início da janela desta unidade e passa a atuar <strong>somente aqui a partir de {dmyStart}</strong>. A alteração de vinculação fica registrada no histórico.</p>
+        : <p className="text-[11px] text-danger mt-1.5">Para registrar a sucessão, defina o início da atuação da janela desta unidade (aba Janelas de inscrição).</p>)}
       {sel && effective && <WorkTypeWarnings unit={unit} mag={sel.m} workType={effective} />}
       {sel && sel.rank > 0 && <p className="text-[11px] text-ok mt-1.5">Atende a {sel.rank}ª preferência do magistrado: {sel.area}.</p>}
       {sel && sel.rank === 0 && <p className="text-[11px] text-warn mt-1.5">Área fora das preferências do magistrado; será registrada como {sel.area}.</p>}
@@ -227,7 +258,7 @@ export function LinkSlot({ unit, magistrates, matches, match, busy, onSave, onUn
 }
 
 /* ---------- Linha da aba Vinculações: uma unidade escolhida e suas vagas ---------- */
-export function UnitLinkRow({ unit, magistrates, matches, busy, onSave, onUnlink, onSlots }: {
+export function UnitLinkRow({ unit, magistrates, matches, busy, onSave, onUnlink, onSlots, units, windowStart }: {
   unit: Unit;
   magistrates: Magistrate[];
   matches: Match[];
@@ -235,6 +266,8 @@ export function UnitLinkRow({ unit, magistrates, matches, busy, onSave, onUnlink
   onSave: SaveLink;
   onUnlink: (matchId: string) => void;
   onSlots: (n: number) => void;
+  units: Unit[];
+  windowStart?: string;
 }) {
   const linked = unitMatchesOf(unit, matches);
   const emptySlots = Math.max(0, unit.slots - linked.length);
@@ -270,10 +303,10 @@ export function UnitLinkRow({ unit, magistrates, matches, busy, onSave, onUnlink
       <div className="mt-4 space-y-4 border-t border-line pt-4">
         {linked.map(m => (
           <LinkSlot key={`${m.id}-${m.magistrateId}-${m.workType}`} unit={unit} magistrates={magistrates} matches={matches} match={m}
-            busy={busy} onSave={onSave} onUnlink={onUnlink} />
+            busy={busy} onSave={onSave} onUnlink={onUnlink} units={units} windowStart={windowStart} />
         ))}
         {Array.from({ length: emptySlots }, (_, i) => (
-          <LinkSlot key={`empty-${i}`} unit={unit} magistrates={magistrates} matches={matches} busy={busy} onSave={onSave} onUnlink={onUnlink} />
+          <LinkSlot key={`empty-${i}`} unit={unit} magistrates={magistrates} matches={matches} busy={busy} onSave={onSave} onUnlink={onUnlink} units={units} windowStart={windowStart} />
         ))}
       </div>
     </div>

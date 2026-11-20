@@ -164,6 +164,16 @@ Exemplo: `gcloud run services update mutiraocgj --region europe-west1 --update-e
   dentro do prazo. No topo da administração, o filtro "Janela de inscrição" restringe o que é exibido (padrão: todas).
 - **Nova inscrição da mesma pessoa:** um e-mail só pode ter uma inscrição de magistrado em aberto; quem foi rejeitado, desistiu
   ou foi excluído pode se inscrever de novo (a inscrição antiga fica no histórico).
+- **Sucessão (mudança de unidade numa nova janela):** o vínculo do magistrado é sempre único em cada data. Em
+  *Vinculações → Vincular unidades*, a vaga vazia de uma unidade oferece também os magistrados já vinculados em outra
+  unidade. Escolhido um deles, ele **continua na unidade atual até a véspera** do início da atuação da janela da nova
+  unidade (que precisa estar definido) e **passa a atuar só na nova unidade a partir dessa data**. É uma alteração de
+  vinculação (tipo "sucessão"), registrada no painel, no histórico, no relatório em PDF e no Qlik. Até a véspera, o painel
+  e a consulta pública mostram a unidade atual ("até dd/mm") e a nova ("a partir de dd/mm"); no Qlik, a atual segue `Ativo`
+  e a nova aparece como `Programado`.
+- **Status "Aprovado e aguardando vinculação":** é o rótulo exibido para os status internos "Lista de Espera" e "Aprovado".
+- **Nova inscrição depois de desistência:** a consulta de status (pelo nome ou pelo e-mail) informa que há pedido de
+  inscrição pendente de análise, posterior à desistência.
 - **Unidade rejeitada com o pedido mantido:** volta para "Em análise" na próxima janela de inscrição (na seguinte, se já existir,
   ou assim que for criada).
 
@@ -233,8 +243,9 @@ tabela única com as designações e o **histórico de atuação**: uma linha po
 
 - **Colunas:** `edicao` (nome da janela de inscrição do magistrado; o nome da coluna foi mantido), `magistrado`, `area`, `unidade`, `comarca`, `atuacao`, `situacao`, `inicio` e `fim` (DD/MM/AAAA)
   e `dias` (dias corridos do período, contando o primeiro e o último; período em curso conta até hoje).
-- **Situação:** `Ativo` (em curso, `fim` vazio), `Alterado` (encerrado por alteração de vara/área; a nova unidade é outra
-  linha, começando no dia seguinte), `Desistente` e `Excluído`.
+- **Situação (pela data de hoje):** `Ativo` (em curso, ou com `fim` ainda por chegar — por exemplo, até a véspera de uma
+  sucessão ou até o fim do mês da desistência), `Programado` (o período ainda não começou), `Alterado` (encerrado por
+  alteração de vara/área/tipo ou sucessão; a nova unidade é outra linha, começando no dia seguinte), `Desistente` e `Excluído`.
 - **Regras das datas:** o início é o da vinculação ou, sem data própria, o da janela de inscrição do magistrado (campo *Início da
   atuação* no cadastro da janela; Vinculações iniciais = 15/06/2026). A alteração de vara/área encerra o período na véspera da nova vigência; a
   desistência, no último dia do mês do pedido; a exclusão, na data do registro. Data ainda não informada = campo vazio.

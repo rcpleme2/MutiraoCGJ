@@ -1,7 +1,7 @@
-// Rotas das vinculações e da lista de espera.
+// Rotas das vinculações e da lista de aprovados aguardando vinculação.
 import express from 'express';
 import { editionById, resolveEdition, scopeOf } from '../editions.ts';
-import { defaultWorkType, describeMatch, refreshUnitStatus, undoMatch, updateMatch } from '../links.ts';
+import { defaultWorkType, describeMatch, refreshUnitStatus, releaseIfUnlinked, undoMatch, updateMatch } from '../links.ts';
 import { log, newId, S } from '../state.ts';
 import { type Match, MATCH_WORK_TYPES } from '../types.ts';
 import { isYmd } from '../util.ts';
@@ -14,11 +14,8 @@ export function register(app: express.Express) {
     if (!confirmedWipe(req)) return res.status(400).json({ error: 'Confirmação ausente.' });
 
     const removed = S.matches.filter((m) => m.editionId === edition.id);
-    removed.forEach((m) => {
-      const g = S.magistrates.find((x) => x.id === m.magistrateId);
-      if (g && g.status === 'Atribuído') g.status = 'Lista de Espera';
-    });
     S.matches = S.matches.filter((m) => m.editionId !== edition.id);
+    removed.forEach((m) => releaseIfUnlinked(m.magistrateId));
     new Set(removed.map((m) => m.unitId)).forEach(refreshUnitStatus); // a unidade pode ser de outra janela
     log(edition.id, 'Administração', 'Vinculação', `EXCLUSÃO EM LOTE: ${removed.length} vinculação(ões) desfeita(s).`);
     res.json({ success: true, count: removed.length });
@@ -61,10 +58,29 @@ export function register(app: express.Express) {
       return res.status(409).json({ error: `Todas as ${unit.slots || 1} vaga(s) desta unidade já estão preenchidas. Aumente o número de magistrados da unidade para vincular outro.` });
     }
 
-    const existingMatch = S.matches.find((m) => m.magistrateId === magistrateId);
-    if (existingMatch) {
-      S.matches = S.matches.filter((m) => m.id !== existingMatch.id);
-      refreshUnitStatus(existingMatch.unitId);
+    // Sucessão: quem já está vinculado continua na unidade atual até a véspera do início da atuação da janela desta
+    // unidade e, a partir dessa data, passa a atuar só nela (vínculo único: nunca em duas unidades no mesmo dia).
+    // É uma alteração de vinculação com vigência no início da janela.
+    const current = S.matches.filter((m) => m.magistrateId === magistrateId);
+    if (req.body?.succession === true) {
+      const unitWindow = editionById(unit.editionId);
+      const cur = current[0];
+      if (!cur) return res.status(400).json({ error: 'Este magistrado não tem vinculação vigente: faça a vinculação normal.' });
+      if (current.length > 1) return res.status(409).json({ error: 'Este magistrado tem mais de uma vinculação registrada. Corrija no painel antes da sucessão.' });
+      if (cur.unitId === unitId) return res.status(409).json({ error: 'O magistrado já atua nesta unidade.' });
+      const from = unitWindow?.startDate;
+      if (!from) return res.status(400).json({ error: `Defina o início da atuação da janela "${unitWindow?.title ?? ''}" (aba Janelas de inscrição) para registrar a sucessão.` });
+      const since = cur.startDate ?? editionById(cur.editionId)?.startDate;
+      if (since && from <= since) {
+        return res.status(400).json({ error: `A janela desta unidade começa em ${from.split('-').reverse().join('/')}, antes ou no mesmo dia do início da atuação atual (${since.split('-').reverse().join('/')}).` });
+      }
+      const done = updateMatch(cur, { unitId, assignedArea, workType: workType || defaultWorkType(unit, mag), effectiveDate: from }, 'sucessao');
+      if ('error' in done) return res.status(done.status).json({ error: done.error });
+      done.match.editionId = unit.editionId; // a partir da sucessão, a designação é da janela da unidade
+      return res.status(201).json({ success: true, match: done.match });
+    }
+    if (current.length) {
+      return res.status(409).json({ error: 'Este magistrado já está vinculado a outra unidade. Para que passe a atuar nesta a partir do início da janela, escolha-o entre os já vinculados (sucessão).' });
     }
 
     mag.status = 'Atribuído';

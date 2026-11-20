@@ -3,10 +3,10 @@ import { fullUnitName } from '../../src/catalogo-tjpr';
 import express from 'express';
 import { sameUnit, unitResolver } from '../catalog.ts';
 import { editionById, registrationMessage, registrationState, resolveEdition, scopeOf } from '../editions.ts';
-import { panelRows, personOf, refreshUnitStatus, samePerson, undoMatch, unitLabel } from '../links.ts';
+import { panelRows, personOf, refreshUnitStatus, samePerson, scheduledChange, undoMatch, unitLabel } from '../links.ts';
 import { log, newId, reqCtx, S } from '../state.ts';
 import { type Magistrate, type MagistrateStatus } from '../types.ts';
-import { cleanCell, clientIp, freeText, personKey } from '../util.ts';
+import { cleanCell, clientIp, freeText, personKey, magistrateStatusLabel } from '../util.ts';
 import { actorOf, confirmedWipe, MAGISTRATE_STATUSES, parseMagistrate } from '../validation.ts';
 
 // Exclusão do magistrado: exige justificativa; é lógica (status "Excluído") e reversível. Vinculações são desfeitas.
@@ -66,11 +66,17 @@ export function register(app: express.Express) {
       if (wanted.split(' ').length < 2 || wanted.length < 6) return res.status(400).json({ error: 'Informe o nome completo do magistrado.' });
       const mine = panelRows().filter((r) => fold(r.name) === wanted);
       const active = mine.length > 0;
-      const revoked = S.withdrawals.some((w) => !w.endedAt && fold(w.name) === wanted);
-      const situation = active ? 'ativa' : revoked ? 'revogada' : 'nao_consta';
+      const withdrawal = S.withdrawals.find((w) => !w.endedAt && fold(w.name) === wanted);
+      const situation = active ? 'ativa' : withdrawal ? 'revogada' : 'nao_consta';
+      // Nova inscrição feita depois da desistência e ainda não analisada
+      const pending = withdrawal && S.magistrates.find((m) => m.status === 'Aguardando Conferência' && fold(m.name) === wanted && m.createdAt > withdrawal.createdAt);
       // Vinculação ativa: informa também o eixo de atuação (área) e a unidade de designação — nada além disso
-      const designations = mine.map((r) => ({ area: r.area, unit: fullUnitName({ unitName: r.unit, comarca: r.comarca, separator: r.separator }) }));
-      return res.json({ situation, ...(active ? { designations } : {}) });
+      // Com alteração de vigência futura, a designação atual é a anterior até a véspera; a nova vem informada à parte
+      const designations = mine.map((r) => {
+        const unit = fullUnitName({ unitName: r.unit, comarca: r.comarca, separator: r.separator });
+        return r.previous ? { area: r.previous.area, unit: r.previous.unit, until: r.previous.until, next: { area: r.area, unit, from: r.since } } : { area: r.area, unit };
+      });
+      return res.json({ situation, ...(active ? { designations } : {}), ...(pending ? { pendingAfterWithdrawal: { createdAt: pending.createdAt } } : {}) });
     }
     const raw = req.body?.email;
     const emailQuery = typeof raw === 'string' ? raw.trim().toLowerCase().slice(0, 200) : '';
@@ -105,6 +111,12 @@ export function register(app: express.Express) {
       magistrates: matchedMagistrates.map((mag) => {
         const match = S.matches.find((m) => m.magistrateId === mag.id);
         const assigned = match ? S.units.find((u) => u.id === match.unitId) : undefined;
+        const since = match ? match.startDate ?? editionById(match.editionId)?.startDate : undefined;
+        const previous = match ? scheduledChange(match, since) : undefined;
+        // Inscrição posterior a uma desistência ainda em vigor, aguardando análise
+        const priorWithdrawal = mag.status === 'Aguardando Conferência'
+          ? S.withdrawals.find((w) => !w.endedAt && personKey(w.name) === personKey(mag.name) && !(w.magistrateIds ?? []).includes(mag.id) && mag.createdAt > w.createdAt)
+          : undefined;
         return {
           id: mag.id,
           name: mag.name,
@@ -119,8 +131,10 @@ export function register(app: express.Express) {
           createdAt: mag.createdAt,
           editionTitle: titleOf(mag.editionId),
           match: match
-            ? { assignedArea: match.assignedArea, workType: match.workType, unit: assigned ? { unitName: assigned.unitName, comarca: assigned.comarca } : null }
+            ? { assignedArea: match.assignedArea, workType: match.workType, unit: assigned ? { unitName: assigned.unitName, comarca: assigned.comarca } : null,
+              ...(previous ? { previous: { ...previous, from: since } } : {}) }
             : null,
+          ...(priorWithdrawal ? { afterWithdrawal: { requestDate: priorWithdrawal.requestDate ?? priorWithdrawal.createdAt.slice(0, 10) } } : {}),
         };
       }),
       units: matchedUnits.map((u) => ({
@@ -203,7 +217,7 @@ export function register(app: express.Express) {
     else if (wanted && wanted !== 'Atribuído' && wanted !== 'Rejeitado' && wanted !== 'Desistente' && wanted !== 'Excluído') mag.status = wanted;
     else if (mag.status === 'Atribuído') mag.status = 'Lista de Espera';
     if (before === 'Rejeitado' && mag.status !== 'Rejeitado') { mag.rejectionReason = undefined; mag.rejectedAt = undefined; }
-    if (mag.status !== before) changed.push(`status (${before} → ${mag.status})`);
+    if (mag.status !== before) changed.push(`status (${magistrateStatusLabel(before)} → ${magistrateStatusLabel(mag.status)})`);
 
     if (changed.length) {
       log(mag.editionId, 'Administração', 'Magistrado', `Inscrição de ${mag.name} editada: ${changed.join(', ')}.`);
@@ -277,7 +291,7 @@ export function register(app: express.Express) {
     const mag = S.magistrates.find((m) => m.id === req.params.id);
     if (!mag || mag.status !== 'Excluído') return res.status(404).json({ error: 'Magistrado excluído não encontrado.' });
     mag.status = mag.statusBeforeExclusion && mag.statusBeforeExclusion !== 'Excluído' ? mag.statusBeforeExclusion : 'Lista de Espera';
-    log(mag.editionId, 'Administração', 'Magistrado', `Exclusão de ${mag.name} desfeita (motivo registrado: ${mag.exclusionReason ?? '—'}). Status: ${mag.status}.`);
+    log(mag.editionId, 'Administração', 'Magistrado', `Exclusão de ${mag.name} desfeita (motivo registrado: ${mag.exclusionReason ?? '—'}). Status: ${magistrateStatusLabel(mag.status)}.`);
     mag.exclusionReason = undefined; mag.exclusionSei = undefined; mag.excludedAt = undefined; mag.excludedBy = undefined; mag.statusBeforeExclusion = undefined; mag.excludedFrom = undefined;
     res.json({ success: true, magistrate: mag });
   });

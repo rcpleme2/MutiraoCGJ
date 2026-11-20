@@ -1,5 +1,5 @@
 // Área administrativa: login, cabeçalho com filtro de janela, abas e as listas de magistrados e unidades. As telas de cada assunto ficam em src/admin/.
-import { Badge, Field, Modal, Notice, formatDate, formatDateTime, magistrateTone, useFeedback } from './ui';
+import { Badge, Field, Modal, Notice, formatDate, formatDateTime, magistrateStatusLabel, magistrateTone, useFeedback } from './ui';
 import React, { useCallback, useEffect, useState } from 'react';
 import { api, download, getToken, setToken } from './api';
 import { Edition, FaqItem, LogEntry, Magistrate, Match, Unit, WorkType, hearingPeriodLabel } from './types';
@@ -30,7 +30,7 @@ const SUBS: { id: Sub; label: string }[] = [
   { id: 'users', label: 'Usuários' },
 ];
 
-/** Seções da aba Vinculações: designações vigentes e histórico, vincular unidades e lista de espera */
+/** Seções da aba Vinculações: designações vigentes e histórico, vincular unidades e aprovados aguardando vinculação */
 type LinkView = 'panel' | 'link' | 'waiting';
 
 export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => void }) {
@@ -294,9 +294,9 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
     magistrates: { path: '/magistrates/delete-all', label: 'inscrições de magistrados', count: () => magistrates.filter(inScope).length,
       effect: 'As vinculações desses magistrados também serão removidas, e as unidades afetadas voltarão a ficar sem magistrado.' },
     units: { path: '/units/delete-all', label: 'unidades judiciais', count: () => units.filter(inScope).length,
-      effect: 'As vinculações dessas unidades também serão removidas, e os magistrados afetados voltarão à lista de espera.' },
+      effect: 'As vinculações dessas unidades também serão removidas, e os magistrados afetados voltarão a aguardar vinculação (salvo se atuarem em outra unidade).' },
     matches: { path: '/matches/delete-all', label: 'vinculações', count: () => matches.filter(inScope).length,
-      effect: 'Os magistrados voltarão à lista de espera e as unidades ficarão sem magistrado. As inscrições são mantidas.' },
+      effect: 'Os magistrados voltarão a aguardar vinculação (salvo se atuarem em outra unidade) e as unidades ficarão sem magistrado. As inscrições são mantidas.' },
   } as const;
   const startWipe = (kind: 'magistrates' | 'units' | 'matches') => { setWiping(kind); setWipeText(''); setModal('wipe'); };
   const confirmWipe = async (e: React.FormEvent) => {
@@ -338,13 +338,13 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const chooseUnit = async (id: string) => { await run(() => api(`/units/${id}/choose`, { method: 'POST' }), 'Unidade escolhida para o mutirão.'); refresh(); };
 
   /** Cria ou altera uma vinculação (magistrado, área e atuação: audiência e/ou sentença) */
-  const saveLink = async (unit: Unit, magistrateId: string, area: string, workType: WorkType, match?: Match) => {
+  const saveLink = async (unit: Unit, magistrateId: string, area: string, workType: WorkType, match?: Match, succession?: boolean) => {
     setLinking(true);
-    const body = { magistrateId, unitId: unit.id, assignedArea: area, workType };
+    const body = { magistrateId, unitId: unit.id, assignedArea: area, workType, ...(succession ? { succession: true } : {}) };
     const r = await run(() => match
       ? api(`/matches/${match.id}`, { method: 'PUT', json: body })
       : api('/matches', { method: 'POST', json: withEdition(body) }),
-      match ? 'Vinculação atualizada.' : 'Vinculação efetivada.');
+      match ? 'Vinculação atualizada.' : succession ? 'Sucessão registrada: a nova unidade vale a partir do início da janela.' : 'Vinculação efetivada.');
     setLinking(false);
     if (r) refresh();
   };
@@ -553,8 +553,8 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             { id: 'location', label: 'Lotação', optional: true, filter: m => m.currentLocation, sort: m => m.currentLocation, tdClass: 'text-muted', render: m => <>{m.currentLocation}{m.currentLocation && !m.locationCatalogId && <span className="text-[11px] text-warn block">◦ A padronizar</span>}</> },
             { id: 'prefs', label: 'Preferências', optional: true, filter: m => [m.firstPreference, m.secondPreference].filter(Boolean), sort: m => m.firstPreference, tdClass: 'text-xs', render: m => <><div className="text-bronze font-medium">1ª: {m.firstPreference}</div><div className="text-muted">2ª: {m.secondPreference || '—'}</div></> },
             { id: 'hearings', label: 'Audiências', optional: true, filter: m => (m.acceptsHearings ? ['Aceita audiências', ...(m.hearingPeriod ? [hearingPeriodLabel(m.hearingPeriod)] : [])] : 'Não aceita'), sort: m => (m.acceptsHearings ? 1 : 0), render: m => <div className="flex flex-col items-start gap-0.5"><Badge tone={m.acceptsHearings ? 'ok' : 'neutral'}>{m.acceptsHearings ? 'Aceita' : 'Não aceita'}</Badge>{m.acceptsHearings && m.hearingPeriod && <span className="text-[11px] text-muted">{hearingPeriodLabel(m.hearingPeriod)}</span>}</div> },
-            { id: 'status', label: 'Status', sort: m => m.status, filter: m => m.status, render: m => <>
-              <Badge tone={magistrateTone(m.status)}>{m.status}</Badge>
+            { id: 'status', label: 'Status', sort: m => magistrateStatusLabel(m.status), filter: m => magistrateStatusLabel(m.status), render: m => <>
+              <Badge tone={magistrateTone(m.status)}>{magistrateStatusLabel(m.status)}</Badge>
               {m.status === 'Rejeitado' && m.rejectionReason && <div className="text-[11px] text-danger mt-1.5 max-w-[14rem] leading-snug" title={m.rejectionReason}>Motivo: {m.rejectionReason}</div>}
             </> },
             { id: 'actions', label: 'Ações', align: 'right', render: m => (
@@ -661,7 +661,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
           {([
             ['panel', 'Vigentes e histórico'],
             ['link', `Vincular unidades (${units.filter(u => inScope(u) && u.selection === 'Escolhida' && !matches.some(m => m.unitId === u.id)).length} sem magistrado)`],
-            ['waiting', `Lista de espera (${waiting.length})`],
+            ['waiting', `Aprovados aguardando vinculação (${waiting.length})`],
           ] as [LinkView, string][]).map(([id, text]) => (
             <button key={id} type="button" role="tab" aria-selected={linkView === id} onClick={() => setLinkView(id)}
               className={`px-3.5 py-2 rounded-md text-sm border transition-colors ${linkView === id ? 'bg-navy text-white border-navy' : 'bg-surface text-muted border-line hover:text-ink'}`}>{text}</button>
@@ -707,7 +707,8 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
                 return (
                   <UnitLinkRow key={`${u.id}-${sig}`}
                     unit={u} magistrates={magistrates} matches={matches} busy={linking}
-                    onSave={saveLink} onUnlink={unlinkFromUnit} onSlots={n => setSlots(u, n)} />
+                    onSave={saveLink} onUnlink={unlinkFromUnit} onSlots={n => setSlots(u, n)}
+                    units={units} windowStart={editions.find(e => e.id === u.editionId)?.startDate} />
                 );
               })}
               {chosenUnits.length > 0 && rows.length === 0 && <div className="card p-8 text-center text-sm text-muted">Nenhuma unidade neste filtro.</div>}
@@ -719,7 +720,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       {/* ---------- Espera ---------- */}
       {sub === 'matches' && linkView === 'waiting' && (
         <div>
-          <Toolbar title="Lista de espera" />
+          <Toolbar title="Aprovados e aguardando vinculação" />
           <SmartTable id="espera" rows={waiting} rowKey={m => m.id} empty="Nenhum magistrado em espera." defaultSort={{ key: 'createdAt', dir: 'asc' }} cols={[
             { id: 'name', label: 'Magistrado(a)', sort: m => m.name, render: m => <div className="font-medium">{m.name}</div> },
             { id: 'email', label: 'E-mail', optional: true, hidden: true, sort: m => m.email, render: m => <span className="text-xs text-muted break-all">{m.email || '—'}</span> },
@@ -858,7 +859,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
           <form onSubmit={rejectItem} className="space-y-4">
             <p className="text-sm text-muted">
               {rejecting.kind === 'units' ? 'Unidade' : 'Inscrição de'} <strong className="text-ink">{rejecting.name}</strong>.
-              {rejecting.linked && <span className="block mt-1 text-warn">{rejecting.kind === 'units' ? 'A unidade está vinculada a um magistrado: a vinculação será desfeita e ele voltará à lista de espera.' : 'O magistrado está vinculado a uma unidade: a vinculação será desfeita e a unidade voltará a ficar sem magistrado.'}</span>}
+              {rejecting.linked && <span className="block mt-1 text-warn">{rejecting.kind === 'units' ? 'A unidade está vinculada a um magistrado: a vinculação será desfeita e ele voltará a aguardar vinculação.' : 'O magistrado está vinculado a uma unidade: a vinculação será desfeita e a unidade voltará a ficar sem magistrado.'}</span>}
             </p>
             <Field label="Motivo da rejeição (aparece para o inscrito na consulta de status)">
               <textarea required autoFocus rows={4} className="input" value={rejectReason} onChange={e => setRejectReason(e.target.value)} placeholder={rejecting.kind === 'units' ? 'Ex.: Demanda não se enquadra nos critérios do mutirão.' : 'Ex.: Declaração de regularidade incompatível com os registros funcionais.'} />

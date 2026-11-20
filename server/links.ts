@@ -105,6 +105,18 @@ export const preferenceMet = (mag: Magistrate, area: string): 0 | 1 | 2 =>
   mag.firstPreference && norm(mag.firstPreference) === norm(area) ? 1 : mag.secondPreference && norm(mag.secondPreference) === norm(area) ? 2 : 0;
 export const preferenceText = (r: { preference?: number; firstPreference?: string }) =>
   r.preference === 1 ? '1ª preferência' : r.preference === 2 ? '2ª preferência' : r.firstPreference ? 'Fora das preferências' : '—';
+/** Hoje (AAAA-MM-DD) no horário de Brasília */
+export const todayYmd = () => ymdBrt(new Date().toISOString());
+/**
+ * Alteração de vinculação ainda não vigente (sucessão ou troca com data futura): a vinculação já aponta para a nova unidade,
+ * mas até a véspera da vigência o magistrado atua na anterior. Devolve a unidade anterior e o último dia nela.
+ */
+export function scheduledChange(mt: Match, since?: string): PanelRow['previous'] {
+  if (!since || since <= todayYmd()) return undefined;
+  const t = S.transfers.filter((x) => x.magistrateId === mt.magistrateId && x.effectiveDate === since)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  return t ? { unit: t.fromUnit, area: t.area, workType: t.fromWorkType, until: ymdDayBefore(since) } : undefined;
+}
 export function panelRows(): PanelRow[] {
   const seen = new Map<string, PanelRow>();
   for (const mt of S.matches) {
@@ -112,7 +124,9 @@ export function panelRows(): PanelRow[] {
     const un = S.units.find((u) => u.id === mt.unitId);
     if (!mag || !un || mag.status === 'Desistente' || mag.status === 'Excluído' || isHeaderRow(mag.name, mt.assignedArea, un.unitName)) continue;
     const k = `${panelKey({ name: mag.name, area: mt.assignedArea, unit: un.unitName })}|${mt.editionId}`;
-    if (!seen.has(k)) seen.set(k, { id: mt.id, editionId: mt.editionId, editionTitle: editionById(mt.editionId)?.title ?? '', magistrateId: mag.id, unitId: un.id, name: mag.name, area: mt.assignedArea, unit: un.unitName, comarca: un.comarca, separator: un.separator, workType: mt.workType, startDate: mt.startDate, since: mt.startDate ?? editionById(mt.editionId)?.startDate, note: mt.note, postit: mt.postit, postitUpdatedAt: mt.postitUpdatedAt, firstPreference: mag.firstPreference, secondPreference: mag.secondPreference, preference: preferenceMet(mag, mt.assignedArea) });
+    const since = mt.startDate ?? editionById(mt.editionId)?.startDate;
+    const previous = scheduledChange(mt, since);
+    if (!seen.has(k)) seen.set(k, { ...(previous ? { previous } : {}), id: mt.id, editionId: mt.editionId, editionTitle: editionById(mt.editionId)?.title ?? '', magistrateId: mag.id, unitId: un.id, name: mag.name, area: mt.assignedArea, unit: un.unitName, comarca: un.comarca, separator: un.separator, workType: mt.workType, startDate: mt.startDate, since, note: mt.note, postit: mt.postit, postitUpdatedAt: mt.postitUpdatedAt, firstPreference: mag.firstPreference, secondPreference: mag.secondPreference, preference: preferenceMet(mag, mt.assignedArea) });
   }
   return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR') || a.unit.localeCompare(b.unit, 'pt-BR'));
 }
@@ -162,14 +176,18 @@ export const periodDays = (p: { start?: string; end?: string }) => {
 export const personOf = (magistrateId: string, name: string): Person =>
   ({ key: personKey(name), email: S.magistrates.find((m) => m.id === magistrateId)?.email?.trim().toLowerCase() ?? '' });
 export const samePerson = (a: Person, b: Person) => a.key === b.key || (!!a.email && a.email === b.email);
+/** Magistrado sem nenhuma vinculação restante volta a "aprovado e aguardando vinculação" (pode atuar em mais de uma unidade). */
+export function releaseIfUnlinked(magistrateId: string) {
+  const mag = S.magistrates.find((m) => m.id === magistrateId);
+  if (mag && mag.status === 'Atribuído' && !S.matches.some((m) => m.magistrateId === magistrateId)) mag.status = 'Lista de Espera';
+}
 /** Desfaz uma vinculação (o painel é calculado a partir delas, então a linha some automaticamente). */
 export function undoMatch(id: string, reason = 'Vinculação desfeita') {
   const match = S.matches.find((m) => m.id === id);
   if (!match) return;
-  const mag = S.magistrates.find((m) => m.id === match.magistrateId);
-  if (mag && mag.status === 'Atribuído') mag.status = 'Lista de Espera';
   log(match.editionId, 'Administração', 'Vinculação', `${reason}: ${describeMatch(match)}.`);
   S.matches = S.matches.filter((m) => m.id !== id);
+  releaseIfUnlinked(match.magistrateId);
   refreshUnitStatus(match.unitId);
 }
 export const unitLabel = (r: { unit: string; comarca?: string; separator?: string }) => fullUnitName({ unitName: r.unit, comarca: r.comarca, separator: r.separator });
@@ -183,7 +201,7 @@ export const describeMatch = (mt: Match) => {
  * Com data de vigência, a troca de unidade, área ou tipo do mesmo magistrado é uma alteração de vinculação:
  * o período anterior vai até a véspera e o novo começa na data. Usada pela edição da vinculação e pelo painel (alterar vara/área/tipo).
  */
-export function updateMatch(match: Match, body: any): { status: number; error: string } | { match: Match } {
+export function updateMatch(match: Match, body: any, kind?: 'sucessao'): { status: number; error: string } | { match: Match } {
   const fail = (status: number, error: string) => ({ status, error });
 
   const before = describeMatch(match);
@@ -206,11 +224,15 @@ export function updateMatch(match: Match, body: any): { status: number; error: s
     return fail(400, 'Só é possível vincular unidades escolhidas para o mutirão.');
   }
 
-  // O magistrado escolhido não pode estar vinculado em outra unidade; mover para outra unidade exige vaga livre
-  if (S.matches.some((m) => m.id !== match.id && m.magistrateId === nextMag.id)) {
+  // Trocar o magistrado da vaga: o novo não pode já estar vinculado (vínculo único; para mudar de unidade, use a sucessão).
+  // Mover o mesmo magistrado: não pode ir para uma unidade em que ele já atua. Mover para outra unidade exige vaga livre.
+  if (nextMag.id !== match.magistrateId && S.matches.some((m) => m.id !== match.id && m.magistrateId === nextMag.id)) {
     return fail(409, 'Este magistrado já está vinculado a outra unidade. Desfaça essa vinculação antes.');
   }
   const movingUnit = nextUnit.id !== match.unitId;
+  if (movingUnit && S.matches.some((m) => m.id !== match.id && m.magistrateId === nextMag.id && m.unitId === nextUnit.id)) {
+    return fail(409, 'O magistrado já atua nesta unidade.');
+  }
   if (movingUnit && initialMatch && linkedCount(nextUnit.id) >= (nextUnit.slots || 1)) nextUnit.slots = linkedCount(nextUnit.id) + 1; // varas das vinculações iniciais não limitam o número de magistrados
   if (movingUnit && linkedCount(nextUnit.id) >= (nextUnit.slots || 1)) {
     return fail(409, `Todas as ${nextUnit.slots || 1} vaga(s) da unidade de destino já estão preenchidas.`);
@@ -239,9 +261,8 @@ export function updateMatch(match: Match, body: any): { status: number; error: s
   if (newStart !== null && isTransfer) return fail(400, 'Na alteração de vara/área, o início na nova unidade é a data de vigência.');
   const oldUnit = S.units.find((u) => u.id === oldUnitId);
   const oldWorkType = match.workType; const oldArea = match.assignedArea; const oldStart = match.startDate;
-  if (oldMag && changedMag) oldMag.status = 'Lista de Espera';
-
   match.magistrateId = nextMag.id;
+  if (oldMag && changedMag) releaseIfUnlinked(oldMag.id);
   if (changedMag) match.editionId = nextMag.editionId; // a vinculação pertence à janela de inscrição do magistrado
   match.unitId = nextUnit.id;
   match.assignedArea = newArea || match.assignedArea;
@@ -257,14 +278,14 @@ export function updateMatch(match: Match, body: any): { status: number; error: s
   if (isTransfer) {
     match.startDate = effectiveDate;
     const label = (u?: Unit) => (u ? fullUnitName(u) : 'unidade removida');
-    S.transfers.push({ id: newId('tr'), editionId: match.editionId, magistrateId: nextMag.id, name: nextMag.name, ...(oldStart ? { fromStartDate: oldStart } : {}), area: oldArea, toArea: match.assignedArea, ...(transferSei ? { sei: transferSei } : {}), fromUnit: label(oldUnit), toUnit: label(nextUnit),
+    S.transfers.push({ id: newId('tr'), ...(kind ? { kind } : {}), editionId: match.editionId, magistrateId: nextMag.id, name: nextMag.name, ...(oldStart ? { fromStartDate: oldStart } : {}), area: oldArea, toArea: match.assignedArea, ...(transferSei ? { sei: transferSei } : {}), fromUnit: label(oldUnit), toUnit: label(nextUnit),
       fromWorkType: oldWorkType, toWorkType: match.workType, effectiveDate, createdAt: new Date().toISOString() });
   }
 
   const startNote = !isTransfer && match.startDate !== startBefore
     ? ` (início da atuação: ${(match.startDate ?? editionById(match.editionId)?.startDate)?.split('-').reverse().join('/') ?? 'não informado'})` : '';
   const what = [movingUnit && 'nova unidade', changingArea && 'nova área', changingWorkType && 'novo tipo'].filter(Boolean).join(', ');
-  log(match.editionId, 'Administração', 'Vinculação', `Vinculação alterada${startNote}${isTransfer ? ` (${what} a partir de ${effectiveDate.split('-').reverse().join('/')}${transferSei ? `; SEI ${transferSei}` : ''})` : ''}: de ${before} para ${describeMatch(match)}.`);
+  log(match.editionId, 'Administração', 'Vinculação', `Vinculação alterada${kind ? ' por sucessão (nova janela)' : ''}${startNote}${isTransfer ? ` (${what} a partir de ${effectiveDate.split('-').reverse().join('/')}${transferSei ? `; SEI ${transferSei}` : ''})` : ''}: de ${before} para ${describeMatch(match)}.`);
   return { match };
 }
 export const fullUnitOf = (u?: Unit) => (u ? fullUnitName(u) : 'unidade removida');
