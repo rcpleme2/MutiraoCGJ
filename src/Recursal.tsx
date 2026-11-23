@@ -238,3 +238,38 @@ function VolunteerForm() {
     </form>
   );
 }
+
+export interface RecursalStatus {
+  volunteer: { status: 'Aguardando' | 'Aprovado' | 'Inativo'; turmas: number[]; capacity?: number; processes: number } | null;
+  batches: { id: string; createdAt: string; source: string; fileName?: string; total: number; accepted: number; rejected: number; duplicates: number; distributed: number }[];
+}
+/** "Consultar status": situação no Mutirão - Turma Recursal (sem nome de relator nem números de processos) */
+export function RecursalStatusCard({ r }: { r: RecursalStatus }) {
+  const v = r.volunteer;
+  const tone = v?.status === 'Aprovado' ? 'ok' : v?.status === 'Inativo' ? 'danger' : 'warn';
+  return (
+    <div className="space-y-3">
+      <h3 className="text-xs font-semibold uppercase tracking-wider text-bronze">Mutirão - Turma Recursal</h3>
+      {v && (
+        <div className="border border-line rounded-md p-5 space-y-2">
+          <div className="flex justify-between gap-3">
+            <div className="font-serif font-semibold text-navy">Inscrição como voluntário</div>
+            <Badge tone={tone}>{v.status === 'Inativo' ? 'Rejeitada' : v.status === 'Aprovado' ? 'Aprovada' : 'Aguardando conferência'}</Badge>
+          </div>
+          <div className="text-xs text-muted flex items-center gap-1.5 flex-wrap">Atua em: {v.turmas.map((t) => <TurmaChip key={t} turma={t} />)}{v.capacity ? <span> · máximo de {v.capacity} processo(s)</span> : null}</div>
+          {v.status === 'Aprovado' && <div className="bg-ok-soft text-ok text-sm rounded-md px-3 py-2.5">Processos designados a você até agora: <strong>{v.processes}</strong>.</div>}
+          {v.status === 'Inativo' && <div className="bg-danger-soft text-danger text-sm rounded-md px-3 py-2.5">A inscrição não foi aceita. Somente magistrados lotados ou designados nas Turmas Recursais podem participar.</div>}
+        </div>
+      )}
+      {r.batches.map((b) => (
+        <div key={b.id} className="border border-line rounded-md p-5 space-y-2">
+          <div className="flex justify-between gap-3">
+            <div><div className="font-serif font-semibold text-navy">Envio de processos</div><div className="text-xs text-muted">{new Date(b.createdAt).toLocaleString('pt-BR')} · {b.fileName ?? 'digitação'}</div></div>
+            <Badge tone={b.distributed === b.accepted && b.accepted > 0 ? 'ok' : 'warn'}>{b.distributed} de {b.accepted} distribuído(s)</Badge>
+          </div>
+          <div className="text-xs text-muted">Recebidos: <span className="text-ink">{b.total}</span> · aceitos: <span className="text-ink">{b.accepted}</span> · fora do padrão CNJ ou sem Turma: <span className="text-ink">{b.rejected}</span> · duplicados: <span className="text-ink">{b.duplicates}</span></div>
+        </div>
+      ))}
+    </div>
+  );
+}

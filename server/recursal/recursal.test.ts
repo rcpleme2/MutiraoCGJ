@@ -78,3 +78,31 @@ test('API: regra de ouro rejeitada no servidor (422), designação válida e exp
     assert.match(csv, /1ª Turma Recursal";"Ana"/);
   } finally { server.close(); }
 });
+
+test('API: prévia traz carga aproximada por relator e consulta de status traz só totais', async () => {
+  const express = (await import('express')).default;
+  const { register } = await import('../routes/recursal.ts');
+  const { register: registerMag } = await import('../routes/magistrates.ts');
+  const app = express(); app.use(express.json()); register(app); registerMag(app);
+  const server = app.listen(0); const port = (server.address() as any).port; const base = `http://localhost:${port}/api`;
+  try {
+    S.recursalVolunteers = [
+      { id: 'v1', name: 'Ana', email: 'ana@tjpr.jus.br', turmas: [1], capacity: 3, status: 'Aprovado', createdAt: '' },
+      { id: 'v2', name: 'Beto', email: 'beto@tjpr.jus.br', turmas: [2], status: 'Aprovado', createdAt: '' },
+    ];
+    S.recursalBatches = [{ id: 'b1', source: 'csv', fileName: 'x.csv', submitterName: 'Ana', submitterEmail: 'ana@tjpr.jus.br', total: 5, accepted: 4, rejected: 1, duplicates: 0, createdAt: '2026-01-01T00:00:00Z' }];
+    S.recursalProcesses = [1, 2, 1, 2].map((t, i) => ({ id: `p${i}`, cnj: mk(100 + i), turma: t, batchId: 'b1', submitterName: '', submitterEmail: '', createdAt: '', status: 'Pendente' as const }));
+    const prev = await (await fetch(base + '/recursal/auto-preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).json();
+    assert.equal(prev.loads.length, 2);
+    assert.equal(prev.loads.reduce((a: number, l: any) => a + l.total, 0), 4);
+    for (const l of prev.loads) assert.equal(l.total, l.current + l.add);
+    const st = await fetch(base + '/status', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'ANA@tjpr.jus.br' }) });
+    assert.equal(st.status, 200);
+    const j = await st.json();
+    assert.equal(j.recursal.volunteer.status, 'Aprovado');
+    assert.equal(j.recursal.batches[0].accepted, 4);
+    assert.ok(!JSON.stringify(j.recursal).includes('cnj') && !JSON.stringify(j.recursal).includes('Beto'));
+    const none = await fetch(base + '/status', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'zz@tjpr.jus.br' }) });
+    assert.equal(none.status, 404);
+  } finally { server.close(); }
+});

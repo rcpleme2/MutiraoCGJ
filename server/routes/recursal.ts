@@ -229,7 +229,11 @@ export function register(app: express.Express) {
     res.json({
       pairs: r.pairs.map((x) => { const p = S.recursalProcesses.find((q) => q.id === x.processId)!; return { ...x, formatted: formatCnj(p.cnj), turma: p.turma, volunteerName: vol(x.volunteerId)?.name ?? '' }; }),
       unassignable: r.unassignable.map((x) => { const p = S.recursalProcesses.find((q) => q.id === x.processId)!; return { ...x, formatted: formatCnj(p.cnj), turma: p.turma }; }),
-      loads: Object.entries(r.loads).map(([id, add]) => ({ volunteerId: id, name: vol(id)?.name ?? '', current: loadOf(id), add })),
+      // Carga aproximada por relator após a distribuição (inclui quem não recebe nada)
+      loads: S.recursalVolunteers.filter((v) => v.status === 'Aprovado').map((v) => {
+        const add = r.loads[v.id] ?? 0, current = loadOf(v.id), total = current + add;
+        return { volunteerId: v.id, name: v.name, turmas: v.turmas, current, add, total, ...(v.capacity ? { capacity: v.capacity } : {}) };
+      }).sort((a, b) => b.total - a.total || a.name.localeCompare(b.name, 'pt-BR')),
     });
   });
   app.post('/api/recursal/auto-apply', (req, res) => {

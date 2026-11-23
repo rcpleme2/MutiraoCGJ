@@ -87,7 +87,15 @@ export function register(app: express.Express) {
     const matchedMagistrates = S.magistrates.filter((m) => m.email.toLowerCase() === emailQuery);
     const matchedUnits = S.units.filter((u) => u.email.toLowerCase() === emailQuery);
 
-    if (matchedMagistrates.length === 0 && matchedUnits.length === 0) {
+    // Mutirão da Turma Recursal: só totais e situação (sem nome do relator nem números de processos)
+    const vol = S.recursalVolunteers.find((v) => v.email.toLowerCase() === emailQuery);
+    const myBatches = S.recursalBatches.filter((b) => b.submitterEmail.toLowerCase() === emailQuery);
+    const recursal = vol || myBatches.length ? {
+      volunteer: vol ? { status: vol.status, turmas: vol.turmas, ...(vol.capacity ? { capacity: vol.capacity } : {}), processes: S.recursalProcesses.filter((p) => p.assignedVolunteerId === vol.id).length } : null,
+      batches: myBatches.map((b) => ({ id: b.id, createdAt: b.createdAt, source: b.source, ...(b.fileName ? { fileName: b.fileName } : {}), total: b.total, accepted: b.accepted, rejected: b.rejected, duplicates: b.duplicates, distributed: S.recursalProcesses.filter((p) => p.batchId === b.id && p.assignedVolunteerId).length })).reverse(),
+    } : undefined;
+
+    if (matchedMagistrates.length === 0 && matchedUnits.length === 0 && !recursal) {
       return res.status(404).json({ error: 'Nenhum cadastro encontrado com este e-mail.' });
     }
 
@@ -108,6 +116,7 @@ export function register(app: express.Express) {
     }
 
     res.json({
+      ...(recursal ? { recursal } : {}),
       magistrates: matchedMagistrates.map((mag) => {
         const match = S.matches.find((m) => m.magistrateId === mag.id);
         const assigned = match ? S.units.find((u) => u.id === match.unitId) : undefined;

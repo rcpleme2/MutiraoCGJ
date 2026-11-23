@@ -128,7 +128,7 @@ function Distribution({ data, act, confirm, readOnly }: { data: RecursalOverview
         <Modal title="Prévia da distribuição automática" wide onClose={() => setPreview(null)}>
           <div className="space-y-4 text-sm">
             <p><strong>{preview.pairs.length}</strong> processo(s) serão designados; <strong className={preview.unassignable.length ? 'text-danger' : ''}>{preview.unassignable.length}</strong> sem relator possível. A regra de ouro (Turma diversa) é conferida de novo ao aplicar.</p>
-            <div className="flex flex-wrap gap-2">{preview.loads.map((l: any) => <Badge key={l.volunteerId} tone="info">{l.name}: {l.current} + {l.add}</Badge>)}</div>
+            <LoadChart loads={preview.loads} />
             {preview.unassignable.length > 0 && <div className="rounded bg-danger-soft p-3"><div className="font-medium text-danger mb-1">Sem relator possível</div>{preview.unassignable.slice(0, 50).map((u: any) => <div key={u.processId} className="text-xs"><span className="font-mono">{u.formatted}</span> <TurmaChip turma={u.turma} /> — {u.reason}</div>)}</div>}
             <div className="max-h-64 overflow-y-auto border border-line rounded"><table className="w-full"><tbody>{preview.pairs.slice(0, 500).map((p: any) => <tr key={p.processId}><td className="td font-mono text-xs">{p.formatted}</td><td className="td"><TurmaChip turma={p.turma} /></td><td className="td">{p.volunteerName}</td></tr>)}</tbody></table></div>
             <div className="flex justify-end gap-2"><button className="btn-ghost" onClick={() => setPreview(null)}>Cancelar</button><button className="btn-primary" disabled={!preview.pairs.length} onClick={apply}>Aplicar distribuição</button></div>
@@ -167,6 +167,31 @@ function Volunteers({ data, act, confirm, readOnly, isAdmin }: { data: RecursalO
             <td className="td">{v.load}{v.capacity ? ` / ${v.capacity}` : ''}</td>
             <td className="td"><select className="input w-32" aria-label="Situação" disabled={readOnly} value={v.status} onChange={(e) => patch(v, { status: e.target.value }, 'Situação atualizada.')}><option>Aguardando</option><option>Aprovado</option><option>Inativo</option></select></td>
             <td className="td text-right">{isAdmin && !readOnly && <button className="btn-ghost btn-sm" aria-label="Excluir voluntário" onClick={async () => { if (await confirm(`Excluir o voluntário ${v.name}?`, 'Excluir')) act(() => api(`/recursal/volunteers/${v.id}`, { method: 'DELETE' })); }}><Trash2 className="w-4 h-4" /></button>}</td></tr>))}</tbody></table></div>
+    </div>
+  );
+}
+
+/** Carga aproximada de cada relator após a distribuição sugerida: já designados + novos (barras empilhadas) */
+function LoadChart({ loads }: { loads: { volunteerId: string; name: string; turmas: number[]; current: number; add: number; total: number; capacity?: number }[] }) {
+  const max = Math.max(1, ...loads.map((l) => l.capacity ?? 0), ...loads.map((l) => l.total));
+  const sum = loads.reduce((a, l) => a + l.total, 0);
+  const avg = loads.length ? sum / loads.length : 0;
+  return (
+    <div className="rounded-md border border-line p-3">
+      <div className="flex flex-wrap justify-between gap-2 mb-2"><span className="font-medium text-navy">Carga aproximada por relator</span><span className="text-xs text-muted">média ≈ {avg.toFixed(1).replace('.', ',')} processo(s) por relator · {loads.length} relator(es)</span></div>
+      <div className="space-y-1.5 max-h-56 overflow-y-auto">
+        {loads.map((l) => (
+          <div key={l.volunteerId} className="grid grid-cols-[minmax(0,12rem)_1fr_auto] items-center gap-3">
+            <span className="truncate text-xs" title={l.name}>{l.name}</span>
+            <div className="relative h-4 rounded bg-paper overflow-hidden flex" role="img" aria-label={`${l.name}: ${l.current} já designados e ${l.add} novos${l.capacity ? ` de capacidade ${l.capacity}` : ''}`}>
+              <div className="bg-ok" style={{ width: `${(l.current / max) * 100}%` }} /><div className="bg-bronze/70" style={{ width: `${(l.add / max) * 100}%` }} />
+              {l.capacity ? <div className="absolute top-0 bottom-0 w-0.5 bg-danger" style={{ left: `${(l.capacity / max) * 100}%` }} title={`Capacidade: ${l.capacity}`} /> : null}
+            </div>
+            <span className="text-xs tabular-nums text-muted w-28 text-right">{l.total}{l.capacity ? `/${l.capacity}` : ''} <span className="text-[10px]">({l.current}+{l.add})</span></span>
+          </div>
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-4 text-[11px] text-muted mt-2"><span><span className="inline-block w-2.5 h-2.5 bg-ok mr-1 align-middle" />Já designados</span><span><span className="inline-block w-2.5 h-2.5 bg-bronze/70 mr-1 align-middle" />Novos pela sugestão</span><span><span className="inline-block w-0.5 h-3 bg-danger mr-1 align-middle" />Capacidade informada</span></div>
     </div>
   );
 }
