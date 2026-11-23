@@ -6,7 +6,7 @@ import { type CatalogRecord } from '../src/catalogo-tjpr';
 import { liveSessions, loadSessions } from './auth.ts';
 import { applyCatalog } from './catalog.ts';
 import { S } from './state.ts';
-import { type AdminUser, type Edition, type FaqItem, type LogEntry, type Magistrate, type Match, type PanelEntry, type Transfer, type Unit, type Withdrawal } from './types.ts';
+import { type AdminUser, type Edition, type FaqItem, type LogEntry, type Magistrate, type Match, type PanelEntry, type RecursalBatch, type RecursalProcess, type RecursalVolunteer, type Transfer, type Unit, type Withdrawal } from './types.ts';
 
 // Persistência em arquivo (desenvolvimento local)
 export const DATA_FILE = path.join(process.cwd(), 'data', 'state.json');
@@ -24,6 +24,7 @@ export const metaJson = () => JSON.stringify({ activeEditionId: S.activeEditionI
 export const collectionsNow = (): Record<string, { id: string }[]> => ({
   editions: S.editions, magistrates: S.magistrates, units: S.units, matches: S.matches, log: S.activityLog, faq: S.faq, panel: S.panelEntries, withdrawals: S.withdrawals, transfers: S.transfers, admins: S.admins,
   catalog: S.catalogUnits, comarcas: S.catalogComarcas, sessions: liveSessions(),
+  recursal_processes: S.recursalProcesses, recursal_volunteers: S.recursalVolunteers, recursal_batches: S.recursalBatches,
 });
 export async function loadState() {
   if (!db) {
@@ -46,6 +47,9 @@ export async function loadState() {
       S.admins = raw.admins ?? [];
       S.catalogUnits = raw.catalog ?? [];
       S.catalogComarcas = raw.comarcas ?? [];
+      S.recursalProcesses = raw.recursalProcesses ?? [];
+      S.recursalVolunteers = raw.recursalVolunteers ?? [];
+      S.recursalBatches = raw.recursalBatches ?? [];
       loadSessions(raw.sessions);
     } catch { /* primeira execução: usa os dados iniciais */ }
     applyCatalog();
@@ -89,6 +93,9 @@ export async function loadState() {
   S.admins = loaded.admins as AdminUser[];
   S.catalogUnits = loaded.catalog as CatalogRecord[];
   S.catalogComarcas = loaded.comarcas as { id: string; name: string }[];
+  S.recursalProcesses = loaded.recursal_processes as RecursalProcess[];
+  S.recursalVolunteers = loaded.recursal_volunteers as RecursalVolunteer[];
+  S.recursalBatches = loaded.recursal_batches as RecursalBatch[];
   loadSessions(loaded.sessions);
   applyCatalog();
   lastMeta = metaJson();
@@ -98,7 +105,7 @@ export async function persist() {
     fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
     fs.writeFileSync(
       DATA_FILE,
-      JSON.stringify({ editions: S.editions, activeEditionId: S.activeEditionId, magistrates: S.magistrates, units: S.units, matches: S.matches, activityLog: S.activityLog, faq: S.faq, adminTotpSecret: S.adminTotpSecret, panel: S.panelEntries, withdrawals: S.withdrawals, transfers: S.transfers, dupDismissed: S.dupDismissed, admins: S.admins, lastAutoBackup: S.lastAutoBackup, sharedHiddenTabs: S.sharedHiddenTabs, catalog: S.catalogUnits, comarcas: S.catalogComarcas, sessions: liveSessions() }),
+      JSON.stringify({ editions: S.editions, activeEditionId: S.activeEditionId, magistrates: S.magistrates, units: S.units, matches: S.matches, activityLog: S.activityLog, faq: S.faq, adminTotpSecret: S.adminTotpSecret, panel: S.panelEntries, withdrawals: S.withdrawals, transfers: S.transfers, dupDismissed: S.dupDismissed, admins: S.admins, lastAutoBackup: S.lastAutoBackup, sharedHiddenTabs: S.sharedHiddenTabs, catalog: S.catalogUnits, comarcas: S.catalogComarcas, sessions: liveSessions(), recursalProcesses: S.recursalProcesses, recursalVolunteers: S.recursalVolunteers, recursalBatches: S.recursalBatches }),
     );
     return;
   }

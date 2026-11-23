@@ -5,14 +5,16 @@ import { Edition, FaqItem, Magistrate, Unit, hearingPeriodLabel } from './types'
 import { Badge, FeedbackProvider, Notice, formatDate, magistrateStatusLabel, magistrateTone } from './ui';
 import { MagistrateForm, UnitForm } from './Forms';
 import Admin from './Admin';
+import Recursal from './Recursal';
 import ErrorBoundary from './ErrorBoundary';
 
-type Tab = 'home' | 'magistrate' | 'unit' | 'status' | 'faq' | 'admin';
+type Tab = 'home' | 'magistrate' | 'unit' | 'status' | 'faq' | 'recursal' | 'admin';
 
 const NAV: { id: Tab; label: string }[] = [
   { id: 'home', label: 'Início' },
   { id: 'magistrate', label: 'Inscrição de Magistrados' },
   { id: 'unit', label: 'Inscrição de Unidades' },
+  { id: 'recursal', label: 'Mutirão Recursal' },
   { id: 'status', label: 'Consultar Status' },
 ];
 
@@ -238,6 +240,8 @@ function AppInner() {
             )}
           </PageCard>
         )}
+
+        {tab === 'recursal' && <Recursal />}
 
         {tab === 'faq' && (
           <PageCard icon={HelpCircle} title="Perguntas frequentes" subtitle="Dúvidas comuns sobre as inscrições e o andamento do mutirão.">

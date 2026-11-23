@@ -114,7 +114,7 @@ export interface Match {
   status: 'Vinculado' | 'Concluído';
   createdAt: string;
 }
-export type LogCategory = 'Edição' | 'Magistrado' | 'Unidade' | 'Vinculação' | 'Exportação' | 'Acesso' | 'Conteúdo';
+export type LogCategory = 'Edição' | 'Magistrado' | 'Unidade' | 'Vinculação' | 'Exportação' | 'Acesso' | 'Conteúdo' | 'Recursal';
 /** Pergunta frequente, mantida pela administração (conteúdo geral, não vinculado a uma edição) */
 export interface FaqItem {
   id: string;
@@ -171,3 +171,43 @@ export interface PanelRow { /** alteração com vigência futura: até a vésper
 export interface ActingPeriod { id: string; name: string; editionId: string; editionTitle: string; area: string; unit: string; workType: string; start?: string; end?: string; endReason: '' | 'Alteração de vinculação' | 'Desistência' | 'Exclusão'; sei?: string; /** comarca pela lista oficial (designações vigentes) */ comarca?: string }
 /** Mesma pessoa: mesmo nome (sem acento, caixa e tratamentos) ou mesmo e-mail informado */
 export type Person = { key: string; email: string };
+
+/* ---------- Mutirão da Turma Recursal (módulo independente das janelas de inscrição) ---------- */
+export interface RecursalProcess {
+  id: string;
+  /** número CNJ, 20 dígitos (chave de duplicidade) */
+  cnj: string;
+  /** Turma Recursal (1 a 6) em que o processo tramita */
+  turma: number;
+  batchId: string;
+  submitterName: string;
+  submitterEmail: string;
+  createdAt: string;
+  status: 'Pendente' | 'Distribuído';
+  assignedVolunteerId?: string;
+  assignedAt?: string;
+  assignedBy?: string;
+}
+export interface RecursalVolunteer {
+  id: string;
+  name: string;
+  email: string;
+  /** Turmas em que o magistrado já atua (1 a 6): delas não pode receber processos */
+  turmas: number[];
+  capacity?: number;
+  status: 'Aguardando' | 'Aprovado' | 'Inativo';
+  note?: string;
+  createdAt: string;
+}
+export interface RecursalBatch {
+  id: string;
+  source: 'manual' | 'csv' | 'xlsx';
+  fileName?: string;
+  submitterName: string;
+  submitterEmail: string;
+  total: number;
+  accepted: number;
+  rejected: number;
+  duplicates: number;
+  createdAt: string;
+}

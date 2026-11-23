@@ -168,3 +168,15 @@ export interface Withdrawal { id: string; editionId: string; name: string; area:
 /** Período de atuação de um magistrado numa unidade (sem fim = em curso) */
 export interface ActingPeriod { id: string; name: string; editionId: string; editionTitle: string; area: string; unit: string; workType: string; start?: string; end?: string; endReason: '' | 'Alteração de vinculação' | 'Desistência' | 'Exclusão'; sei?: string }
 export interface Transfer { id: string; editionId: string; magistrateId: string; name: string; /** 'sucessao': mudança para a unidade de uma nova janela, a partir do início da atuação dessa janela */ kind?: 'sucessao'; area: string; toArea?: string; sei?: string; fromUnit: string; toUnit: string; fromWorkType: string; toWorkType: string; effectiveDate: string; createdAt: string }
+
+/* ---------- Mutirão da Turma Recursal ---------- */
+export interface RecursalRowCheck { line: number; input: string; turmaInput: string; cnj: string; formatted: string; turma: number | null; state: 'valida' | 'invalida' | 'duplicada'; error?: string; warning?: string }
+export interface RecursalCheck { summary: { total: number; valid: number; invalid: number; duplicates: number }; rows: RecursalRowCheck[] }
+export interface RecursalProcessView { id: string; cnj: string; formatted: string; turma: number; status: 'Pendente' | 'Distribuído'; submitterName: string; submitterEmail: string; createdAt: string; assignedVolunteerId?: string; assignedAt?: string; volunteerName: string | null; volunteerTurmas: number[] }
+export interface RecursalVolunteerView { id: string; name: string; email: string; turmas: number[]; capacity?: number; status: 'Aguardando' | 'Aprovado' | 'Inativo'; note?: string; createdAt: string; load: number }
+export interface RecursalOverview {
+  counts: { processes: number; pending: number; distributed: number; volunteers: number; approved: number };
+  matrix: { turma: number; pending: number; distributed: number; apt: number }[];
+  volunteers: RecursalVolunteerView[]; processes: RecursalProcessView[];
+  batches: { id: string; source: string; fileName?: string; submitterName: string; submitterEmail: string; total: number; accepted: number; rejected: number; duplicates: number; createdAt: string }[];
+}

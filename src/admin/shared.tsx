@@ -2,7 +2,7 @@
 import { fullUnitName } from '../catalogo-tjpr';
 import { Unit } from '../types';
 
-export type Sub = 'overview' | 'editions' | 'magistrates' | 'units' | 'matches' | 'faq' | 'log' | 'backup' | 'standardize' | 'catalog' | 'users';
+export type Sub = 'overview' | 'editions' | 'magistrates' | 'units' | 'matches' | 'faq' | 'log' | 'backup' | 'standardize' | 'catalog' | 'users' | 'recursal';
 
 export const toLocalInput = (iso: string) => iso.slice(0, 16);
 

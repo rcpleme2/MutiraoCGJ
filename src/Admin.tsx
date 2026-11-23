@@ -11,6 +11,7 @@ import { AttendedUnits, type Presence, PresenceNote, SupplyDemand } from './admi
 import { EditionForm, ExcludeModal, FaqForm } from './admin/forms';
 import { SlotsControl, UnitDetail, UnitLinkRow, unitMatchesOf } from './admin/linking';
 import { PanelAdmin } from './admin/panel';
+import { RecursalAdmin } from './admin/recursal';
 import { dmy, readPref, SELECTION_ORDER, type Sub, unitLabel, writePref } from './admin/shared';
 import { StandardizeAdmin } from './admin/standardize';
 import { DateCell, SmartTable, Toolbar } from './admin/table';
@@ -22,6 +23,7 @@ const SUBS: { id: Sub; label: string }[] = [
   { id: 'magistrates', label: 'Magistrados' },
   { id: 'units', label: 'Unidades' },
   { id: 'matches', label: 'Vinculações' },
+  { id: 'recursal', label: 'Mutirão Recursal' },
   { id: 'standardize', label: 'Padronizar nomes' },
   { id: 'catalog', label: 'Comarcas e unidades' },
   { id: 'faq', label: 'Perguntas frequentes' },
@@ -735,6 +737,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
 
       {sub === 'standardize' && <StandardizeAdmin run={run} confirm={confirm} onChanged={refresh} />}
       {sub === 'catalog' && <CatalogAdmin run={run} confirm={confirm} readOnly={me?.role === 'consulta'} onChanged={refresh} />}
+      {sub === 'recursal' && <RecursalAdmin run={run} confirm={confirm} readOnly={me?.role === 'consulta'} isAdmin={me?.role === 'admin'} />}
       {sub === 'users' && me?.role === 'admin' && <UsersAdmin run={run} confirm={confirm} />}
       {sub === 'backup' && <BackupAdmin run={run} confirm={confirm} onRestored={refresh} />}
       {sub === 'matches' && linkView === 'panel' && <PanelAdmin run={run} confirm={confirm} onChanged={refresh} />}
@@ -781,7 +784,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
           <Toolbar title="Registro de atividades">
             <select className="input !w-auto !py-1.5 text-xs" value={logFilter} onChange={e => setLogFilter(e.target.value)}>
               <option value="">Todas as categorias</option>
-              {['Edição', 'Magistrado', 'Unidade', 'Vinculação', 'Exportação', 'Acesso', 'Conteúdo'].map(c => <option key={c}>{c}</option>)}
+              {['Edição', 'Magistrado', 'Unidade', 'Vinculação', 'Exportação', 'Acesso', 'Conteúdo', 'Recursal'].map(c => <option key={c}>{c}</option>)}
             </select>
             <button className="btn-secondary btn-sm" onClick={() => exportFile(`/export/csv?type=log&${q}`, 'registro.csv')}><Download className="w-4 h-4" /> CSV</button>
           </Toolbar>
