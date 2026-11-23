@@ -106,3 +106,15 @@ test('API: prévia traz carga aproximada por relator e consulta de status traz s
     assert.equal(none.status, 404);
   } finally { server.close(); }
 });
+
+test('Distribuição automática equilibra a carga (sem capacidade, ninguém concentra tudo)', () => {
+  S.recursalVolunteers = [
+    { id: 'a', name: 'A', email: 'a@x', turmas: [1], status: 'Aprovado', createdAt: '' },
+    { id: 'b', name: 'B', email: 'b@x', turmas: [2], capacity: 10, status: 'Aprovado', createdAt: '' },
+    { id: 'c', name: 'C', email: 'c@x', turmas: [3], status: 'Aprovado', createdAt: '' },
+  ];
+  S.recursalProcesses = Array.from({ length: 30 }, (_, i) => ({ id: `q${i}`, cnj: mk(500 + i), turma: 4 + (i % 3), batchId: 'b', submitterName: '', submitterEmail: '', createdAt: '', status: 'Pendente' as const }));
+  const r = suggestDistribution();
+  assert.equal(r.pairs.length, 30);
+  for (const v of ['a', 'b', 'c']) assert.equal(r.loads[v], 10);
+});

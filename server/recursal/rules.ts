@@ -29,7 +29,8 @@ export function suggestDistribution(): { pairs: { processId: string; volunteerId
     if (apt.length === 0) { unassignable.push({ processId: p.id, reason: vols.length ? `Nenhum voluntário aprovado fora da ${turmaLabel(p.turma)}.` : 'Não há voluntários aprovados.' }); continue; }
     const open = apt.filter((v) => hasRoom(v, extra[v.id] ?? 0));
     if (open.length === 0) { unassignable.push({ processId: p.id, reason: 'Todos os relatores aptos atingiram a capacidade informada.' }); continue; }
-    const score = (v: RecursalVolunteer) => (loadOf(v.id) + (extra[v.id] ?? 0)) / (v.capacity ?? 1000);
+    // iguala a carga em nº de processos; a capacidade informada funciona apenas como limite (hasRoom)
+    const score = (v: RecursalVolunteer) => loadOf(v.id) + (extra[v.id] ?? 0);
     open.sort((a, b) => score(a) - score(b) || a.name.localeCompare(b.name, 'pt-BR'));
     pairs.push({ processId: p.id, volunteerId: open[0].id });
     extra[open[0].id] = (extra[open[0].id] ?? 0) + 1;
