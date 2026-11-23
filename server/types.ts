@@ -211,3 +211,6 @@ export interface RecursalBatch {
   duplicates: number;
   createdAt: string;
 }
+
+/** Prazo de inscrição do Mutirão da Turma Recursal (horário de Brasília, AAAA-MM-DDTHH:mm); sem prazo = fechado */
+export interface RecursalWindow { openingDate: string; closingDate: string }

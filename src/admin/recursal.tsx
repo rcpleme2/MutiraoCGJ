@@ -23,7 +23,7 @@ export function RecursalAdmin({ run, confirm, readOnly, isAdmin }: { run: RunFn;
       <div className="flex flex-wrap gap-1 border-b border-line">
         {VIEWS.map((v) => <button key={v.id} onClick={() => setView(v.id)} className={`px-4 py-2 text-sm -mb-px border-b-2 ${view === v.id ? 'border-bronze text-navy font-medium' : 'border-transparent text-muted hover:text-ink'}`}>{v.label}</button>)}
       </div>
-      {view === 'panel' && <PanelView data={data} />}
+      {view === 'panel' && <PanelView data={data} act={act} readOnly={readOnly} />}
       {view === 'distribution' && <Distribution data={data} act={act} confirm={confirm} readOnly={readOnly} />}
       {view === 'processes' && <Processes data={data} act={act} confirm={confirm} readOnly={readOnly} isAdmin={isAdmin} />}
       {view === 'volunteers' && <Volunteers data={data} act={act} confirm={confirm} readOnly={readOnly} isAdmin={isAdmin} />}
@@ -41,10 +41,11 @@ const exportBtns = (turma = '') => (
   </>
 );
 
-function PanelView({ data }: { data: RecursalOverview }) {
+function PanelView({ data, act, readOnly }: { data: RecursalOverview; act: Act; readOnly: boolean }) {
   const c = data.counts; const max = Math.max(1, ...data.matrix.map((m) => m.pending + m.distributed));
   return (
     <div className="space-y-6">
+      <WindowEditor w={data.window} act={act} readOnly={readOnly} />
       <div className="grid grid-cols-2 sm:grid-cols-5 gap-3"><Stat label="Processos" value={c.processes} /><Stat label="Pendentes" value={c.pending} /><Stat label="Distribuídos" value={c.distributed} /><Stat label="Voluntários" value={c.volunteers} /><Stat label="Aprovados" value={c.approved} /></div>
       <div className="card p-5">
         <h3 className="text-lg font-semibold text-navy mb-1">Processos por Turma de origem</h3>
@@ -192,6 +193,26 @@ function LoadChart({ loads }: { loads: { volunteerId: string; name: string; turm
         ))}
       </div>
       <div className="flex flex-wrap gap-4 text-[11px] text-muted mt-2"><span><span className="inline-block w-2.5 h-2.5 bg-ok mr-1 align-middle" />Já designados</span><span><span className="inline-block w-2.5 h-2.5 bg-bronze/70 mr-1 align-middle" />Novos pela sugestão</span><span><span className="inline-block w-0.5 h-3 bg-danger mr-1 align-middle" />Capacidade informada</span></div>
+    </div>
+  );
+}
+
+/** Prazo de inscrição (abertura e encerramento, horário de Brasília); sem prazo, as inscrições ficam fechadas */
+function WindowEditor({ w, act, readOnly }: { w: RecursalOverview['window']; act: Act; readOnly: boolean }) {
+  const [open, setOpen] = useState(w.openingDate ?? ''); const [close, setClose] = useState(w.closingDate ?? '');
+  useEffect(() => { setOpen(w.openingDate ?? ''); setClose(w.closingDate ?? ''); }, [w.openingDate, w.closingDate]);
+  const tone = w.state === 'open' ? 'ok' : 'danger';
+  const label = { open: 'Inscrições abertas', not_yet: 'Ainda não abertas', ended: 'Encerradas', not_set: 'Sem prazo (fechadas)' }[w.state];
+  return (
+    <div className="card p-5">
+      <div className="flex flex-wrap items-center gap-3 mb-1"><h3 className="text-lg font-semibold text-navy">Prazo de inscrição</h3><Badge tone={tone}>{label}</Badge></div>
+      <p className="text-xs text-muted mb-4">{w.message} Vale para o envio de processos e para a inscrição de voluntários, no horário de Brasília. O portal mostra esta situação aos magistrados.</p>
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="text-sm">Abertura<input type="datetime-local" className="input mt-1" value={open} onChange={(e) => setOpen(e.target.value)} disabled={readOnly} /></label>
+        <label className="text-sm">Encerramento<input type="datetime-local" className="input mt-1" value={close} onChange={(e) => setClose(e.target.value)} disabled={readOnly} /></label>
+        {!readOnly && <><button className="btn-primary" disabled={!open || !close} onClick={() => act(() => api('/recursal/window', { method: 'PUT', json: { openingDate: open, closingDate: close } }), 'Prazo salvo.')}>Salvar prazo</button>
+        {w.openingDate && <button className="btn-ghost" onClick={() => act(() => api('/recursal/window', { method: 'PUT', json: { clear: true } }), 'Prazo removido.')}>Remover prazo</button>}</>}
+      </div>
     </div>
   );
 }

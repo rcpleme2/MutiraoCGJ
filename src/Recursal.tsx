@@ -1,8 +1,8 @@
 // Mutirão da Turma Recursal (portal público): enviar processos ou inscrever-se como voluntário.
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AlertTriangle as AlertIcon, FileText, Scale, Plus, Trash2, Download, Upload, CheckCircle2, AlertTriangle, XCircle, ArrowLeft } from 'lucide-react';
 import { api } from './api';
-import { RecursalCheck, RecursalRowCheck } from './types';
+import { RecursalCheck, RecursalRowCheck, RecursalWindowInfo } from './types';
 import { Badge, Field, Notice } from './ui';
 import { TURMAS, TurmaChip, fileToBase64, turmaStyle } from './recursalCommon';
 
@@ -11,6 +11,18 @@ export function EligibilityNotice() {
     <div role="note" className="flex items-start gap-3 rounded-md bg-warn-soft text-warn px-4 py-3 text-sm leading-relaxed">
       <AlertIcon className="w-4 h-4 mt-0.5 shrink-0" />
       <p><strong>Atenção:</strong> somente magistrados lotados ou designados nas Turmas Recursais podem participar. Inscrições de magistrados que não se enquadrem nessas condições serão rejeitadas.</p>
+    </div>
+  );
+}
+
+/** Faixa visível com a situação do prazo de inscrição */
+export function WindowBanner({ w }: { w: RecursalWindowInfo | null }) {
+  if (!w) return null;
+  const open = w.state === 'open';
+  return (
+    <div role="status" className={`flex items-start gap-3 rounded-md px-4 py-3 text-sm leading-relaxed ${open ? 'bg-ok-soft text-ok' : 'bg-danger-soft text-danger'}`}>
+      <Badge tone={open ? 'ok' : 'danger'}>{{ open: 'Inscrições abertas', not_yet: 'Ainda não abertas', ended: 'Encerradas', not_set: 'Fechadas' }[w.state]}</Badge>
+      <p>{w.message}</p>
     </div>
   );
 }
@@ -35,13 +47,20 @@ const stateBadge = (r: RecursalRowCheck) => r.state === 'valida' ? <Badge tone="
 
 export default function Recursal() {
   const [mode, setMode] = useState<Mode>('choose');
+  const [win, setWin] = useState<RecursalWindowInfo | null>(null);
+  useEffect(() => {
+    const load = () => api<RecursalWindowInfo>('/recursal/window').then(setWin).catch(() => {});
+    load(); const t = setInterval(load, 60_000); return () => clearInterval(t);
+  }, []);
+  const closed = !!win && win.state !== 'open';
   return (
-    <section className="max-w-3xl mx-auto">
+    <section className="max-w-3xl mx-auto space-y-4">
       {mode === 'choose' && (
         <div className="card p-7 sm:p-10">
           <Scale className="w-5 h-5 text-bronze mb-3" />
           <h2 className="text-2xl font-semibold text-navy">Mutirão da Turma Recursal</h2>
           <p className="text-sm text-muted mt-1.5 mb-7 leading-relaxed">Como deseja participar? Os processos são distribuídos sempre a relator de Turma diversa daquela em que tramitam.</p>
+          <div className="mb-4"><WindowBanner w={win} /></div>
           <div className="mb-6"><EligibilityNotice /></div>
           <div className="grid sm:grid-cols-2 gap-4">
             {[
@@ -61,13 +80,14 @@ export default function Recursal() {
       {mode !== 'choose' && (
         <button onClick={() => setMode('choose')} className="btn-ghost btn-sm mb-4 inline-flex items-center gap-1.5"><ArrowLeft className="w-4 h-4" /> Voltar</button>
       )}
-      {mode === 'send' && <SendProcesses />}
-      {mode === 'volunteer' && <VolunteerForm />}
+      {mode !== 'choose' && <WindowBanner w={win} />}
+      {mode === 'send' && <SendProcesses closed={closed} />}
+      {mode === 'volunteer' && <VolunteerForm closed={closed} />}
     </section>
   );
 }
 
-function SendProcesses() {
+function SendProcesses({ closed }: { closed: boolean }) {
   const [name, setName] = useState(''); const [email, setEmail] = useState(''); const [website, setWebsite] = useState('');
   const [input, setInput] = useState<'manual' | 'file'>('manual');
   const [rows, setRows] = useState<Row[]>([emptyRow(), emptyRow(), emptyRow()]);
@@ -190,19 +210,19 @@ function SendProcesses() {
       )}
       <div className="flex flex-wrap justify-end gap-3 pt-2">
         <button className="btn-secondary" disabled={busy || !ready} onClick={verify}>{busy && !check ? 'Conferindo…' : 'Conferir'}</button>
-        <button className="btn-primary" disabled={busy || !check || check.summary.valid === 0} onClick={send}>{check ? `Enviar ${check.summary.valid} válido(s)` : 'Enviar'}</button>
+        <button className="btn-primary" disabled={closed || busy || !check || check.summary.valid === 0} onClick={send}>{check ? `Enviar ${check.summary.valid} válido(s)` : 'Enviar'}</button>
       </div>
     </div>
   );
 }
 
-function VolunteerForm() {
-  const [f, setF] = useState({ name: '', email: '', capacity: '', note: '', declaration: false, website: '' });
+function VolunteerForm({ closed }: { closed: boolean }) {
+  const [f, setF] = useState({ name: '', email: '', note: '', website: '' });
   const [turmas, setTurmas] = useState<number[]>([]);
   const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [ok, setOk] = useState(false);
   const submit = async (e: React.FormEvent) => {
     e.preventDefault(); setBusy(true); setError('');
-    try { await api('/recursal/volunteers', { method: 'POST', json: { ...f, turmas, capacity: f.capacity ? Number(f.capacity) : undefined } }); setOk(true); }
+    try { await api('/recursal/volunteers', { method: 'POST', json: { ...f, turmas } }); setOk(true); }
     catch (err: any) { setError(err.message); } finally { setBusy(false); }
   };
   if (ok) return <div className="card p-7 sm:p-10"><Notice tone="ok"><strong>Inscrição recebida.</strong> A administração fará a conferência e, aprovada, você receberá processos de Turmas em que não atua.</Notice></div>;
@@ -228,13 +248,9 @@ function VolunteerForm() {
           ); })}
         </div>
       </fieldset>
-      <div className="grid sm:grid-cols-2 gap-4">
-        <Field label="Máximo de processos (opcional)"><input className="input" type="number" min={1} max={1000} value={f.capacity} onChange={(e) => setF({ ...f, capacity: e.target.value })} /></Field>
-        <Field label="Observação (opcional)"><input className="input" value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} maxLength={500} /></Field>
-      </div>
+      <Field label="Observação (opcional)"><input className="input" value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} maxLength={500} /></Field>
       <input className="hidden" tabIndex={-1} aria-hidden="true" autoComplete="off" name="website" value={f.website} onChange={(e) => setF({ ...f, website: e.target.value })} />
-      <label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-1" checked={f.declaration} onChange={(e) => setF({ ...f, declaration: e.target.checked })} /> Declaro que as informações são verdadeiras, que estou lotado ou designado em Turma Recursal e que atuo nas Turmas indicadas.</label>
-      <div className="flex justify-end"><button className="btn-primary" disabled={busy || turmas.length === 0 || !f.declaration}>{busy ? 'Enviando…' : 'Inscrever-se'}</button></div>
+      <div className="flex justify-end"><button className="btn-primary" disabled={closed || busy || turmas.length === 0}>{busy ? 'Enviando…' : 'Inscrever-se'}</button></div>
     </form>
   );
 }
@@ -256,7 +272,7 @@ export function RecursalStatusCard({ r }: { r: RecursalStatus }) {
             <div className="font-serif font-semibold text-navy">Inscrição como voluntário</div>
             <Badge tone={tone}>{v.status === 'Inativo' ? 'Rejeitada' : v.status === 'Aprovado' ? 'Aprovada' : 'Aguardando conferência'}</Badge>
           </div>
-          <div className="text-xs text-muted flex items-center gap-1.5 flex-wrap">Atua em: {v.turmas.map((t) => <TurmaChip key={t} turma={t} />)}{v.capacity ? <span> · máximo de {v.capacity} processo(s)</span> : null}</div>
+          <div className="text-xs text-muted flex items-center gap-1.5 flex-wrap">Atua em: {v.turmas.map((t) => <TurmaChip key={t} turma={t} />)}</div>
           {v.status === 'Aprovado' && <div className="bg-ok-soft text-ok text-sm rounded-md px-3 py-2.5">Processos designados a você até agora: <strong>{v.processes}</strong>.</div>}
           {v.status === 'Inativo' && <div className="bg-danger-soft text-danger text-sm rounded-md px-3 py-2.5">A inscrição não foi aceita. Somente magistrados lotados ou designados nas Turmas Recursais podem participar.</div>}
         </div>

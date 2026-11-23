@@ -4,7 +4,7 @@ import XLSX from 'xlsx';
 import { saveState } from '../persistence.ts';
 import { log, newId, reqCtx, S } from '../state.ts';
 import { type RecursalProcess, type RecursalVolunteer } from '../types.ts';
-import { cleanText, csvCell, freeText } from '../util.ts';
+import { BRT, cleanText, csvCell, fmtLocal, freeText } from '../util.ts';
 import { confirmedWipe, EMAIL_DOMAIN_MESSAGE, EMAIL_RE, emailDomainOk } from '../validation.ts';
 import { TURMAS, cnjCheckDigits, formatCnj, normalizeTurma, turmaLabel } from '../recursal/cnj.ts';
 import { readSheet } from '../recursal/parse.ts';
@@ -44,6 +44,20 @@ const summarize = (checked: ReturnType<typeof checkRows>) => ({
   invalid: checked.filter((r) => r.state === 'invalida').length,
   duplicates: checked.filter((r) => r.state === 'duplicada').length,
 });
+
+/** Situação do prazo de inscrição (horário de Brasília). Sem prazo definido = ainda não aberto. */
+export function windowState() {
+  const w = S.recursalWindow;
+  if (!w) return { state: 'not_set' as const, message: 'As inscrições ainda não foram abertas.', openingDate: null, closingDate: null };
+  const opens = Date.parse(`${w.openingDate}${BRT}`), closes = Date.parse(`${w.closingDate}${BRT}`) + 60_000, now = Date.now();
+  if (Number.isNaN(opens) || Number.isNaN(closes)) return { state: 'not_set' as const, message: 'As inscrições estão fechadas.', openingDate: w.openingDate, closingDate: w.closingDate };
+  const state = now < opens ? 'not_yet' as const : now >= closes ? 'ended' as const : 'open' as const;
+  const message = state === 'not_yet' ? `As inscrições ainda não foram abertas. Abertura em ${fmtLocal(w.openingDate)} (horário de Brasília).`
+    : state === 'ended' ? `O prazo de inscrições foi encerrado em ${fmtLocal(w.closingDate)} (horário de Brasília).`
+    : `Inscrições abertas até ${fmtLocal(w.closingDate)} (horário de Brasília).`;
+  return { state, message, openingDate: w.openingDate, closingDate: w.closingDate };
+}
+const closedMsg = () => { const w = windowState(); return w.state === 'open' ? null : w.message; };
 
 export const existingCnj = () => new Set(S.recursalProcesses.map((p) => p.cnj));
 
@@ -97,6 +111,7 @@ export function register(app: express.Express) {
   });
   // Envio: grava somente as linhas válidas e não duplicadas
   app.post('/api/recursal/processes', (req, res) => {
+    const closed = closedMsg(); if (closed) return res.status(403).json({ error: closed });
     const sub = readSubmission(req.body);
     if ('error' in sub) return res.status(400).json({ error: sub.error });
     const checked = checkRows(sub.rows, existingCnj());
@@ -114,6 +129,7 @@ export function register(app: express.Express) {
   });
   // Inscrição de voluntário
   app.post('/api/recursal/volunteers', (req, res) => {
+    const closed = closedMsg(); if (closed) return res.status(403).json({ error: closed });
     const name = cleanText(req.body?.name, 120);
     const email = cleanText(req.body?.email, 160)?.toLowerCase() ?? '';
     if (!name) return res.status(400).json({ error: 'Informe seu nome.' });
@@ -121,28 +137,37 @@ export function register(app: express.Express) {
     if (!emailDomainOk(email)) return res.status(400).json({ error: EMAIL_DOMAIN_MESSAGE });
     const turmas = [...new Set((Array.isArray(req.body?.turmas) ? req.body.turmas : []).map((t: unknown) => normalizeTurma(t)).filter((t: number | null): t is number => t !== null))].sort() as number[];
     if (turmas.length === 0) return res.status(400).json({ error: 'Indique em qual(is) Turma(s) Recursal você já atua.' });
-    if (req.body?.declaration !== true) return res.status(400).json({ error: 'Confirme a declaração.' });
-    const capRaw = req.body?.capacity;
-    const capacity = capRaw === undefined || capRaw === null || capRaw === '' ? undefined : Number(capRaw);
-    if (capacity !== undefined && (!Number.isInteger(capacity) || capacity < 1 || capacity > 1000)) return res.status(400).json({ error: 'A quantidade máxima de processos deve ser um número inteiro de 1 a 1000.' });
     const note = freeText(req.body?.note, 500);
     const prev = S.recursalVolunteers.find((v) => v.email === email);
     if (prev) {
       if (prev.status !== 'Aguardando') return res.status(409).json({ error: 'Este e-mail já está inscrito como voluntário. Para alterar os dados, fale com a administração.' });
-      Object.assign(prev, { name, turmas, capacity, note });
+      Object.assign(prev, { name, turmas, note });
       log(null, 'Público', 'Recursal', `Mutirão Recursal: inscrição de voluntário atualizada (${name}).`);
       return res.json({ success: true, updated: true });
     }
-    S.recursalVolunteers.push({ id: newId('rvol'), name, email, turmas, ...(capacity ? { capacity } : {}), status: 'Aguardando', ...(note ? { note } : {}), createdAt: new Date().toISOString() });
+    S.recursalVolunteers.push({ id: newId('rvol'), name, email, turmas, status: 'Aguardando', ...(note ? { note } : {}), createdAt: new Date().toISOString() });
     log(null, 'Público', 'Recursal', `Mutirão Recursal: novo voluntário ${name} (atua em ${turmas.map(turmaLabel).join(', ')}).`);
     res.status(201).json({ success: true });
   });
 
+  app.get('/api/recursal/window', (_req, res) => res.json(windowState()));
+
   /* ------------ administração ------------ */
+  app.put('/api/recursal/window', (req, res) => {
+    const ok = (v: unknown): v is string => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(v) && !Number.isNaN(Date.parse(`${v}${BRT}`));
+    if (req.body?.clear === true) { S.recursalWindow = null; log(null, 'Administração', 'Recursal', 'Prazo de inscrição do Mutirão - Turma Recursal removido (inscrições fechadas).'); return res.json(windowState()); }
+    const { openingDate, closingDate } = req.body ?? {};
+    if (!ok(openingDate) || !ok(closingDate)) return res.status(400).json({ error: 'Informe as datas de abertura e de encerramento.' });
+    if (Date.parse(`${closingDate}${BRT}`) <= Date.parse(`${openingDate}${BRT}`)) return res.status(400).json({ error: 'O encerramento deve ser posterior à abertura.' });
+    S.recursalWindow = { openingDate, closingDate };
+    log(null, 'Administração', 'Recursal', `Prazo de inscrição do Mutirão - Turma Recursal definido: ${fmtLocal(openingDate)} a ${fmtLocal(closingDate)}.`);
+    res.json(windowState());
+  });
   app.get('/api/recursal/overview', (_req, res) => {
     const vols = S.recursalVolunteers.map(volView);
     const matrix = TURMAS.map((t) => ({ turma: t, pending: S.recursalProcesses.filter((p) => p.turma === t && p.status === 'Pendente').length, distributed: S.recursalProcesses.filter((p) => p.turma === t && p.status === 'Distribuído').length, apt: S.recursalVolunteers.filter((v) => v.status === 'Aprovado' && !v.turmas.includes(t)).length }));
     res.json({
+      window: windowState(),
       counts: { processes: S.recursalProcesses.length, pending: S.recursalProcesses.filter((p) => p.status === 'Pendente').length, distributed: S.recursalProcesses.filter((p) => p.status === 'Distribuído').length, volunteers: vols.length, approved: vols.filter((v) => v.status === 'Aprovado').length },
       matrix, volunteers: vols, processes: S.recursalProcesses.map(procView), batches: [...S.recursalBatches].reverse().slice(0, 100),
     });

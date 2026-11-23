@@ -118,3 +118,30 @@ test('Distribuição automática equilibra a carga (sem capacidade, ninguém con
   assert.equal(r.pairs.length, 30);
   for (const v of ['a', 'b', 'c']) assert.equal(r.loads[v], 10);
 });
+
+test('Prazo de inscrição: fechado sem prazo, abre e encerra por data; voluntário sem declaração nem máximo', async () => {
+  const express = (await import('express')).default;
+  const { register } = await import('../routes/recursal.ts');
+  const app = express(); app.use(express.json()); register(app);
+  const server = app.listen(0); const port = (server.address() as any).port; const url = `http://localhost:${port}/api/recursal`;
+  const send = (m: string, p: string, body: object) => fetch(url + p, { method: m, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const vol = { name: 'Ana', email: 'ana2@tjpr.jus.br', turmas: [1, 2] };
+  const fmt = (d: Date) => new Date(d.getTime() - 3 * 3600_000).toISOString().slice(0, 16); // horário de Brasília
+  try {
+    S.recursalWindow = null; S.recursalVolunteers = [];
+    assert.equal((await (await fetch(url + '/window')).json()).state, 'not_set');
+    assert.equal((await send('POST', '/volunteers', vol)).status, 403);
+    const day = 86400_000;
+    assert.equal((await send('PUT', '/window', { openingDate: fmt(new Date(Date.now() + day)), closingDate: fmt(new Date(Date.now() + 2 * day)) })).status, 200);
+    assert.equal((await (await fetch(url + '/window')).json()).state, 'not_yet');
+    assert.equal((await send('POST', '/volunteers', vol)).status, 403);
+    assert.equal((await send('PUT', '/window', { openingDate: fmt(new Date(Date.now() + 2 * day)), closingDate: fmt(new Date(Date.now() + day)) })).status, 400);
+    await send('PUT', '/window', { openingDate: fmt(new Date(Date.now() - day)), closingDate: fmt(new Date(Date.now() + day)) });
+    assert.equal((await (await fetch(url + '/window')).json()).state, 'open');
+    assert.equal((await send('POST', '/volunteers', vol)).status, 201); // sem declaração e sem máximo de processos
+    assert.equal(S.recursalVolunteers[0].capacity, undefined);
+    await send('PUT', '/window', { openingDate: fmt(new Date(Date.now() - 2 * day)), closingDate: fmt(new Date(Date.now() - day)) });
+    assert.equal((await (await fetch(url + '/window')).json()).state, 'ended');
+    assert.equal((await send('POST', '/processes', { submitterName: 'X', submitterEmail: 'x@tjpr.jus.br', rows: [['1', '1']] })).status, 403);
+  } finally { S.recursalWindow = null; server.close(); }
+});

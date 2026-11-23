@@ -82,7 +82,7 @@ export async function startServer() {
     if (session) { const store = reqCtx.getStore(); if (store) store.user = session.name; }
     const publicRead = (req.method === 'GET' && ['/settings', '/faq', '/admin/login-mode', '/catalog'].includes(req.path)) || (req.method === 'POST' && req.path === '/status');
     const publicSignup = req.method === 'POST' && (req.path === '/magistrates' || req.path === '/units');
-    const recursalPublic = (req.method === 'GET' && (req.path === '/recursal/template.csv' || req.path === '/recursal/template.xlsx'))
+    const recursalPublic = (req.method === 'GET' && (req.path === '/recursal/template.csv' || req.path === '/recursal/template.xlsx' || req.path === '/recursal/window'))
       || (req.method === 'POST' && ['/recursal/validate', '/recursal/processes', '/recursal/volunteers'].includes(req.path));
     const login = req.method === 'POST' && (req.path === '/admin/login' || req.path === '/admin/login/verify');
 

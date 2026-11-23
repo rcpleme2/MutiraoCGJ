@@ -20,7 +20,7 @@ export const lastSaved = new Map<string, Map<string, string>>();
 /** Entradas do registro já gravadas: o log é imutável, só se acrescenta e nunca se apaga do banco. */
 export let persistedLogIds = new Set<string>();
 export let lastMeta = '';
-export const metaJson = () => JSON.stringify({ activeEditionId: S.activeEditionId, adminTotpSecret: S.adminTotpSecret, dupDismissed: S.dupDismissed, lastAutoBackup: S.lastAutoBackup, sharedHiddenTabs: S.sharedHiddenTabs });
+export const metaJson = () => JSON.stringify({ activeEditionId: S.activeEditionId, adminTotpSecret: S.adminTotpSecret, dupDismissed: S.dupDismissed, lastAutoBackup: S.lastAutoBackup, sharedHiddenTabs: S.sharedHiddenTabs, recursalWindow: S.recursalWindow });
 export const collectionsNow = (): Record<string, { id: string }[]> => ({
   editions: S.editions, magistrates: S.magistrates, units: S.units, matches: S.matches, log: S.activityLog, faq: S.faq, panel: S.panelEntries, withdrawals: S.withdrawals, transfers: S.transfers, admins: S.admins,
   catalog: S.catalogUnits, comarcas: S.catalogComarcas, sessions: liveSessions(),
@@ -50,6 +50,7 @@ export async function loadState() {
       S.recursalProcesses = raw.recursalProcesses ?? [];
       S.recursalVolunteers = raw.recursalVolunteers ?? [];
       S.recursalBatches = raw.recursalBatches ?? [];
+      S.recursalWindow = raw.recursalWindow ?? null;
       loadSessions(raw.sessions);
     } catch { /* primeira execução: usa os dados iniciais */ }
     applyCatalog();
@@ -96,6 +97,7 @@ export async function loadState() {
   S.recursalProcesses = loaded.recursal_processes as RecursalProcess[];
   S.recursalVolunteers = loaded.recursal_volunteers as RecursalVolunteer[];
   S.recursalBatches = loaded.recursal_batches as RecursalBatch[];
+  S.recursalWindow = meta?.recursalWindow ?? null;
   loadSessions(loaded.sessions);
   applyCatalog();
   lastMeta = metaJson();
@@ -105,7 +107,7 @@ export async function persist() {
     fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
     fs.writeFileSync(
       DATA_FILE,
-      JSON.stringify({ editions: S.editions, activeEditionId: S.activeEditionId, magistrates: S.magistrates, units: S.units, matches: S.matches, activityLog: S.activityLog, faq: S.faq, adminTotpSecret: S.adminTotpSecret, panel: S.panelEntries, withdrawals: S.withdrawals, transfers: S.transfers, dupDismissed: S.dupDismissed, admins: S.admins, lastAutoBackup: S.lastAutoBackup, sharedHiddenTabs: S.sharedHiddenTabs, catalog: S.catalogUnits, comarcas: S.catalogComarcas, sessions: liveSessions(), recursalProcesses: S.recursalProcesses, recursalVolunteers: S.recursalVolunteers, recursalBatches: S.recursalBatches }),
+      JSON.stringify({ editions: S.editions, activeEditionId: S.activeEditionId, magistrates: S.magistrates, units: S.units, matches: S.matches, activityLog: S.activityLog, faq: S.faq, adminTotpSecret: S.adminTotpSecret, panel: S.panelEntries, withdrawals: S.withdrawals, transfers: S.transfers, dupDismissed: S.dupDismissed, admins: S.admins, lastAutoBackup: S.lastAutoBackup, sharedHiddenTabs: S.sharedHiddenTabs, catalog: S.catalogUnits, comarcas: S.catalogComarcas, sessions: liveSessions(), recursalProcesses: S.recursalProcesses, recursalVolunteers: S.recursalVolunteers, recursalBatches: S.recursalBatches, recursalWindow: S.recursalWindow }),
     );
     return;
   }

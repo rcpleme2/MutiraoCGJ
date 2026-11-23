@@ -174,7 +174,9 @@ export interface RecursalRowCheck { line: number; input: string; turmaInput: str
 export interface RecursalCheck { summary: { total: number; valid: number; invalid: number; duplicates: number }; rows: RecursalRowCheck[] }
 export interface RecursalProcessView { id: string; cnj: string; formatted: string; turma: number; status: 'Pendente' | 'Distribuído'; submitterName: string; submitterEmail: string; createdAt: string; assignedVolunteerId?: string; assignedAt?: string; volunteerName: string | null; volunteerTurmas: number[] }
 export interface RecursalVolunteerView { id: string; name: string; email: string; turmas: number[]; capacity?: number; status: 'Aguardando' | 'Aprovado' | 'Inativo'; note?: string; createdAt: string; load: number }
+export interface RecursalWindowInfo { state: 'not_set' | 'not_yet' | 'open' | 'ended'; message: string; openingDate: string | null; closingDate: string | null }
 export interface RecursalOverview {
+  window: RecursalWindowInfo;
   counts: { processes: number; pending: number; distributed: number; volunteers: number; approved: number };
   matrix: { turma: number; pending: number; distributed: number; apt: number }[];
   volunteers: RecursalVolunteerView[]; processes: RecursalProcessView[];
