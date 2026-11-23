@@ -1,10 +1,19 @@
 // Mutirão da Turma Recursal (portal público): enviar processos ou inscrever-se como voluntário.
 import { useRef, useState } from 'react';
-import { FileText, Scale, Plus, Trash2, Download, Upload, CheckCircle2, AlertTriangle, XCircle, ArrowLeft } from 'lucide-react';
+import { AlertTriangle as AlertIcon, FileText, Scale, Plus, Trash2, Download, Upload, CheckCircle2, AlertTriangle, XCircle, ArrowLeft } from 'lucide-react';
 import { api } from './api';
 import { RecursalCheck, RecursalRowCheck } from './types';
 import { Badge, Field, Notice } from './ui';
 import { TURMAS, TurmaChip, fileToBase64, turmaStyle } from './recursalCommon';
+
+export function EligibilityNotice() {
+  return (
+    <div role="note" className="flex items-start gap-3 rounded-md bg-warn-soft text-warn px-4 py-3 text-sm leading-relaxed">
+      <AlertIcon className="w-4 h-4 mt-0.5 shrink-0" />
+      <p><strong>Atenção:</strong> somente magistrados lotados ou designados nas Turmas Recursais podem participar. Inscrições de magistrados que não se enquadrem nessas condições serão rejeitadas.</p>
+    </div>
+  );
+}
 
 type Mode = 'choose' | 'send' | 'volunteer';
 type Row = { number: string; turma: string };
@@ -33,12 +42,13 @@ export default function Recursal() {
           <Scale className="w-5 h-5 text-bronze mb-3" />
           <h2 className="text-2xl font-semibold text-navy">Mutirão da Turma Recursal</h2>
           <p className="text-sm text-muted mt-1.5 mb-7 leading-relaxed">Como deseja participar? Os processos são distribuídos sempre a relator de Turma diversa daquela em que tramitam.</p>
+          <div className="mb-6"><EligibilityNotice /></div>
           <div className="grid sm:grid-cols-2 gap-4">
             {[
               { id: 'send' as Mode, icon: FileText, title: 'Enviar processos', text: 'Indique processos para julgamento no mutirão, digitando os números ou enviando uma planilha .csv/.xlsx.', cta: 'Continuar' },
               { id: 'volunteer' as Mode, icon: Scale, title: 'Ser voluntário', text: 'Inscreva-se como relator e informe em quais Turmas Recursais você já atua.', cta: 'Inscrever-se' },
             ].map((c) => (
-              <button key={c.id} onClick={() => setMode(c.id)} className="text-left rounded-lg border border-line bg-surface p-6 hover:border-bronze hover:shadow-sm transition focus:outline-none focus-visible:ring-2 focus-visible:ring-bronze">
+              <button key={c.id} onClick={() => setMode(c.id)} className="text-left flex flex-col items-start justify-start rounded-lg border border-line bg-surface p-6 hover:border-bronze hover:shadow-sm transition focus:outline-none focus-visible:ring-2 focus-visible:ring-bronze">
                 <c.icon className="w-6 h-6 text-bronze mb-3" />
                 <div className="text-lg font-semibold text-navy">{c.title}</div>
                 <p className="text-sm text-muted mt-1.5 leading-relaxed">{c.text}</p>
@@ -108,6 +118,7 @@ function SendProcesses() {
         <h2 className="text-2xl font-semibold text-navy">Enviar processos</h2>
         <p className="text-sm text-muted mt-1.5">Cada processo deve seguir o padrão CNJ (com ou sem pontos e traço) e indicar a Turma Recursal em que tramita (1ª a 6ª).</p>
       </div>
+      <EligibilityNotice />
       {error && <Notice tone="danger">{error}</Notice>}
       <div className="grid sm:grid-cols-2 gap-4">
         <Field label="Seu nome"><input className="input" value={name} onChange={(e) => setName(e.target.value)} maxLength={120} autoComplete="name" /></Field>
@@ -202,6 +213,7 @@ function VolunteerForm() {
         <h2 className="text-2xl font-semibold text-navy">Inscrição de voluntário</h2>
         <p className="text-sm text-muted mt-1.5">Você receberá processos apenas de Turmas em que <strong>não</strong> atua.</p>
       </div>
+      <EligibilityNotice />
       {error && <Notice tone="danger">{error}</Notice>}
       <div className="grid sm:grid-cols-2 gap-4">
         <Field label="Nome completo"><input className="input" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} maxLength={120} required /></Field>
@@ -221,7 +233,7 @@ function VolunteerForm() {
         <Field label="Observação (opcional)"><input className="input" value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} maxLength={500} /></Field>
       </div>
       <input className="hidden" tabIndex={-1} aria-hidden="true" autoComplete="off" name="website" value={f.website} onChange={(e) => setF({ ...f, website: e.target.value })} />
-      <label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-1" checked={f.declaration} onChange={(e) => setF({ ...f, declaration: e.target.checked })} /> Declaro que as informações são verdadeiras e que atuo nas Turmas indicadas.</label>
+      <label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-1" checked={f.declaration} onChange={(e) => setF({ ...f, declaration: e.target.checked })} /> Declaro que as informações são verdadeiras, que estou lotado ou designado em Turma Recursal e que atuo nas Turmas indicadas.</label>
       <div className="flex justify-end"><button className="btn-primary" disabled={busy || turmas.length === 0 || !f.declaration}>{busy ? 'Enviando…' : 'Inscrever-se'}</button></div>
     </form>
   );

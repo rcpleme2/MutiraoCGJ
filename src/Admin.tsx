@@ -23,7 +23,7 @@ const SUBS: { id: Sub; label: string }[] = [
   { id: 'magistrates', label: 'Magistrados' },
   { id: 'units', label: 'Unidades' },
   { id: 'matches', label: 'Vinculações' },
-  { id: 'recursal', label: 'Mutirão Recursal' },
+  { id: 'recursal', label: 'Mutirão - Turma Recursal' },
   { id: 'standardize', label: 'Padronizar nomes' },
   { id: 'catalog', label: 'Comarcas e unidades' },
   { id: 'faq', label: 'Perguntas frequentes' },

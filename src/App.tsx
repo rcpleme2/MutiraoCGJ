@@ -14,7 +14,7 @@ const NAV: { id: Tab; label: string }[] = [
   { id: 'home', label: 'Início' },
   { id: 'magistrate', label: 'Inscrição de Magistrados' },
   { id: 'unit', label: 'Inscrição de Unidades' },
-  { id: 'recursal', label: 'Mutirão Recursal' },
+  { id: 'recursal', label: 'Mutirão - Turma Recursal' },
   { id: 'status', label: 'Consultar Status' },
 ];
 

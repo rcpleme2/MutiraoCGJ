@@ -159,6 +159,7 @@ function Volunteers({ data, act, confirm, readOnly, isAdmin }: { data: RecursalO
   return (
     <div className="space-y-4">
       <Toolbar title={`Voluntários (${data.volunteers.length})`} />
+      <p className="text-sm text-warn bg-warn-soft rounded-md px-4 py-3">Somente magistrados lotados ou designados nas Turmas Recursais podem participar. Rejeite (situação “Inativo”) as inscrições de quem não se enquadrar nessas condições.</p>
       <div className="card overflow-x-auto"><table className="w-full text-sm"><thead><tr><th className="th">Magistrado</th><th className="th">Atua em</th><th className="th">Carga</th><th className="th">Situação</th><th className="th" /></tr></thead>
         <tbody>{data.volunteers.length === 0 ? <EmptyRow cols={5}>Nenhum voluntário inscrito.</EmptyRow> : data.volunteers.map((v) => (
           <tr key={v.id}><td className="td">{v.name}<div className="text-xs text-muted">{v.email}{v.note ? ` · ${v.note}` : ''}</div></td>
