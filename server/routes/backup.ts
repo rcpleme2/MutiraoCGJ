@@ -18,6 +18,7 @@ export const backupJson = () => JSON.stringify({
   app: BACKUP_APP, version: 1, exportedAt: new Date().toISOString(), activeEditionId: S.activeEditionId,
   editions: S.editions, magistrates: S.magistrates, units: S.units, matches: S.matches, faq: S.faq, withdrawals: S.withdrawals, transfers: S.transfers, log: S.activityLog,
   catalog: S.catalogUnits, comarcas: S.catalogComarcas,
+  recursalProcesses: S.recursalProcesses, recursalVolunteers: S.recursalVolunteers, recursalBatches: S.recursalBatches, recursalWindow: S.recursalWindow,
 });
 // O Cloud Scheduler chama POST /api/backup/auto 1x/dia com o cabeçalho x-backup-token (= BACKUP_CRON_TOKEN).
 // A cópia vai para o bucket BACKUP_BUCKET (Cloud Storage). Para testes locais, BACKUP_DIR grava numa pasta.
@@ -128,6 +129,9 @@ export function register(app: express.Express) {
       S.catalogComarcas = cms.map((c) => ({ id: c.id, name: c.name }));
       applyCatalog();
     }
+    // Mutirão da Turma Recursal: só é trocado se o backup o trouxer (backups antigos mantêm o atual)
+    const rp = arr('recursalProcesses'), rv = arr('recursalVolunteers'), rb = arr('recursalBatches');
+    if (d.recursalProcesses !== undefined && rp && rv && rb) { S.recursalProcesses = rp; S.recursalVolunteers = rv; S.recursalBatches = rb; S.recursalWindow = d.recursalWindow ?? null; }
     const have = new Set(S.activityLog.map((l) => l.id));
     S.activityLog = [...S.activityLog, ...lg.filter((l) => !have.has(l.id) && typeof l.timestamp === 'string')].sort((x, y) => y.timestamp.localeCompare(x.timestamp));
     normalizeLegacy();

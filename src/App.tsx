@@ -5,14 +5,17 @@ import { Edition, FaqItem, Magistrate, Unit, hearingPeriodLabel } from './types'
 import { Badge, FeedbackProvider, Notice, formatDate, magistrateStatusLabel, magistrateTone } from './ui';
 import { MagistrateForm, UnitForm } from './Forms';
 import Admin from './Admin';
+import Recursal from './Recursal';
+import { RecursalStatusCard, type RecursalStatus } from './Recursal';
 import ErrorBoundary from './ErrorBoundary';
 
-type Tab = 'home' | 'magistrate' | 'unit' | 'status' | 'faq' | 'admin';
+type Tab = 'home' | 'magistrate' | 'unit' | 'status' | 'faq' | 'recursal' | 'admin';
 
 const NAV: { id: Tab; label: string }[] = [
   { id: 'home', label: 'Início' },
   { id: 'magistrate', label: 'Inscrição de Magistrados' },
   { id: 'unit', label: 'Inscrição de Unidades' },
+  { id: 'recursal', label: 'Mutirão - Turma Recursal' },
   { id: 'status', label: 'Consultar Status' },
 ];
 
@@ -87,7 +90,7 @@ function AppInner() {
 
   // Consulta
   const [email, setEmail] = useState('');
-  const [result, setResult] = useState<{ magistrates: Magistrate[]; units: Unit[] } | null>(null);
+  const [result, setResult] = useState<{ magistrates: Magistrate[]; units: Unit[]; recursal?: RecursalStatus } | null>(null);
   const [consultError, setConsultError] = useState('');
   const [consulting, setConsulting] = useState(false);
 
@@ -239,6 +242,8 @@ function AppInner() {
           </PageCard>
         )}
 
+        {tab === 'recursal' && <Recursal />}
+
         {tab === 'faq' && (
           <PageCard icon={HelpCircle} title="Perguntas frequentes" subtitle="Dúvidas comuns sobre as inscrições e o andamento do mutirão.">
             {faq.length === 0 ? (
@@ -265,7 +270,7 @@ function AppInner() {
 
         {tab === 'status' && (
           <PageCard icon={Search} title="Consultar status"
-            subtitle="Informe o e-mail cadastrado para ver inscrições de magistrado e de unidades realizadas a partir de outubro/2026.">
+            subtitle="Informe o e-mail cadastrado para ver inscrições de magistrado e de unidades realizadas a partir de outubro/2026, além do Mutirão - Turma Recursal.">
             <form onSubmit={consult} className="flex gap-2">
               <input type="email" required placeholder="nome@tjpr.jus.br" className="input flex-1" value={email} onChange={e => setEmail(e.target.value)} />
               <button className="btn-primary" disabled={consulting}>{consulting ? 'Buscando…' : 'Consultar'}</button>
@@ -273,6 +278,7 @@ function AppInner() {
             {consultError && <div className="mt-5"><Notice tone="danger">{consultError}</Notice></div>}
             {result && (
               <div className="mt-8 space-y-6">
+                {result.recursal && <RecursalStatusCard r={result.recursal} />}
                 {result.magistrates.length > 0 && (
                   <div className="space-y-3">
                     <h3 className="text-xs font-semibold uppercase tracking-wider text-bronze">Inscrições de magistrado</h3>

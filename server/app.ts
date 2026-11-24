@@ -25,6 +25,7 @@ import { register as registerLog } from './routes/log.ts';
 import { register as registerMagistrates } from './routes/magistrates.ts';
 import { register as registerMatches } from './routes/matches.ts';
 import { register as registerExports } from './routes/exports.ts';
+import { register as registerRecursal } from './routes/recursal.ts';
 
 export async function startServer() {
   const app = express();
@@ -52,8 +53,9 @@ export async function startServer() {
 
   const smallJson = express.json({ limit: '50kb' });
   const bigJson = express.json({ limit: '1mb' }); // colagem de planilhas inteiras no painel de vinculações
+  const recursalJson = express.json({ limit: '8mb' }); // envio público de planilha (até 5 MB, em base64)
   const hugeJson = express.json({ limit: '40mb' }); // restauração de backup (só com sessão administrativa válida)
-  app.use((req, res, next) => (req.path === '/api/panel/import' ? bigJson : req.path === '/api/backup/restore' && hasValidToken(req) ? hugeJson : smallJson)(req, res, next));
+  app.use((req, res, next) => (req.path === '/api/panel/import' ? bigJson : (req.path === '/api/recursal/validate' || req.path === '/api/recursal/processes') ? recursalJson : req.path === '/api/backup/restore' && hasValidToken(req) ? hugeJson : smallJson)(req, res, next));
   await loadState();
   normalizeLegacy();
   migratePanelEntries();
@@ -80,6 +82,8 @@ export async function startServer() {
     if (session) { const store = reqCtx.getStore(); if (store) store.user = session.name; }
     const publicRead = (req.method === 'GET' && ['/settings', '/faq', '/admin/login-mode', '/catalog'].includes(req.path)) || (req.method === 'POST' && req.path === '/status');
     const publicSignup = req.method === 'POST' && (req.path === '/magistrates' || req.path === '/units');
+    const recursalPublic = (req.method === 'GET' && (req.path === '/recursal/template.csv' || req.path === '/recursal/template.xlsx' || req.path === '/recursal/window'))
+      || (req.method === 'POST' && ['/recursal/validate', '/recursal/processes', '/recursal/volunteers'].includes(req.path));
     const login = req.method === 'POST' && (req.path === '/admin/login' || req.path === '/admin/login/verify');
 
     if (req.method === 'POST' && req.path === '/status' && rateLimited(`status:${ip}`, 30, 60_000)) {
@@ -112,7 +116,14 @@ export async function startServer() {
       req.query = {};
       return next();
     }
-    if (publicRead || login) return next();
+    if (recursalPublic && !admin && req.method === 'POST') {
+      // Anti-spam do Mutirão Recursal: campo-isca e limites por IP (conferir é mais folgado que enviar)
+      if (typeof req.body?.website === 'string' && req.body.website.trim() !== '') return res.status(201).json({ success: true });
+      const checking = req.path === '/recursal/validate';
+      if (rateLimited(`recursal:${checking ? 'v' : 'w'}:${ip}`, checking ? 60 : 20, 10 * 60_000)) return res.status(429).json({ error: 'Muitas tentativas em pouco tempo. Aguarde alguns minutos e tente novamente.' });
+      return next();
+    }
+    if (publicRead || login || recursalPublic) return next();
     // Chamada do Cloud Scheduler: autenticada pelo token próprio, conferido na rota
     // Leitura pelo Qlik Sense (REST Connector): autenticada pela chave BI_TOKEN, conferida na rota
     if (req.method === 'GET' && req.path === '/bi/designacoes') {
@@ -136,7 +147,7 @@ export async function startServer() {
   // Em requisições que alteram dados, grava antes de responder.
   app.use('/api', (req, res, next) => {
     // Consultas e a etapa 1 do login não alteram dados: só gravam se gerarem registro de segurança (res.locals.persist)
-    const readOnlyPost = ['/status', '/admin/login', '/admin/logout'].includes(req.path);
+    const readOnlyPost = ['/status', '/admin/login', '/admin/logout', '/recursal/validate', '/recursal/auto-preview'].includes(req.path);
     if (req.method !== 'GET') {
       const json = res.json.bind(res);
       res.json = (body: any) => {
@@ -171,6 +182,7 @@ export async function startServer() {
   registerMagistrates(app);
   registerMatches(app);
   registerExports(app);
+  registerRecursal(app);
 
   if (process.env.NODE_ENV !== 'production') {
     // O Vite só existe como dependência de desenvolvimento: carregado sob demanda, nunca em produção.

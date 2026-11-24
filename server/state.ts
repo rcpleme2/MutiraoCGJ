@@ -1,7 +1,7 @@
 // Estado em memória do sistema, dados iniciais de demonstração, geração de ids e registro de atividades.
 import { type CatalogRecord } from '../src/catalogo-tjpr';
 import { AsyncLocalStorage } from 'async_hooks';
-import { type AdminUser, type Edition, type FaqItem, type LogCategory, type LogEntry, type Magistrate, type Match, type PanelEntry, type Transfer, type Unit, type Withdrawal } from './types.ts';
+import { type AdminUser, type Edition, type FaqItem, type LogCategory, type LogEntry, type Magistrate, type Match, type PanelEntry, type RecursalBatch, type RecursalProcess, type RecursalVolunteer, type RecursalWindow, type Transfer, type Unit, type Withdrawal } from './types.ts';
 
 /** Estado do sistema em memória (gravado no Firestore ou em data/state.json pela persistência) */
 export interface State {
@@ -22,6 +22,10 @@ export interface State {
   adminTotpSecret: string | null;
   activityLog: LogEntry[];
   sharedHiddenTabs: string[];
+  recursalProcesses: RecursalProcess[];
+  recursalVolunteers: RecursalVolunteer[];
+  recursalBatches: RecursalBatch[];
+  recursalWindow: RecursalWindow | null;
 }
 export const S = {} as State;
 S.admins = [];
@@ -191,3 +195,9 @@ export function log(
 }
 /** Abas escondidas por quem entra com a senha compartilhada (sem usuário individual) */
 S.sharedHiddenTabs = [];
+
+/** Mutirão da Turma Recursal */
+S.recursalProcesses = [];
+S.recursalVolunteers = [];
+S.recursalBatches = [];
+S.recursalWindow = null;
