@@ -176,7 +176,7 @@ function AppInner() {
       <main className={`flex-1 w-full mx-auto py-10 sm:py-14 ${tab === 'admin' ? 'max-w-[min(100%,110rem)] px-4 sm:px-6 lg:px-10' : 'max-w-6xl px-5'}`}>
         <ErrorBoundary key={tab}>
         {tab === 'home' && (
-          <section className="max-w-3xl mx-auto">
+          <section className="max-w-5xl mx-auto">
             {edition && open ? (
               <>
                 <div className="flex items-center gap-3 mb-5">
@@ -195,13 +195,14 @@ function AppInner() {
                 </p>
               </>
             )}
-            <div className="grid sm:grid-cols-3 gap-4">
+            <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
               {[
                 { t: 'magistrate' as Tab, icon: UserCheck, title: 'Sou magistrado(a)', desc: 'Inscrever-me como voluntário(a).' },
                 { t: 'unit' as Tab, icon: Building2, title: 'Represento uma unidade', desc: 'Solicitar apoio do mutirão.' },
+                { t: 'recursal' as Tab, icon: Scale, title: 'Mutirão - Turma Recursal', desc: 'Enviar processos ou inscrever-me como relator(a).' },
                 { t: 'status' as Tab, icon: Search, title: 'Consultar status', desc: 'Acompanhar uma inscrição.' },
               ].map(c => (
-                <button key={c.t} onClick={() => go(c.t)} className="card p-5 text-left hover:border-navy/40 transition-colors group">
+                <button key={c.t} onClick={() => go(c.t)} className="card p-5 text-left flex flex-col items-start justify-start hover:border-navy/40 transition-colors group">
                   <c.icon className="w-5 h-5 text-bronze mb-4" />
                   <div className="font-serif font-semibold text-navy">{c.title}</div>
                   <div className="text-sm text-muted mt-1">{c.desc}</div>
