@@ -89,7 +89,7 @@ export default function Recursal() {
 
 function SendProcesses({ closed }: { closed: boolean }) {
   const [name, setName] = useState(''); const [email, setEmail] = useState(''); const [website, setWebsite] = useState('');
-  const [input, setInput] = useState<'manual' | 'file'>('manual');
+  const [input, setInput] = useState<'manual' | 'file' | null>(null);
   const [rows, setRows] = useState<Row[]>([emptyRow(), emptyRow(), emptyRow()]);
   const [file, setFile] = useState<{ name: string; base64: string } | null>(null);
   const [check, setCheck] = useState<RecursalCheck | null>(null);
@@ -131,6 +131,11 @@ function SendProcesses({ closed }: { closed: boolean }) {
   }
   const filled = rows.some((r) => r.number.trim());
   const ready = name.trim() && email.trim() && (input === 'file' ? !!file : filled);
+  // Motivo, em texto, de o envio ainda não estar liberado
+  const blockReason = closed ? 'As inscrições estão fora do prazo.'
+    : !name.trim() || !email.trim() ? 'Preencha seu nome e o e-mail institucional.'
+    : input === 'file' ? (!file ? 'Escolha o arquivo com os processos.' : !check ? 'Clique em Conferir antes de enviar.' : check.summary.valid === 0 ? 'Nenhum processo válido: corrija os apontamentos e confira de novo.' : '')
+    : !filled ? 'Informe ao menos um número de processo.' : !check ? 'Clique em Conferir antes de enviar.' : check.summary.valid === 0 ? 'Nenhum processo válido: corrija os apontamentos e confira de novo.' : '';
   return (
     <div className="card p-7 sm:p-10 space-y-6">
       <div className="pb-5 border-b border-line">
@@ -140,18 +145,28 @@ function SendProcesses({ closed }: { closed: boolean }) {
       </div>
       <EligibilityNotice />
       {error && <Notice tone="danger">{error}</Notice>}
+      {input === null ? (
+        <div role="radiogroup" aria-label="Como informar os processos" className="grid sm:grid-cols-2 gap-4">
+          {([['manual', FileText, 'Digitar ou colar', 'Informe os números e as Turmas diretamente, ou cole linhas copiadas do Excel.'], ['file', Upload, 'Enviar arquivo', 'Envie uma planilha .csv ou .xlsx (1ª coluna: número; 2ª coluna: Turma). Há modelo para baixar.']] as const).map(([id, Icon, label, text]) => (
+            <button key={id} type="button" role="radio" aria-checked="false" onClick={() => { setInput(id); setCheck(null); setError(''); }}
+              className="text-left flex flex-col items-start rounded-lg border border-line bg-surface p-6 hover:border-bronze hover:shadow-sm transition focus:outline-none focus-visible:ring-2 focus-visible:ring-bronze">
+              <Icon className="w-6 h-6 text-bronze mb-3" />
+              <div className="text-lg font-semibold text-navy">{label}</div>
+              <p className="text-sm text-muted mt-1.5 leading-relaxed">{text}</p>
+              <span className="inline-block mt-4 text-sm font-medium text-navy">Escolher →</span>
+            </button>
+          ))}
+        </div>
+      ) : (<>
+      <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+        <span className="text-muted">Forma de envio: <strong className="text-ink">{input === 'file' ? 'arquivo .csv/.xlsx' : 'digitar ou colar'}</strong></span>
+        <button type="button" className="btn-ghost btn-sm" onClick={() => { setInput(null); setCheck(null); setFile(null); setError(''); }}>Trocar forma de envio</button>
+      </div>
       <div className="grid sm:grid-cols-2 gap-4">
         <Field label="Seu nome"><input className="input" value={name} onChange={(e) => setName(e.target.value)} maxLength={120} autoComplete="name" /></Field>
         <Field label="E-mail institucional"><input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} maxLength={160} autoComplete="email" /></Field>
       </div>
       <input className="hidden" tabIndex={-1} aria-hidden="true" autoComplete="off" name="website" value={website} onChange={(e) => setWebsite(e.target.value)} />
-
-      <div role="radiogroup" aria-label="Como informar os processos" className="flex gap-2">
-        {([['manual', 'Digitar ou colar'], ['file', 'Enviar arquivo']] as const).map(([id, label]) => (
-          <button key={id} type="button" role="radio" aria-checked={input === id} onClick={() => { setInput(id); setCheck(null); }}
-            className={`px-4 py-2 rounded-md text-sm border ${input === id ? 'bg-navy text-white border-navy' : 'border-line text-muted hover:text-ink'}`}>{label}</button>
-        ))}
-      </div>
 
       {input === 'manual' ? (
         <div className="space-y-2">
@@ -177,10 +192,12 @@ function SendProcesses({ closed }: { closed: boolean }) {
           {file && <p className="text-sm text-ink">Arquivo: <strong>{file.name}</strong></p>}
         </div>
       )}
-      <div className="flex flex-wrap gap-3 text-sm">
-        <a className="text-navy underline inline-flex items-center gap-1" href="/api/recursal/template.xlsx" download><Download className="w-4 h-4" />Baixar modelo (.xlsx)</a>
-        <a className="text-navy underline inline-flex items-center gap-1" href="/api/recursal/template.csv" download><Download className="w-4 h-4" />Baixar modelo (.csv)</a>
-      </div>
+      {input === 'file' && (
+        <div className="flex flex-wrap gap-3 text-sm">
+          <a className="text-navy underline inline-flex items-center gap-1" href="/api/recursal/template.xlsx" download><Download className="w-4 h-4" />Baixar modelo (.xlsx)</a>
+          <a className="text-navy underline inline-flex items-center gap-1" href="/api/recursal/template.csv" download><Download className="w-4 h-4" />Baixar modelo (.csv)</a>
+        </div>
+      )}
 
       {check && (
         <div className="space-y-3" aria-live="polite">
@@ -208,10 +225,12 @@ function SendProcesses({ closed }: { closed: boolean }) {
           {check.summary.invalid + check.summary.duplicates > 0 && <button className="btn-ghost btn-sm" onClick={() => errorReport(check.rows)}><Download className="w-4 h-4 inline mr-1" />Baixar relatório de erros</button>}
         </div>
       )}
-      <div className="flex flex-wrap justify-end gap-3 pt-2">
+      <div className="flex flex-wrap items-center justify-end gap-3 pt-2">
+        {blockReason && <p role="status" className="text-sm text-muted mr-auto">{blockReason}</p>}
         <button className="btn-secondary" disabled={busy || !ready} onClick={verify}>{busy && !check ? 'Conferindo…' : 'Conferir'}</button>
-        <button className="btn-primary" disabled={closed || busy || !check || check.summary.valid === 0} onClick={send}>{check ? `Enviar ${check.summary.valid} válido(s)` : 'Enviar'}</button>
+        <button className="btn-primary" disabled={!!blockReason || busy} onClick={send}>{check ? `Enviar ${check.summary.valid} válido(s)` : 'Enviar'}</button>
       </div>
+      </>)}
     </div>
   );
 }
@@ -250,7 +269,8 @@ function VolunteerForm({ closed }: { closed: boolean }) {
       </fieldset>
       <Field label="Observação (opcional)"><input className="input" value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} maxLength={500} /></Field>
       <input className="hidden" tabIndex={-1} aria-hidden="true" autoComplete="off" name="website" value={f.website} onChange={(e) => setF({ ...f, website: e.target.value })} />
-      <div className="flex justify-end"><button className="btn-primary" disabled={closed || busy || turmas.length === 0}>{busy ? 'Enviando…' : 'Inscrever-se'}</button></div>
+      {(() => { const why = closed ? 'As inscrições estão fora do prazo.' : !f.name.trim() || !f.email.trim() ? 'Preencha seu nome e o e-mail institucional.' : turmas.length === 0 ? 'Marque ao menos uma Turma em que você já atua.' : '';
+        return <div className="flex flex-wrap items-center justify-end gap-3">{why && <p role="status" className="text-sm text-muted mr-auto">{why}</p>}<button className="btn-primary" disabled={!!why || busy}>{busy ? 'Enviando…' : 'Inscrever-se'}</button></div>; })()}
     </form>
   );
 }
