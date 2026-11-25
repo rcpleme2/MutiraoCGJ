@@ -67,6 +67,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
 
   const [sub, setSub] = useState<Sub>('overview');
   const [linkView, setLinkView] = useState<LinkView>('panel');
+  const [waitUnitFilter, setWaitUnitFilter] = useState<'all' | 'Em análise' | 'Escolhida' | 'Rejeitada'>('all');
   const [editions, setEditions] = useState<Edition[]>([]);
   // Filtro por janela de inscrição ('all' = todo o mutirão). Magistrados, unidades e vinculações ficam sempre completos na memória
   // (a vinculação pode unir janelas diferentes); o filtro só restringe o que é exibido.
@@ -663,7 +664,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
           {([
             ['panel', 'Vigentes e histórico'],
             ['link', `Vincular unidades (${units.filter(u => inScope(u) && u.selection === 'Escolhida' && !matches.some(m => m.unitId === u.id)).length} sem magistrado)`],
-            ['waiting', `Aprovados aguardando vinculação (${waiting.length})`],
+            ['waiting', `Aprovados aguardando vinculação (${waiting.length}) e unidades inscritas (${units.filter(inScope).length})`],
           ] as [LinkView, string][]).map(([id, text]) => (
             <button key={id} type="button" role="tab" aria-selected={linkView === id} onClick={() => setLinkView(id)}
               className={`px-3.5 py-2 rounded-md text-sm border transition-colors ${linkView === id ? 'bg-navy text-white border-navy' : 'bg-surface text-muted border-line hover:text-ink'}`}>{text}</button>
@@ -722,7 +723,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       {/* ---------- Espera ---------- */}
       {sub === 'matches' && linkView === 'waiting' && (
         <div>
-          <Toolbar title="Aprovados e aguardando vinculação" />
+          <Toolbar title={`Aprovados e aguardando vinculação (${waiting.length})`} />
           <SmartTable id="espera" rows={waiting} rowKey={m => m.id} empty="Nenhum magistrado em espera." defaultSort={{ key: 'createdAt', dir: 'asc' }} cols={[
             { id: 'name', label: 'Magistrado(a)', sort: m => m.name, render: m => <div className="font-medium">{m.name}</div> },
             { id: 'email', label: 'E-mail', optional: true, hidden: true, sort: m => m.email, render: m => <span className="text-xs text-muted break-all">{m.email || '—'}</span> },
@@ -732,6 +733,45 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
             { id: 'hearings', label: 'Audiências', optional: true, filter: m => (m.acceptsHearings ? 'Aceita' : 'Não aceita'), sort: m => (m.acceptsHearings ? 1 : 0), tdClass: 'text-muted', render: m => (m.acceptsHearings ? `Aceita${m.hearingPeriod ? ` (${hearingPeriodLabel(m.hearingPeriod).toLowerCase()})` : ''}` : 'Não aceita') },
             { id: 'createdAt', label: 'Inscrição', optional: true, hidden: true, sort: m => m.createdAt, render: m => <DateCell iso={m.createdAt} /> },
           ]} />
+
+          {/* Todas as unidades inscritas na janela, escolhidas ou não: dá para escolher aqui e vincular em seguida */}
+          {(() => {
+            const all = units.filter(inScope);
+            const count = (sel: string) => all.filter(u => u.selection === sel).length;
+            const rows = all.filter(u => waitUnitFilter === 'all' || u.selection === waitUnitFilter);
+            return (
+              <div className="mt-10">
+                <Toolbar title={`Unidades inscritas${allScope ? '' : ' nesta janela'} (${all.length})`} />
+                <p className="text-sm text-muted mb-3">
+                  Todas as unidades inscritas, ainda que não escolhidas. Ao <strong className="text-ink">escolher</strong>, a unidade passa a <strong className="text-ink">Escolhida</strong> e aparece em
+                  “Vincular unidades”; quando todas as vagas forem preenchidas, passa a <strong className="text-ink">Atendida</strong>.
+                </p>
+                <div className="flex flex-wrap items-center gap-2 mb-4">
+                  {([['all', `Todas (${all.length})`], ['Em análise', `Em análise (${count('Em análise')})`], ['Escolhida', `Escolhidas (${count('Escolhida')})`], ['Rejeitada', `Rejeitadas (${count('Rejeitada')})`]] as const).map(([id, text]) => (
+                    <button key={id} onClick={() => setWaitUnitFilter(id)}
+                      className={`px-3 py-1.5 rounded-full text-xs border transition-colors ${waitUnitFilter === id ? 'bg-navy text-white border-navy' : 'bg-surface text-muted border-line hover:text-ink'}`}>{text}</button>
+                  ))}
+                </div>
+                <SmartTable id="espera-unidades" rows={rows} rowKey={u => u.id} empty="Nenhuma unidade neste filtro." defaultSort={{ key: 'selection', dir: 'asc' }} cols={[
+                  { id: 'name', label: 'Unidade / Comarca', sort: u => unitLabel(u), tdClass: 'min-w-[15rem]', render: u => <><span className="font-medium block">{unitLabel(u)}</span><span className="text-[11px] text-bronze block">{u.editionTitle}</span></> },
+                  { id: 'judge', label: 'Responsável', optional: true, sort: u => u.judgeName, tdClass: 'text-xs text-muted', render: u => u.judgeName || '—' },
+                  { id: 'areas', label: 'Áreas e auxílio', optional: true, filter: u => u.areas, sort: u => u.areas.join(', '), render: u => <div className="flex flex-wrap gap-1">{u.areas.map(a => <Badge key={a} tone="info">{a}</Badge>)}<Badge tone="neutral">Precisa de: {u.supportNeeded}</Badge></div> },
+                  { id: 'slots', label: 'Vagas', sort: u => u.slots ?? 1, render: u => <span className="text-xs tabular-nums">{matches.filter(m => m.unitId === u.id).length}/{u.slots ?? 1}</span> },
+                  { id: 'selection', label: 'Triagem', filter: u => u.selection, sort: u => SELECTION_ORDER[u.selection] ?? 9, render: u => <>
+                    <Badge tone={u.selection === 'Escolhida' ? 'ok' : u.selection === 'Rejeitada' ? 'danger' : 'warn'}>{u.selection}</Badge>
+                    {u.selection === 'Rejeitada' && u.rejectionReason && <div className="text-[11px] text-danger mt-1.5 max-w-[12rem] leading-snug" title={u.rejectionReason}>Motivo: {u.rejectionReason}</div>}
+                  </> },
+                  { id: 'status', label: 'Status', filter: u => (u.selection === 'Escolhida' ? u.status : '—'), sort: u => (u.selection === 'Escolhida' ? u.status : ''), render: u => (u.selection === 'Escolhida' ? <Badge tone={u.status === 'Atendida' ? 'ok' : 'warn'}>{u.status}</Badge> : <span className="text-xs text-muted">—</span>) },
+                  { id: 'actions', label: 'Ações', align: 'right', render: u => (
+                    <div className="flex flex-wrap justify-end gap-1.5">
+                      {u.selection !== 'Escolhida' && <button className="btn-secondary btn-sm" onClick={() => chooseUnit(u.id)}><Check className="w-3.5 h-3.5" /> {u.selection === 'Rejeitada' ? 'Reconsiderar e escolher' : 'Escolher'}</button>}
+                      {u.selection === 'Escolhida' && u.status !== 'Atendida' && <button className="btn-secondary btn-sm" onClick={() => setLinkView('link')}>Vincular magistrado</button>}
+                    </div>
+                  ) },
+                ]} />
+              </div>
+            );
+          })()}
         </div>
       )}
 
