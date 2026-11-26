@@ -145,3 +145,37 @@ test('Prazo de inscrição: fechado sem prazo, abre e encerra por data; voluntá
     assert.equal((await send('POST', '/processes', { submitterName: 'X', submitterEmail: 'x@tjpr.jus.br', rows: [['1', '1']] })).status, 403);
   } finally { S.recursalWindow = null; server.close(); }
 });
+
+test('Migração para a Turma Recursal e cruzamento de titulares voluntários', async () => {
+  const express = (await import('express')).default;
+  const { register } = await import('../routes/recursal.ts');
+  const { register: registerTit } = await import('../routes/titulares.ts');
+  const { panelRows, actingPeriods } = await import('../links.ts');
+  const app = express(); app.use(express.json()); register(app); registerTit(app);
+  const server = app.listen(0); const port = (server.address() as any).port; const base = `http://localhost:${port}/api`;
+  const post = (p: string, body: object) => fetch(base + p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  try {
+    S.editions = [{ id: 'e1', title: 'Janela 1', description: '', openingDate: '2026-01-01T00:00', closingDate: '2026-12-31T00:00', isRegistrationOpen: true, status: 'Em andamento', createdAt: '', startDate: '2026-02-01' } as any];
+    S.activeEditionId = 'e1';
+    S.units = [{ id: 'u1', editionId: 'e1', unitName: '1ª Vara Cível', judgeName: 'Dra. Ana Lima', email: 'vara@x', comarca: 'Curitiba', separator: 'de', areas: [], supportNeeded: '', createdAt: '', status: 'Atendida', selection: 'Escolhida', slots: 1 } as any,
+      { id: 'u2', editionId: 'e1', unitName: '2ª Vara Cível', judgeName: 'Dr. Outro Nome', email: 'v2@x', comarca: 'Curitiba', separator: 'de', areas: [], supportNeeded: '', createdAt: '', status: 'Pendente', selection: 'Em análise', slots: 1 } as any];
+    S.magistrates = [{ id: 'm1', editionId: 'e1', name: 'ANA LIMA', email: 'ana@tjpr.jus.br', status: 'Atribuído', createdAt: '' } as any];
+    S.matches = [{ id: 'mt1', editionId: 'e1', magistrateId: 'm1', unitId: 'u2', assignedArea: 'Cível e Fazenda Pública', workType: 'Sentenças', status: 'Vinculado', createdAt: '' } as any];
+    S.withdrawals = []; S.recursalVolunteers = [];
+    const tit = await (await fetch(base + '/titulares-voluntarios?edition=all')).json();
+    assert.equal(tit.length, 1);
+    assert.match(tit[0].represents[0].unit, /1ª Vara Cível/);
+    assert.match(tit[0].designated[0].unit, /2ª Vara Cível/);
+    assert.equal((await post('/recursal/migrate', { name: 'ANA LIMA', endDate: '2026-12-31', startDate: '2026-12-31', turmas: [1] })).status, 400); // início deve ser posterior
+    assert.equal((await post('/recursal/migrate', { name: 'ANA LIMA', endDate: '2026-12-31', startDate: '2027-01-15', turmas: [] })).status, 400);
+    assert.equal((await post('/recursal/migrate', { name: 'ANA LIMA', endDate: '2026-12-31', startDate: '2027-01-15', turmas: [1] })).status, 201);
+    assert.equal(panelRows().length, 0); // vínculo normal encerrado
+    const per = actingPeriods().find((p) => p.name === 'ANA LIMA');
+    assert.equal(per?.end, '2026-12-31'); assert.equal(per?.endReason, 'Migração para a Turma Recursal');
+    const v = S.recursalVolunteers[0];
+    assert.equal(v.status, 'Aprovado'); assert.equal(v.startDate, '2027-01-15'); assert.deepEqual(v.turmas, [1]);
+    // antes do início, a regra bloqueia designação
+    assert.match(blockReason({ turma: 3 }, v)!, /começa em 15\/01\/2027/);
+    assert.equal((await post('/recursal/migrate', { name: 'ANA LIMA', endDate: '2026-12-31', startDate: '2027-01-15', turmas: [1] })).status, 404); // já não tem vínculo vigente
+  } finally { server.close(); }
+});

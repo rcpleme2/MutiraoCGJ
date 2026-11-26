@@ -12,6 +12,7 @@ import { EditionForm, ExcludeModal, FaqForm } from './admin/forms';
 import { SlotsControl, UnitDetail, UnitLinkRow, unitMatchesOf } from './admin/linking';
 import { PanelAdmin } from './admin/panel';
 import { RecursalAdmin } from './admin/recursal';
+import { TitularesAdmin } from './admin/titulares';
 import { dmy, readPref, SELECTION_ORDER, type Sub, unitLabel, writePref } from './admin/shared';
 import { StandardizeAdmin } from './admin/standardize';
 import { DateCell, SmartTable, Toolbar } from './admin/table';
@@ -23,6 +24,7 @@ const SUBS: { id: Sub; label: string }[] = [
   { id: 'magistrates', label: 'Magistrados' },
   { id: 'units', label: 'Unidades' },
   { id: 'matches', label: 'Vinculações' },
+  { id: 'titulares', label: 'Titulares voluntários' },
   { id: 'recursal', label: 'Mutirão - Turma Recursal' },
   { id: 'standardize', label: 'Padronizar nomes' },
   { id: 'catalog', label: 'Comarcas e unidades' },
@@ -777,6 +779,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
 
       {sub === 'standardize' && <StandardizeAdmin run={run} confirm={confirm} onChanged={refresh} />}
       {sub === 'catalog' && <CatalogAdmin run={run} confirm={confirm} readOnly={me?.role === 'consulta'} onChanged={refresh} />}
+      {sub === 'titulares' && <TitularesAdmin scopeQuery={q} />}
       {sub === 'recursal' && <RecursalAdmin run={run} confirm={confirm} readOnly={me?.role === 'consulta'} isAdmin={me?.role === 'admin'} />}
       {sub === 'users' && me?.role === 'admin' && <UsersAdmin run={run} confirm={confirm} />}
       {sub === 'backup' && <BackupAdmin run={run} confirm={confirm} onRestored={refresh} />}

@@ -155,15 +155,19 @@ function Processes({ data, act, confirm, readOnly, isAdmin }: { data: RecursalOv
 }
 
 function Volunteers({ data, act, confirm, readOnly, isAdmin }: { data: RecursalOverview; act: Act; confirm: Confirm; readOnly: boolean; isAdmin: boolean }) {
+  const [migrating, setMigrating] = useState(false);
   const patch = (v: RecursalVolunteerView, body: object, ok?: string) => act(() => api(`/recursal/volunteers/${v.id}`, { method: 'PATCH', json: body }), ok);
   const toggleTurma = (v: RecursalVolunteerView, t: number) => patch(v, { turmas: v.turmas.includes(t) ? v.turmas.filter((x) => x !== t) : [...v.turmas, t] });
   return (
     <div className="space-y-4">
-      <Toolbar title={`Voluntários (${data.volunteers.length})`} />
+      <Toolbar title={`Voluntários (${data.volunteers.length})`}>
+        {!readOnly && <button className="btn-primary btn-sm" onClick={() => setMigrating(true)}>Migrar do mutirão normal</button>}
+      </Toolbar>
+      {migrating && <MigrateModal act={act} onClose={() => setMigrating(false)} />}
       <p className="text-sm text-warn bg-warn-soft rounded-md px-4 py-3">Somente magistrados lotados ou designados nas Turmas Recursais podem participar. Rejeite (situação “Inativo”) as inscrições de quem não se enquadrar nessas condições.</p>
       <div className="card overflow-x-auto"><table className="w-full text-sm"><thead><tr><th className="th">Magistrado</th><th className="th">Atua em</th><th className="th">Carga</th><th className="th">Situação</th><th className="th" /></tr></thead>
         <tbody>{data.volunteers.length === 0 ? <EmptyRow cols={5}>Nenhum voluntário inscrito.</EmptyRow> : data.volunteers.map((v) => (
-          <tr key={v.id}><td className="td">{v.name}<div className="text-xs text-muted">{v.email}{v.note ? ` · ${v.note}` : ''}</div></td>
+          <tr key={v.id}><td className="td">{v.name}<div className="text-xs text-muted">{v.email}{v.note ? ` · ${v.note}` : ''}</div>{v.migratedFrom && <div className="text-[11px] text-bronze">Migrado do mutirão normal (vínculo até {dmyStr(v.migratedFrom.endDate)}): {v.migratedFrom.units}</div>}{v.startDate && <div className="text-[11px] text-muted">Início na Turma Recursal: {dmyStr(v.startDate)}</div>}</td>
             <td className="td"><span className="flex gap-1 flex-wrap">{TURMAS.map((t) => <button key={t} disabled={readOnly} aria-pressed={v.turmas.includes(t)} aria-label={`${t}ª Turma`} onClick={() => toggleTurma(v, t)}><TurmaChip turma={t} dim={!v.turmas.includes(t)} /></button>)}</span></td>
             <td className="td">{v.load}{v.capacity ? ` / ${v.capacity}` : ''}</td>
             <td className="td"><select className="input w-32" aria-label="Situação" disabled={readOnly} value={v.status} onChange={(e) => patch(v, { status: e.target.value }, 'Situação atualizada.')}><option>Aguardando</option><option>Aprovado</option><option>Inativo</option></select></td>
@@ -214,5 +218,51 @@ function WindowEditor({ w, act, readOnly }: { w: RecursalOverview['window']; act
         {w.openingDate && <button className="btn-ghost" onClick={() => act(() => api('/recursal/window', { method: 'PUT', json: { clear: true } }), 'Prazo removido.')}>Remover prazo</button>}</>}
       </div>
     </div>
+  );
+}
+
+const dmyStr = (ymd: string) => ymd.split('-').reverse().join('/');
+
+/** Migra um magistrado do mutirão normal para a Turma Recursal: pergunta o fim do vínculo antigo e o início na Turma */
+function MigrateModal({ act, onClose }: { act: Act; onClose: () => void }) {
+  const [cands, setCands] = useState<{ name: string; email: string; designations: { unit: string; area: string; workType: string; since?: string; edition: string }[] }[]>([]);
+  const [who, setWho] = useState(''); const [email, setEmail] = useState('');
+  const [endDate, setEndDate] = useState(''); const [startDate, setStartDate] = useState('');
+  const [turmas, setTurmas] = useState<number[]>([]); const [q, setQ] = useState('');
+  useEffect(() => { api<typeof cands>('/recursal/migration-candidates').then(setCands).catch(() => {}); }, []);
+  const c = cands.find((x) => x.name === who);
+  const list = cands.filter((x) => !q || x.name.toLowerCase().includes(q.toLowerCase()));
+  const why = !c ? 'Escolha o magistrado.' : !endDate ? 'Informe o encerramento do vínculo no mutirão normal.' : !startDate ? 'Informe o início na Turma Recursal.' : startDate <= endDate ? 'O início deve ser posterior ao encerramento.' : turmas.length === 0 ? 'Marque a(s) Turma(s) em que atua.' : !(c.email || email.trim()) ? 'Informe o e-mail do magistrado.' : '';
+  return (
+    <Modal title="Migrar do mutirão normal para a Turma Recursal" wide onClose={onClose}>
+      <div className="space-y-4 text-sm">
+        <p className="text-muted">O vínculo no mutirão normal é encerrado na data informada e vai para o histórico como “Migração para a Turma Recursal”. O magistrado passa a voluntário aprovado, recebendo processos a partir da data de início.</p>
+        <div><label className="label">Magistrado com vínculo vigente</label>
+          <input className="input mb-2" placeholder="Buscar por nome" value={q} onChange={(e) => setQ(e.target.value)} />
+          <div className="max-h-44 overflow-y-auto border border-line rounded-md divide-y divide-line">
+            {list.length === 0 && <div className="p-3 text-muted">Nenhum magistrado com vínculo vigente.</div>}
+            {list.map((x) => (
+              <label key={x.name} className={`flex items-start gap-3 p-2.5 cursor-pointer ${who === x.name ? 'bg-bronze-soft' : ''}`}>
+                <input type="radio" name="mig" className="mt-1" checked={who === x.name} onChange={() => { setWho(x.name); setEmail(''); }} />
+                <span><span className="font-medium">{x.name}</span><span className="block text-xs text-muted">{x.designations.map((d) => `${d.unit} (${d.area})`).join(' · ')}</span></span>
+              </label>
+            ))}
+          </div>
+        </div>
+        {c && !c.email && <div><label className="label">E-mail do magistrado</label><input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></div>}
+        <div className="grid sm:grid-cols-2 gap-4">
+          <div><label className="label">Último dia do vínculo no mutirão normal</label><input type="date" className="input" value={endDate} onChange={(e) => setEndDate(e.target.value)} /></div>
+          <div><label className="label">Início na Turma Recursal</label><input type="date" className="input" value={startDate} onChange={(e) => setStartDate(e.target.value)} /></div>
+        </div>
+        <fieldset><legend className="label">Já atua em (Turma Recursal)</legend>
+          <div className="flex flex-wrap gap-2 mt-1">{TURMAS.map((t) => { const on = turmas.includes(t); return <button key={t} type="button" aria-pressed={on} onClick={() => setTurmas(on ? turmas.filter((x) => x !== t) : [...turmas, t])} className={`px-3 py-1.5 rounded-md border ${on ? 'border-bronze bg-bronze-soft font-medium' : 'border-line text-muted'}`}>{t}ª Turma</button>; })}</div>
+        </fieldset>
+        <div className="flex flex-wrap items-center justify-end gap-3">
+          {why && <p role="status" className="text-sm text-muted mr-auto">{why}</p>}
+          <button className="btn-ghost" onClick={onClose}>Cancelar</button>
+          <button className="btn-primary" disabled={!!why} onClick={async () => { await act(() => api('/recursal/migrate', { method: 'POST', json: { name: who, email, endDate, startDate, turmas } }), 'Magistrado migrado para a Turma Recursal.'); onClose(); }}>Migrar</button>
+        </div>
+      </div>
+    </Modal>
   );
 }
