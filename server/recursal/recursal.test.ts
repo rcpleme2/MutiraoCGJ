@@ -179,3 +179,41 @@ test('Migração para a Turma Recursal e cruzamento de titulares voluntários', 
     assert.equal((await post('/recursal/migrate', { name: 'ANA LIMA', endDate: '2026-12-31', startDate: '2027-01-15', turmas: [1] })).status, 404); // já não tem vínculo vigente
   } finally { server.close(); }
 });
+
+test('Desistência: última data de atuação editável; segue vinculado até a data e depois é encerrado', async () => {
+  const express = (await import('express')).default;
+  const { register: regPanel } = await import('../routes/panel.ts');
+  const { panelRows, actingPeriods, finalizeDueWithdrawals } = await import('../links.ts');
+  const app = express(); app.use(express.json()); regPanel(app);
+  const server = app.listen(0); const base = `http://localhost:${(server.address() as any).port}/api`;
+  const send = (m: string, p: string, b?: object) => fetch(base + p, { method: m, headers: { 'Content-Type': 'application/json' }, body: b ? JSON.stringify(b) : undefined });
+  const ymd = (d: number) => new Date(Date.now() + d * 86400_000 - 3 * 3600_000).toISOString().slice(0, 10);
+  const reset = () => {
+    S.editions = [{ id: 'e1', title: 'J1', openingDate: '', closingDate: '', isRegistrationOpen: true, status: 'Em andamento', createdAt: '', startDate: '2026-02-01' } as any];
+    S.units = [{ id: 'u1', editionId: 'e1', unitName: 'Vara 1', judgeName: 'X', email: 'a', comarca: 'C', separator: 'de', areas: [], supportNeeded: '', createdAt: '', status: 'Atendida', selection: 'Escolhida', slots: 1 } as any];
+    S.magistrates = [{ id: 'm1', editionId: 'e1', name: 'ANA LIMA', email: 'a@x', status: 'Atribuído', createdAt: '2026-01-01T00:00:00Z' } as any];
+    S.matches = [{ id: 'mt1', editionId: 'e1', magistrateId: 'm1', unitId: 'u1', assignedArea: 'Cível', workType: 'Sentença', status: 'Vinculado', createdAt: '' } as any];
+    S.withdrawals = []; S.transfers = [];
+  };
+  try {
+    reset();
+    const end = ymd(10);
+    assert.equal((await send('POST', '/panel/withdrawals', { name: 'ANA LIMA', sei: '00.123/2026', requestDate: ymd(0), endDate: end })).status, 201);
+    assert.equal(panelRows().length, 1); assert.equal(panelRows()[0].leavingUntil, end); // segue vinculada
+    assert.equal(S.magistrates[0].status, 'Atribuído');
+    const per = actingPeriods(); assert.equal(per.length, 1); assert.equal(per[0].end, end); assert.equal(per[0].endReason, 'Desistência');
+    assert.equal((await send('POST', '/panel/withdrawals', { name: 'ANA LIMA', sei: '00.123/2026', requestDate: ymd(0) })).status, 409);
+    finalizeDueWithdrawals(); assert.equal(panelRows().length, 1); // ainda não venceu
+    const wd = S.withdrawals[0];
+    assert.equal((await send('PUT', `/panel/withdrawals/${wd.id}`, { sei: wd.sei, requestDate: wd.requestDate, endDate: ymd(-1) })).status, 200); // data passada: encerra já
+    assert.equal(panelRows().length, 0); assert.equal(S.magistrates[0].status, 'Desistente'); assert.equal(S.withdrawals[0].scheduled, false);
+    // data passada no registro: sai na hora (comportamento anterior)
+    reset();
+    assert.equal((await send('POST', '/panel/withdrawals', { name: 'ANA LIMA', sei: '00.123/2026', requestDate: ymd(-40), endDate: ymd(-20) })).status, 201);
+    assert.equal(panelRows().length, 0);
+    // sem data de última atuação: padrão = fim do mês do pedido
+    reset();
+    assert.equal((await send('POST', '/panel/withdrawals', { name: 'ANA LIMA', sei: '00.123/2026', requestDate: ymd(0) })).status, 201);
+    assert.ok(S.withdrawals[0].endDate && S.withdrawals[0].endDate >= ymd(0)); assert.equal(panelRows().length, 1);
+  } finally { server.close(); }
+});

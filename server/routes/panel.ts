@@ -7,7 +7,7 @@ import fs from 'fs';
 import PDFDocument from 'pdfkit';
 import { sameUnit, unitResolver } from '../catalog.ts';
 import { editionById, ensureInitialEdition, INITIAL_EDITION_TITLE } from '../editions.ts';
-import { actingPeriods, createInitialLink, describeMatch, isHeaderRow, panelKey, panelRows, periodDays, personOf, preferenceText, samePerson, undoMatch, unitLabel } from '../links.ts';
+import { actingPeriods, createInitialLink, finalizeDueWithdrawals, todayYmd, describeMatch, isHeaderRow, panelKey, panelRows, periodDays, personOf, preferenceText, samePerson, undoMatch, unitLabel } from '../links.ts';
 import { saveState } from '../persistence.ts';
 import { log, newId, S } from '../state.ts';
 import { type Withdrawal } from '../types.ts';
@@ -133,16 +133,27 @@ export function register(app: express.Express) {
 
     const rows = panelRows().filter((r) => personKey(r.name) === personKey(name)); // mesma pessoa = mesmo nome
     if (rows.length === 0) return res.status(404).json({ error: 'Este magistrado não consta no painel de vinculações.' });
+    if (S.withdrawals.some((w) => w.scheduled && personKey(w.name) === personKey(name))) return res.status(409).json({ error: 'Já há desistência registrada para este magistrado, com vínculo mantido até a data da última atuação. Edite o registro em Desistentes.' });
     const uniq = (xs: string[]) => [...new Set(xs)].join(' / ');
     const record: Withdrawal = {
       id: newId('wd'), editionId: rows[0].editionId, name: rows[0].name, sei, requestDate, createdAt: new Date().toISOString(),
       area: uniq(rows.map((r) => r.area)), unit: uniq(rows.map((r) => unitLabel(r))), magistrateIds: [...new Set(rows.map((r) => r.magistrateId))],
       designations: rows.map((r) => ({ editionId: r.editionId, area: r.area, unit: unitLabel(r), workType: r.workType ?? '', ...(r.startDate ? { startDate: r.startDate } : {}) })),
     };
-    rows.forEach((r) => undoMatch(r.id, 'Vinculação desfeita por desistência'));
-    record.magistrateIds!.forEach((id) => { const m = S.magistrates.find((x) => x.id === id); if (m) m.status = 'Desistente'; });
+    // Última data de atuação: informada ou, por padrão, o último dia do mês do pedido. Se ainda não passou, o magistrado
+    // permanece vinculado até essa data (a vinculação é encerrada automaticamente depois); se já passou, sai agora.
+    const rawEnd = typeof req.body?.endDate === 'string' ? req.body.endDate.trim() : '';
+    if (rawEnd && !validYmd(rawEnd)) return res.status(400).json({ error: 'Data da última atuação inválida.' });
+    const endDate = rawEnd || (requestDate ? ymdMonthEnd(requestDate) : '');
+    if (endDate) record.endDate = endDate;
+    const stays = !!endDate && endDate >= todayYmd();
+    if (stays) record.scheduled = true;
+    else {
+      rows.forEach((r) => undoMatch(r.id, 'Vinculação desfeita por desistência'));
+      record.magistrateIds!.forEach((id) => { const m = S.magistrates.find((x) => x.id === id); if (m) m.status = 'Desistente'; });
+    }
     S.withdrawals.push(record);
-    log(rows[0].editionId, 'Administração', 'Magistrado', `Desistência registrada: ${record.name} (SEI ${sei || 'não informado'}, pedido em ${dmyOf(requestDate)}${requestDate ? `; atuação até ${dmyOf(ymdMonthEnd(requestDate))}` : ''}). Designações retiradas: ${record.unit}.`);
+    log(rows[0].editionId, 'Administração', 'Magistrado', `Desistência registrada: ${record.name} (SEI ${sei || 'não informado'}, pedido em ${dmyOf(requestDate)}${endDate ? `; atuação até ${dmyOf(endDate)}` : ''}). ${stays ? `Segue vinculado(a) até essa data: ${record.unit}.` : `Designações retiradas: ${record.unit}.`}`);
     res.status(201).json({ success: true, withdrawal: record });
   });
   // Edita a desistência: inclui ou altera depois o número do SEI e a data do pedido.
@@ -156,7 +167,13 @@ export function register(app: express.Express) {
     const changes: string[] = [];
     if (sei !== w.sei) { changes.push(`SEI de "${w.sei || 'não informado'}" para "${sei || 'não informado'}"`); w.sei = sei; }
     if (requestDate !== (w.requestDate ?? '')) { changes.push(`data do pedido de ${dmyOf(w.requestDate)} para ${dmyOf(requestDate)}`); w.requestDate = requestDate || undefined; }
+    if (typeof req.body?.endDate === 'string') {
+      const endDate = req.body.endDate.trim();
+      if (endDate && !validYmd(endDate)) return res.status(400).json({ error: 'Data da última atuação inválida.' });
+      if (endDate !== (w.endDate ?? '')) { changes.push(`última atuação de ${dmyOf(w.endDate ?? (w.requestDate ? ymdMonthEnd(w.requestDate) : undefined))} para ${dmyOf(endDate)}`); if (endDate) w.endDate = endDate; else delete w.endDate; }
+    }
     if (changes.length) log(w.editionId, 'Administração', 'Magistrado', `Desistência de ${w.name} editada: ${changes.join('; ')}.`);
+    finalizeDueWithdrawals(); // data anterior a hoje encerra já o vínculo mantido
     res.json({ success: true, withdrawal: w });
   });
   // Desfaz o registro de desistência (ex.: erro de lançamento). O magistrado volta a aguardar vinculação; as designações precisam ser refeitas.
@@ -165,7 +182,7 @@ export function register(app: express.Express) {
     if (!w) return res.status(404).json({ error: 'Registro não encontrado.' });
     S.withdrawals = S.withdrawals.filter((x) => x.id !== w.id);
     const ids = new Set(w.magistrateIds ?? S.magistrates.filter((m) => norm(m.name) === norm(w.name) && m.editionId === w.editionId).map((m) => m.id));
-    S.magistrates.filter((m) => ids.has(m.id) && m.status === 'Desistente').forEach((m) => { m.status = 'Lista de Espera'; });
+    if (!w.scheduled) S.magistrates.filter((m) => ids.has(m.id) && m.status === 'Desistente').forEach((m) => { m.status = 'Lista de Espera'; }); // ainda vinculado(a): nada a restaurar
     log(w.editionId, 'Administração', 'Magistrado', `Registro de desistência desfeito: ${w.name} (SEI ${w.sei || 'não informado'}).`);
     res.json({ success: true });
   });

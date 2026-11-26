@@ -27,7 +27,7 @@ export const linkedCount = (unitId: string) => S.matches.filter((m) => m.unitId 
 export function reconcileWithdrawals() {
   const approved = ['Aprovado', 'Lista de Espera', 'Atribuído'];
   for (const w of S.withdrawals) {
-    if (w.endedAt) continue;
+    if (w.endedAt || w.scheduled) continue; // desistência com vínculo mantido até a data: só vale depois dela
     const key = personKey(w.name);
     const ids = new Set(w.magistrateIds ?? []);
     const back = S.magistrates.find((m) => approved.includes(m.status) && personKey(m.name) === key && (ids.has(m.id) || (m.createdAt > w.createdAt && !ids.has(m.id))));
@@ -126,7 +126,8 @@ export function panelRows(): PanelRow[] {
     const k = `${panelKey({ name: mag.name, area: mt.assignedArea, unit: un.unitName })}|${mt.editionId}`;
     const since = mt.startDate ?? editionById(mt.editionId)?.startDate;
     const previous = scheduledChange(mt, since);
-    if (!seen.has(k)) seen.set(k, { ...(previous ? { previous } : {}), id: mt.id, editionId: mt.editionId, editionTitle: editionById(mt.editionId)?.title ?? '', magistrateId: mag.id, unitId: un.id, name: mag.name, area: mt.assignedArea, unit: un.unitName, comarca: un.comarca, separator: un.separator, workType: mt.workType, startDate: mt.startDate, since, note: mt.note, postit: mt.postit, postitUpdatedAt: mt.postitUpdatedAt, firstPreference: mag.firstPreference, secondPreference: mag.secondPreference, preference: preferenceMet(mag, mt.assignedArea) });
+    const leaving = S.withdrawals.find((w) => w.scheduled && w.endDate && (w.magistrateIds ?? []).includes(mag.id));
+    if (!seen.has(k)) seen.set(k, { ...(previous ? { previous } : {}), ...(leaving ? { leavingUntil: leaving.endDate } : {}), id: mt.id, editionId: mt.editionId, editionTitle: editionById(mt.editionId)?.title ?? '', magistrateId: mag.id, unitId: un.id, name: mag.name, area: mt.assignedArea, unit: un.unitName, comarca: un.comarca, separator: un.separator, workType: mt.workType, startDate: mt.startDate, since, note: mt.note, postit: mt.postit, postitUpdatedAt: mt.postitUpdatedAt, firstPreference: mag.firstPreference, secondPreference: mag.secondPreference, preference: preferenceMet(mag, mt.assignedArea) });
   }
   return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR') || a.unit.localeCompare(b.unit, 'pt-BR'));
 }
@@ -144,7 +145,7 @@ export function actingPeriods(): ActingPeriod[] {
   for (const r of panelRows()) {
     const unit = unitLabel(r);
     const hint = catalogById(S.units.find((u) => u.id === r.unitId)?.catalogId)?.comarca ?? r.comarca;
-    out.push({ id: r.id, name: r.name, editionId: r.editionId, editionTitle: r.editionTitle, area: r.area, unit, workType: r.workType ?? '', start: r.since, endReason: '',
+    out.push({ id: r.id, name: r.name, editionId: r.editionId, editionTitle: r.editionTitle, area: r.area, unit, workType: r.workType ?? '', start: r.since, ...(r.leavingUntil ? { end: r.leavingUntil, endReason: 'Desistência' as const } : { endReason: '' as const }),
       comarca: canonicalComarca(hint) ?? comarcaInText(unit) ?? hint ?? '' });
   }
   for (const t of S.transfers) {
@@ -153,6 +154,7 @@ export function actingPeriods(): ActingPeriod[] {
       start: startOf(t.editionId, t.fromStartDate, { ids: [t.magistrateId], name: t.name }, t.fromUnit, end), end, endReason: 'Alteração de vinculação', ...(t.sei ? { sei: t.sei } : {}) });
   }
   for (const w of S.withdrawals) {
+    if (w.scheduled) continue; // ainda vinculado: já aparece como período vigente com fim previsto
     const end = w.endDate ?? (w.requestDate ? ymdMonthEnd(w.requestDate) : undefined);
     const held = w.designations ?? [{ editionId: w.editionId, area: w.area, unit: w.unit }];
     held.forEach((h, i) => out.push({ id: `${w.id}:${i}`, name: w.name, editionId: h.editionId, editionTitle: title(h.editionId), area: h.area, unit: h.unit, workType: h.workType ?? '',
@@ -295,3 +297,19 @@ export const sameComarcaAs = (m: Magistrate, u: Unit) => {
   if (mc) return mc === normName(u.comarca);
   return !!u.comarca && normName(m.currentLocation).includes(normName(u.comarca)); // lotação digitada sem comarca da lista
 };
+
+/**
+ * Desistências com vínculo mantido até uma data: passada a data, as vinculações são encerradas e o magistrado passa a desistente.
+ * Chamada a cada requisição e na carga, para que a mudança ocorra sem depender de ninguém abrir a tela.
+ */
+export function finalizeDueWithdrawals() {
+  const today = todayYmd();
+  for (const w of S.withdrawals) {
+    if (!w.scheduled || !w.endDate || w.endDate >= today) continue;
+    const ids = new Set(w.magistrateIds ?? []);
+    S.matches.filter((m) => ids.has(m.magistrateId)).forEach((m) => undoMatch(m.id, 'Vinculação encerrada ao fim da atuação (desistência)'));
+    ids.forEach((id) => { const m = S.magistrates.find((x) => x.id === id); if (m) m.status = 'Desistente'; });
+    w.scheduled = false;
+    log(w.editionId, 'Sistema', 'Magistrado', `Desistência de ${w.name}: atuação encerrada em ${w.endDate.split('-').reverse().join('/')}; vinculações retiradas.`);
+  }
+}

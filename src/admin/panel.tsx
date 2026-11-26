@@ -78,6 +78,7 @@ export function PanelAdmin({ run, confirm, onChanged }: {
   const [histQuery, setHistQuery] = useState('');
   const today = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Sao_Paulo' });
   const [requestDate, setRequestDate] = useState(today());
+  const [endDate, setEndDate] = useState(monthEnd(today())); const [endTouched, setEndTouched] = useState(false);
 
   const load = useCallback(async () => {
     const r = await run(() => api<PanelAdminData>('/panel/admin'));
@@ -105,13 +106,13 @@ export function PanelAdmin({ run, confirm, onChanged }: {
   const submitWithdrawal = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!dropping) return;
-    const r = await run(() => api('/panel/withdrawals', { method: 'POST', json: { name: dropping.name, sei, requestDate } }), 'Desistência registrada.');
+    const r = await run(() => api('/panel/withdrawals', { method: 'POST', json: { name: dropping.name, sei, requestDate, endDate } }), 'Desistência registrada.');
     if (r) { setDropping(null); setSei(''); await load(); onChanged(); }
   };
   const submitEditWd = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingWd) return;
-    const r = await run(() => api(`/panel/withdrawals/${editingWd.id}`, { method: 'PUT', json: { sei: editingWd.sei, requestDate: editingWd.requestDate ?? '' } }), 'Desistência atualizada.');
+    const r = await run(() => api(`/panel/withdrawals/${editingWd.id}`, { method: 'PUT', json: { sei: editingWd.sei, requestDate: editingWd.requestDate ?? '', endDate: editingWd.endDate ?? '' } }), 'Desistência atualizada.');
     if (r) { setEditingWd(null); await load(); }
   };
   const openMove = async (r: PanelRow) => {
@@ -212,6 +213,7 @@ export function PanelAdmin({ run, confirm, onChanged }: {
           empty={data.rows.length === 0 ? 'Nenhuma vinculação vigente.' : 'Nenhum resultado para o filtro escolhido.'} cols={[
             { id: 'name', label: 'Magistrado(a)', sort: r => r.name, tdClass: 'font-medium', render: r => <>
               {r.name}
+              {r.leavingUntil && <div className="text-[11px] font-normal text-warn mt-0.5">Desistência registrada: vinculado(a) até {dmy(r.leavingUntil)}</div>}
               {r.duplicates && <div className="text-[11px] font-normal text-danger mt-0.5 leading-snug" title={r.duplicates.map(d => `${d.editionTitle} — ${d.unit} (${d.area})`).join('\n')}>
                 ◦ Duplicidade: {r.duplicates.length + 1} vinculações vigentes
                 {r.duplicates.map((d, i) => <div key={i} className="text-muted">também em {d.unit} ({d.area}) · {d.editionTitle}</div>)}
@@ -239,7 +241,7 @@ export function PanelAdmin({ run, confirm, onChanged }: {
               <div className="flex flex-wrap justify-end gap-1">
                 <button className="btn-secondary btn-sm" onClick={() => openMove(r)}>Alterar vara/área/tipo</button>
                 <button className="btn-secondary btn-sm" onClick={() => setExcludingRow(r)}>Excluir</button>
-                <button className="btn-secondary btn-sm" onClick={() => { setDropping(r); setSei(''); setRequestDate(today()); }}>Desistência</button>
+                <button className="btn-secondary btn-sm" onClick={() => { setDropping(r); setSei(''); setRequestDate(today()); setEndDate(monthEnd(today())); setEndTouched(false); }}>Desistência</button>
                 <button className="btn-danger" title="Desfazer vinculação" aria-label="Desfazer vinculação" onClick={() => removeRow(r)}><Trash2 className="w-4 h-4" /></button>
               </div>
             ) },
@@ -268,8 +270,8 @@ export function PanelAdmin({ run, confirm, onChanged }: {
             { id: 'unit', label: 'Unidade', sort: w => w.unit, render: w => w.unit },
             { id: 'sei', label: 'SEI', sort: w => w.sei, tdClass: 'font-mono text-xs', render: w => w.sei || <span className="text-warn font-sans">A informar</span> },
             { id: 'date', label: 'Pedido em', sort: w => w.requestDate ?? '', tdClass: 'text-muted whitespace-nowrap', render: w => (w.requestDate ? w.requestDate.split('-').reverse().join('/') : <span className="text-warn">A informar</span>) },
-            { id: 'until', label: 'Atuou até', sort: w => w.requestDate ?? '', tdClass: 'text-muted whitespace-nowrap', render: w => (w.requestDate ? dmy(monthEnd(w.requestDate)) : <span className="text-warn">A informar</span>) },
-            { id: 'situation', label: 'Situação', sort: w => (w.endedAt ? 1 : 0), tdClass: 'text-xs', render: w => (w.endedAt ? <span className="text-warn">Apenas no período, até {formatDate(w.endedAt)}<br />(nova inscrição deferida)</span> : <span className="text-muted">Em vigor</span>) },
+            { id: 'until', label: 'Atuou até', sort: w => w.endDate ?? w.requestDate ?? '', tdClass: 'text-muted whitespace-nowrap', render: w => (w.endDate ? dmy(w.endDate) : w.requestDate ? dmy(monthEnd(w.requestDate)) : <span className="text-warn">A informar</span>) },
+            { id: 'situation', label: 'Situação', sort: w => (w.endedAt ? 1 : 0), tdClass: 'text-xs', render: w => (w.scheduled ? <span className="text-ok">Vinculado até {dmy(w.endDate!)}</span> : w.endedAt ? <span className="text-warn">Apenas no período, até {formatDate(w.endedAt)}<br />(nova inscrição deferida)</span> : <span className="text-muted">Em vigor</span>) },
             { id: 'actions', label: '', align: 'right', tdClass: 'whitespace-nowrap', render: w => <><button className="btn-secondary btn-sm mr-1" onClick={() => setEditingWd({ ...w })}><Pencil className="w-3.5 h-3.5" /> Editar</button><button className="btn-secondary btn-sm" onClick={() => undoWithdrawal(w)}><RotateCcw className="w-3.5 h-3.5" /> Desfazer</button></> },
           ]} />
         )}
@@ -432,7 +434,10 @@ export function PanelAdmin({ run, confirm, onChanged }: {
             <Field label="Data do pedido de desistência">
               <input className="input" type="date" value={editingWd.requestDate ?? ''} onChange={e => setEditingWd({ ...editingWd, requestDate: e.target.value })} />
             </Field>
-            {editingWd.requestDate && <p className="text-xs text-muted -mt-2">Atuação até <strong className="text-ink">{dmy(monthEnd(editingWd.requestDate))}</strong>.</p>}
+            <Field label="Última data de atuação">
+              <input className="input" type="date" value={editingWd.endDate ?? (editingWd.requestDate ? monthEnd(editingWd.requestDate) : '')} onChange={e => setEditingWd({ ...editingWd, endDate: e.target.value })} />
+            </Field>
+            {editingWd.scheduled && <p className="text-xs text-muted -mt-2">Segue vinculado(a) até essa data; data anterior a hoje encerra a vinculação já.</p>}
             <div className="flex justify-end gap-2">
               <button type="button" className="btn-ghost" onClick={() => setEditingWd(null)}>Cancelar</button>
               <button className="btn-primary">Salvar</button>
@@ -444,14 +449,17 @@ export function PanelAdmin({ run, confirm, onChanged }: {
       {dropping && (
         <Modal title="Registrar desistência" onClose={() => setDropping(null)}>
           <form onSubmit={submitWithdrawal} className="space-y-4">
-            <p className="text-sm text-muted"><strong className="text-ink">{dropping.name}</strong> deixará todas as designações vigentes e passará à relação de desistentes.</p>
+            <p className="text-sm text-muted"><strong className="text-ink">{dropping.name}</strong> passará à relação de desistentes. Se a última data de atuação ainda não passou, segue vinculado(a) até ela.</p>
             <Field label="Número do processo SEI em que consta a desistência (pode ser informado depois)">
               <input className="input" autoFocus maxLength={100} value={sei} onChange={e => setSei(e.target.value)} placeholder="0000000-00.2026.8.16.6000" />
             </Field>
             <Field label="Data do pedido de desistência (pode ser informada depois)">
-              <input className="input" type="date" value={requestDate} max={today()} onChange={e => setRequestDate(e.target.value)} />
+              <input className="input" type="date" value={requestDate} max={today()} onChange={e => { setRequestDate(e.target.value); if (!endTouched && e.target.value) setEndDate(monthEnd(e.target.value)); }} />
             </Field>
-            {requestDate && <p className="text-xs text-muted -mt-2">A atuação fica registrada até <strong className="text-ink">{dmy(monthEnd(requestDate))}</strong> (último dia do mês do pedido).</p>}
+            <Field label="Última data de atuação (preenchida com o fim do mês do pedido; pode ser alterada)">
+              <input className="input" type="date" value={endDate} onChange={e => { setEndDate(e.target.value); setEndTouched(true); }} />
+            </Field>
+            {endDate && <p className="text-xs text-muted -mt-2">{endDate >= today() ? <>O magistrado <strong className="text-ink">continua vinculado até {dmy(endDate)}</strong>; depois dessa data a vinculação é encerrada automaticamente.</> : <>Data já passada: as designações são retiradas agora e a atuação fica registrada até <strong className="text-ink">{dmy(endDate)}</strong>.</>}</p>}
             <div className="flex justify-end gap-2">
               <button type="button" className="btn-ghost" onClick={() => setDropping(null)}>Cancelar</button>
               <button className="btn-primary">Registrar desistência</button>

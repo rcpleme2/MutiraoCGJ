@@ -3,7 +3,7 @@ import express from 'express';
 import path from 'path';
 import { hasValidToken, sessionOf } from './auth.ts';
 import { ensureInitialEdition } from './editions.ts';
-import { migratePanelEntries, reconcileWithdrawals } from './links.ts';
+import { finalizeDueWithdrawals, migratePanelEntries, reconcileWithdrawals } from './links.ts';
 import { loadState, saveState } from './persistence.ts';
 import { hits, rateLimited, refund, SIGNUP_MAX_ERRORS_PER_IP, SIGNUP_MAX_GLOBAL_PER_HOUR, SIGNUP_MAX_PER_IP } from './ratelimit.ts';
 import { log, reqCtx, S } from './state.ts';
@@ -61,6 +61,7 @@ export async function startServer() {
   normalizeLegacy();
   migratePanelEntries();
   ensureInitialEdition();
+  finalizeDueWithdrawals();
   await saveState();
   // Perdeu o celular do autenticador? Defina RESET_ADMIN_2FA=true, publique, entre (será pedido novo cadastro) e remova a variável.
   if (process.env.RESET_ADMIN_2FA === 'true' && S.adminTotpSecret) {
@@ -72,6 +73,8 @@ export async function startServer() {
   app.set('etag', false);
   // Todas as respostas da API proíbem cache (painel e consultas contêm dados pessoais)
   app.use('/api', (_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
+  // Desistências com vínculo mantido até uma data: encerra as que venceram
+  app.use('/api', (_req, _res, next) => { finalizeDueWithdrawals(); next(); });
   // IP da origem disponível em todo registro de atividade gerado durante a requisição
   app.use((req, _res, next) => reqCtx.run({ ip: clientIp(req) }, next));
 
