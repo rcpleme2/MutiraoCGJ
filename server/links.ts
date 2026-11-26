@@ -115,7 +115,19 @@ export function scheduledChange(mt: Match, since?: string): PanelRow['previous']
   if (!since || since <= todayYmd()) return undefined;
   const t = S.transfers.filter((x) => x.magistrateId === mt.magistrateId && x.effectiveDate === since)
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
-  return t ? { unit: t.fromUnit, area: t.area, workType: t.fromWorkType, until: ymdDayBefore(since) } : undefined;
+  if (t) return { unit: t.fromUnit, area: t.area, workType: t.fromWorkType, until: ymdDayBefore(since) };
+  // Desistência registrada e pedido deferido depois, com vinculação futura: até o fim da atuação (último dia do mês do pedido),
+  // a pessoa segue na designação anterior e permanece na lista de vinculações; a nova vale a partir da data de início.
+  const mag = S.magistrates.find((m) => m.id === mt.magistrateId);
+  if (!mag) return undefined;
+  const key = personKey(mag.name);
+  const held = S.withdrawals.filter((w) => w.kind !== 'migracao' && personKey(w.name) === key && (w.endDate || w.requestDate))
+    .map((w) => ({ w, end: (w.endDate ?? ymdMonthEnd(w.requestDate!)) }))
+    .filter((x) => x.end >= todayYmd() && x.end < since)
+    .sort((a, b) => b.end.localeCompare(a.end))[0];
+  if (!held) return undefined;
+  const d = held.w.designations?.[0] ?? { area: held.w.area, unit: held.w.unit, workType: '' };
+  return { unit: d.unit, area: d.area, workType: d.workType ?? '', until: held.end };
 }
 export function panelRows(): PanelRow[] {
   const seen = new Map<string, PanelRow>();
