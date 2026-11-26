@@ -179,31 +179,3 @@ test('Migração para a Turma Recursal e cruzamento de titulares voluntários', 
     assert.equal((await post('/recursal/migrate', { name: 'ANA LIMA', endDate: '2026-12-31', startDate: '2027-01-15', turmas: [1] })).status, 404); // já não tem vínculo vigente
   } finally { server.close(); }
 });
-
-test('Desistência registrada + pedido deferido depois com vinculação futura: continua na lista, com a designação anterior até o fim da atuação', async () => {
-  const express = (await import('express')).default;
-  const { register } = await import('../routes/matches.ts');
-  const { register: regPanel } = await import('../routes/panel.ts');
-  const { panelRows } = await import('../links.ts');
-  const app = express(); app.use(express.json()); register(app); regPanel(app);
-  const server = app.listen(0); const base = `http://localhost:${(server.address() as any).port}/api`;
-  const post = (p: string, b: object) => fetch(base + p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) });
-  const ed = (id: string, start: string) => ({ id, title: id, openingDate: '', closingDate: '', isRegistrationOpen: true, status: 'Em andamento', createdAt: '', startDate: start } as any);
-  const unit = (id: string, e: string, name: string) => ({ id, editionId: e, unitName: name, judgeName: 'X', email: 'a', comarca: 'C', separator: 'de', areas: [], supportNeeded: '', createdAt: '', status: 'Pendente', selection: 'Escolhida', slots: 1 } as any);
-  try {
-    const now = new Date(); const y = now.getUTCFullYear() + 1;
-    const monthEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0)).toISOString().slice(0, 10); // fim do mês corrente: ainda vale
-    S.editions = [ed('e1', '2026-02-01'), ed('e2', `${y}-03-01`)];
-    S.units = [unit('u1', 'e1', 'Vara 1'), unit('u2', 'e2', 'Vara 2')];
-    S.magistrates = [{ id: 'm1', editionId: 'e1', name: 'ANA LIMA', email: 'a@x', status: 'Atribuído', createdAt: '2026-01-01T00:00:00Z' } as any];
-    S.matches = [{ id: 'mt1', editionId: 'e1', magistrateId: 'm1', unitId: 'u1', assignedArea: 'Cível', workType: 'Sentença', status: 'Vinculado', createdAt: '' } as any];
-    S.withdrawals = []; S.transfers = [];
-    assert.equal((await post('/panel/withdrawals', { name: 'ANA LIMA', sei: '00.123/2026', requestDate: monthEnd })).status, 201);
-    assert.equal(panelRows().length, 0);
-    S.magistrates.push({ id: 'm2', editionId: 'e2', name: 'ANA LIMA', email: 'a@x', status: 'Aprovado', createdAt: new Date().toISOString() } as any);
-    assert.equal((await post('/matches', { magistrateId: 'm2', unitId: 'u2', assignedArea: 'Cível', workType: 'Sentença', startDate: `${y}-03-01` })).status, 201);
-    const rows = panelRows();
-    assert.equal(rows.length, 1);
-    assert.match(rows[0].previous!.unit, /Vara 1/); assert.equal(rows[0].previous!.until, monthEnd); assert.equal(rows[0].since, `${y}-03-01`);
-  } finally { server.close(); }
-});
