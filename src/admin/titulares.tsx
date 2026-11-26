@@ -12,7 +12,7 @@ export function TitularesAdmin({ scopeQuery }: { scopeQuery: string }) {
   return (
     <div>
       <Toolbar title={`Responsáveis por unidade que também são voluntários${rows ? ` (${rows.length})` : ''}`} />
-      <p className="text-sm text-muted mb-4">Magistrados que constam como responsáveis por uma unidade inscrita e que também se inscreveram como voluntários. Mostra a unidade que representam e a unidade em que estão designados. A comparação é feita pelo nome.</p>
+      <p className="text-sm text-muted mb-4">Magistrados que constam como responsáveis por uma unidade <strong>escolhida e com magistrado vinculado atualmente</strong> e que também têm inscrição como voluntários (inscrições rejeitadas ou excluídas não entram). Mostra a unidade que representam e a unidade em que estão designados. A comparação é feita pelo nome.</p>
       <div className="card overflow-x-auto">
         <table className="w-full text-sm">
           <thead><tr><th className="th">Magistrado(a)</th><th className="th">Unidade que representa</th><th className="th">Unidade em que está designado(a)</th></tr></thead>
