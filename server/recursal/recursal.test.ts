@@ -235,3 +235,38 @@ test('Desistência: última data de atuação editável; segue vinculado até a 
     assert.ok(S.withdrawals[0].endDate && S.withdrawals[0].endDate >= ymd(0)); assert.equal(panelRows().length, 1);
   } finally { server.close(); }
 });
+
+test('Importação de lotações: conferência antes, só vazias ou também preenchidas', async () => {
+  const express = (await import('express')).default;
+  const XLSX = (await import('xlsx')).default;
+  const { register } = await import('../routes/lotacao.ts');
+  const app = express(); app.use(express.json({ limit: '8mb' })); register(app);
+  const server = app.listen(0); const base = `http://localhost:${(server.address() as any).port}/api`;
+  const sheet = XLSX.utils.aoa_to_sheet([['Nome Pessoa', 'Comarca', 'Unidade'],
+    ['Abelar Baptista Pereira Filho', 'LONDRINA', '6ª VARA CÍVEL DE LONDRINA'],
+    ['Adriana Benini', 'CURITIBA', '25ª VARA CÍVEL E EMPRESARIAL REGIONAL DE CURITIBA'],
+    ['Pessoa Sem Inscricao', 'MARINGÁ', '4º JUIZADO ESPECIAL CÍVEL E CRIMINAL DE MARINGÁ'],
+    ['Adriana Benini', 'CURITIBA', '1ª VARA CÍVEL DE CURITIBA']]);
+  const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, sheet, 'p');
+  const file = { name: 'lotacoes.xlsx', base64: XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }).toString('base64') };
+  const call = async (mode: string, apply: boolean) => (await fetch(base + '/magistrates/import-lotacao?edition=all', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file, mode, apply }) })).json();
+  try {
+    S.editions = [{ id: 'e1', title: 'J1', openingDate: '', closingDate: '', isRegistrationOpen: true, status: 'Em andamento', createdAt: '' } as any];
+    S.activeEditionId = 'e1';
+    S.magistrates = [
+      { id: 'a', editionId: 'e1', name: 'ABELAR BAPTISTA PEREIRA FILHO', email: 'a@x', currentLocation: '', status: 'Aprovado', createdAt: '' } as any,
+      { id: 'b', editionId: 'e1', name: 'ADRIANA BENINI', email: 'b@x', currentLocation: 'Vara qualquer de Curitiba', status: 'Aprovado', createdAt: '' } as any,
+    ];
+    S.activityLog = [];
+    let r = await call('empty', false);
+    assert.equal(r.applied, false); assert.equal(r.summary.preencher, 1); assert.equal(r.summary.ignorada, 1); assert.equal(r.summary.nao_encontrado, 1); assert.equal(r.summary.duplicada, 1);
+    assert.equal(S.magistrates[0].currentLocation, ''); // conferência não grava
+    r = await call('empty', true);
+    assert.equal(r.changed, 1); assert.match(S.magistrates[0].currentLocation, /6ª VARA CÍVEL DE LONDRINA/i); assert.ok(S.magistrates[0].locationCatalogId);
+    assert.equal(S.magistrates[1].currentLocation, 'Vara qualquer de Curitiba'); // preenchida: mantida
+    r = await call('all', false); assert.equal(r.summary.atualizar, 1);
+    r = await call('all', true);
+    assert.equal(r.changed, 1); assert.match(S.magistrates[1].currentLocation, /25ª VARA CÍVEL E EMPRESARIAL REGIONAL DE CURITIBA/i);
+    assert.ok(S.activityLog.some((l) => /Lotação de ADRIANA BENINI alterada/.test(l.description)));
+  } finally { server.close(); }
+});

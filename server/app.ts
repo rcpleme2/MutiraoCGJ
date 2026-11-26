@@ -27,6 +27,7 @@ import { register as registerMatches } from './routes/matches.ts';
 import { register as registerExports } from './routes/exports.ts';
 import { register as registerRecursal } from './routes/recursal.ts';
 import { register as registerTitulares } from './routes/titulares.ts';
+import { register as registerLotacao } from './routes/lotacao.ts';
 
 export async function startServer() {
   const app = express();
@@ -56,7 +57,7 @@ export async function startServer() {
   const bigJson = express.json({ limit: '1mb' }); // colagem de planilhas inteiras no painel de vinculações
   const recursalJson = express.json({ limit: '8mb' }); // envio público de planilha (até 5 MB, em base64)
   const hugeJson = express.json({ limit: '40mb' }); // restauração de backup (só com sessão administrativa válida)
-  app.use((req, res, next) => (req.path === '/api/panel/import' ? bigJson : (req.path === '/api/recursal/validate' || req.path === '/api/recursal/processes') ? recursalJson : req.path === '/api/backup/restore' && hasValidToken(req) ? hugeJson : smallJson)(req, res, next));
+  app.use((req, res, next) => (req.path === '/api/panel/import' ? bigJson : (req.path === '/api/recursal/validate' || req.path === '/api/recursal/processes' || (req.path === '/api/magistrates/import-lotacao' && hasValidToken(req))) ? recursalJson : req.path === '/api/backup/restore' && hasValidToken(req) ? hugeJson : smallJson)(req, res, next));
   await loadState();
   normalizeLegacy();
   migratePanelEntries();
@@ -188,6 +189,7 @@ export async function startServer() {
   registerExports(app);
   registerRecursal(app);
   registerTitulares(app);
+  registerLotacao(app);
 
   if (process.env.NODE_ENV !== 'production') {
     // O Vite só existe como dependência de desenvolvimento: carregado sob demanda, nunca em produção.

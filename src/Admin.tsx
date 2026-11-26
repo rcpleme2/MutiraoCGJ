@@ -3,7 +3,7 @@ import { Badge, Field, Modal, Notice, formatDate, formatDateTime, magistrateStat
 import React, { useCallback, useEffect, useState } from 'react';
 import { api, download, getToken, setToken } from './api';
 import { Edition, FaqItem, LogEntry, Magistrate, Match, Unit, WorkType, hearingPeriodLabel } from './types';
-import { Lock, Unlock, Plus, Trash2, Check, Pencil, Download, LogOut, Radio, Archive, RotateCcw, ChevronDown, ChevronRight, X, ArrowUp, ArrowDown, Settings2 } from 'lucide-react';
+import { Lock, Unlock, Plus, Trash2, Check, Pencil, Download, LogOut, Radio, Archive, RotateCcw, ChevronDown, ChevronRight, X, ArrowUp, ArrowDown, Settings2, Upload } from 'lucide-react';
 import { MagistrateForm, UnitForm } from './Forms';
 import { BackupAdmin } from './admin/backup';
 import { CatalogAdmin } from './admin/catalog';
@@ -13,6 +13,7 @@ import { SlotsControl, UnitDetail, UnitLinkRow, unitMatchesOf } from './admin/li
 import { PanelAdmin } from './admin/panel';
 import { RecursalAdmin } from './admin/recursal';
 import { TitularesAdmin } from './admin/titulares';
+import { LotacaoImport } from './admin/lotacao';
 import { dmy, readPref, SELECTION_ORDER, type Sub, unitLabel, writePref } from './admin/shared';
 import { StandardizeAdmin } from './admin/standardize';
 import { DateCell, SmartTable, Toolbar } from './admin/table';
@@ -69,6 +70,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
 
   const [sub, setSub] = useState<Sub>('overview');
   const [linkView, setLinkView] = useState<LinkView>('panel');
+  const [lotacaoOpen, setLotacaoOpen] = useState(false);
   const [waitUnitFilter, setWaitUnitFilter] = useState<'all' | 'Em análise' | 'Escolhida' | 'Rejeitada'>('all');
   const [editions, setEditions] = useState<Edition[]>([]);
   // Filtro por janela de inscrição ('all' = todo o mutirão). Magistrados, unidades e vinculações ficam sempre completos na memória
@@ -530,6 +532,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       {sub === 'magistrates' && (
         <div>
           <Toolbar title="Magistrados voluntários">
+            {me?.role !== 'consulta' && <button className="btn-secondary btn-sm" onClick={() => setLotacaoOpen(true)}><Upload className="w-4 h-4" /> Importar lotações (planilha)</button>}
             {sortedMagistrates.some(m => m.status === 'Aguardando Conferência') && (
               <button className="btn-secondary btn-sm" onClick={approveAll}>
                 <Check className="w-4 h-4" /> Aprovar todos pendentes ({sortedMagistrates.filter(m => m.status === 'Aguardando Conferência').length})
@@ -779,6 +782,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
 
       {sub === 'standardize' && <StandardizeAdmin run={run} confirm={confirm} onChanged={refresh} />}
       {sub === 'catalog' && <CatalogAdmin run={run} confirm={confirm} readOnly={me?.role === 'consulta'} onChanged={refresh} />}
+      {lotacaoOpen && <LotacaoImport scopeQuery={q} run={run} confirm={confirm} onDone={refresh} onClose={() => setLotacaoOpen(false)} />}
       {sub === 'titulares' && <TitularesAdmin scopeQuery={q} />}
       {sub === 'recursal' && <RecursalAdmin run={run} confirm={confirm} readOnly={me?.role === 'consulta'} isAdmin={me?.role === 'admin'} />}
       {sub === 'users' && me?.role === 'admin' && <UsersAdmin run={run} confirm={confirm} />}
