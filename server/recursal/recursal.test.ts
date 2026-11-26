@@ -172,7 +172,17 @@ test('Migração para a Turma Recursal e cruzamento de titulares voluntários', 
     S.magistrates[0].status = 'Atribuído';
     const tit = await (await fetch(base + '/titulares-voluntarios?edition=all')).json();
     assert.equal(tit.length, 1);
-    assert.match(tit[0].represents[0].unit, /1ª Vara Cível/);
+    assert.match(tit[0].represents[0].unit, /1ª Vara Cível/); assert.equal(tit[0].represents[0].by, 'responsável'); // lotação em branco: usa o responsável
+    // lotação preenchida tem prioridade: aponta a 1ª Vara Cível de Curitiba, ainda que o responsável cadastrado seja outro
+    S.units[0].judgeName = 'Outra Pessoa';
+    assert.equal((await (await fetch(base + '/titulares-voluntarios?edition=all')).json()).length, 0); // sem lotação e sem responsável igual
+    S.magistrates[0].currentLocation = '1ª Vara Cível de Curitiba';
+    const byLot = await (await fetch(base + '/titulares-voluntarios?edition=all')).json();
+    assert.equal(byLot.length, 1); assert.equal(byLot[0].represents[0].by, 'lotação');
+    // lotação preenchida que não bate com nenhuma unidade: não cai no responsável
+    S.units[0].judgeName = 'Dra. Ana Lima'; S.magistrates[0].currentLocation = 'Vara de Outro Lugar de Londrina';
+    assert.equal((await (await fetch(base + '/titulares-voluntarios?edition=all')).json()).length, 0);
+    S.magistrates[0].currentLocation = ''; 
     assert.match(tit[0].designated[0].unit, /2ª Vara Cível/);
     assert.equal((await post('/recursal/migrate', { name: 'ANA LIMA', endDate: '2026-12-31', startDate: '2026-12-31', turmas: [1] })).status, 400); // início deve ser posterior
     assert.equal((await post('/recursal/migrate', { name: 'ANA LIMA', endDate: '2026-12-31', startDate: '2027-01-15', turmas: [] })).status, 400);
