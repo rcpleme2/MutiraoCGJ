@@ -12,7 +12,7 @@ export function TitularesAdmin({ scopeQuery }: { scopeQuery: string }) {
   useEffect(() => { setRows(null); api<Row[]>(`/titulares-voluntarios?${scopeQuery}`).then(setRows).catch(() => setRows([])); }, [scopeQuery]);
   return (
     <div>
-      <Toolbar title={`Responsáveis por unidade que também são voluntários${rows ? ` (${rows.length})` : ''}`}>
+      <Toolbar title={`Magistrados - situação peculiar${rows ? ` (${rows.length})` : ''}`}>
         <button className="btn-secondary btn-sm" onClick={() => download(`/titulares-voluntarios/export.xlsx?${scopeQuery}`, 'titulares-voluntarios.xlsx').catch(() => {})}><Download className="w-4 h-4" /> Relatório XLSX</button>
         <button className="btn-secondary btn-sm" onClick={() => download(`/titulares-voluntarios/export.pdf?${scopeQuery}`, 'titulares-voluntarios.pdf').catch(() => {})}><Download className="w-4 h-4" /> Relatório PDF</button>
       </Toolbar>

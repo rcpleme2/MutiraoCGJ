@@ -2,7 +2,7 @@
 import { Badge, Field, Modal, Notice, formatDate, formatDateTime, magistrateStatusLabel, magistrateTone, useFeedback } from './ui';
 import React, { useCallback, useEffect, useState } from 'react';
 import { api, download, getToken, setToken } from './api';
-import { Edition, FaqItem, LogEntry, Magistrate, Match, Unit, WorkType, hearingPeriodLabel } from './types';
+import { Edition, FaqItem, LogEntry, Magistrate, Match, RecursalOverview, Unit, WorkType, hearingPeriodLabel } from './types';
 import { Lock, Unlock, Plus, Trash2, Check, Pencil, Download, LogOut, Radio, Archive, RotateCcw, ChevronDown, ChevronRight, X, ArrowUp, ArrowDown, Settings2, Upload } from 'lucide-react';
 import { MagistrateForm, UnitForm } from './Forms';
 import { BackupAdmin } from './admin/backup';
@@ -14,18 +14,19 @@ import { PanelAdmin } from './admin/panel';
 import { RecursalAdmin } from './admin/recursal';
 import { TitularesAdmin } from './admin/titulares';
 import { LotacaoImport } from './admin/lotacao';
+import { AdminSidebar, ScreenHeader, TodoList, buildNav, type RecView, type SearchHit, type Todo } from './admin/nav';
 import { dmy, readPref, SELECTION_ORDER, type Sub, unitLabel, writePref } from './admin/shared';
 import { StandardizeAdmin } from './admin/standardize';
 import { DateCell, SmartTable, Toolbar } from './admin/table';
 import { UsersAdmin } from './admin/users';
 
 const SUBS: { id: Sub; label: string }[] = [
-  { id: 'overview', label: 'Painel' },
+  { id: 'overview', label: 'Início' },
   { id: 'editions', label: 'Janelas de inscrição' },
   { id: 'magistrates', label: 'Magistrados' },
   { id: 'units', label: 'Unidades' },
   { id: 'matches', label: 'Vinculações' },
-  { id: 'titulares', label: 'Titulares voluntários' },
+  { id: 'titulares', label: 'Magistrados - situação peculiar' },
   { id: 'recursal', label: 'Mutirão - Turma Recursal' },
   { id: 'standardize', label: 'Padronizar nomes' },
   { id: 'catalog', label: 'Comarcas e unidades' },
@@ -71,6 +72,11 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const [sub, setSub] = useState<Sub>('overview');
   const [linkView, setLinkView] = useState<LinkView>('panel');
   const [lotacaoOpen, setLotacaoOpen] = useState(false);
+  const [recView, setRecView] = useState<RecView>('panel');
+  const [recOv, setRecOv] = useState<RecursalOverview | null>(null);
+  const HELP_KEY = 'mutirao-admin-help-hidden';
+  const [helpHidden, setHelpHidden] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem(HELP_KEY) || '[]'); } catch { return []; } });
+  const toggleHelp = (key: string) => setHelpHidden(h => { const n = h.includes(key) ? h.filter(x => x !== key) : [...h, key]; try { localStorage.setItem(HELP_KEY, JSON.stringify(n)); } catch { /* sem armazenamento */ } return n; });
   const [waitUnitFilter, setWaitUnitFilter] = useState<'all' | 'Em análise' | 'Escolhida' | 'Rejeitada'>('all');
   const [editions, setEditions] = useState<Edition[]>([]);
   // Filtro por janela de inscrição ('all' = todo o mutirão). Magistrados, unidades e vinculações ficam sempre completos na memória
@@ -177,6 +183,16 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const withEdition = (body: object) => ({ ...body, editionId: target?.id, source: 'admin' });
 
   /* ---------- Login ---------- */
+  useEffect(() => { if (authed) api<RecursalOverview>('/recursal/overview').then(setRecOv).catch(() => {}); }, [authed, sub, recView]);
+  const searchAll = useCallback((term: string): SearchHit[] => {
+    const t = term.toLowerCase(), digits = term.replace(/\D/g, '');
+    const hits: SearchHit[] = [];
+    magistrates.filter(m => m.name.toLowerCase().includes(t) || m.email.toLowerCase().includes(t)).slice(0, 4).forEach(m => hits.push({ label: m.name, detail: `Magistrado · ${m.currentLocation || m.email}`, item: 'magistrates' }));
+    units.filter(u => u.unitName.toLowerCase().includes(t) || (u.judgeName ?? '').toLowerCase().includes(t) || (u.comarca ?? '').toLowerCase().includes(t)).slice(0, 4).forEach(u => hits.push({ label: unitLabel(u), detail: `Unidade · ${u.selection}${u.judgeName ? ` · ${u.judgeName}` : ''}`, item: 'units', unitId: u.id }));
+    recOv?.volunteers.filter(v => v.name.toLowerCase().includes(t)).slice(0, 3).forEach(v => hits.push({ label: v.name, detail: 'Voluntário da Turma Recursal', item: 'rec-volunteers' }));
+    if (digits.length >= 4) recOv?.processes.filter(p => p.cnj.includes(digits)).slice(0, 3).forEach(p => hits.push({ label: p.formatted, detail: `Processo · ${p.turma}ª Turma${p.volunteerName ? ` · relator ${p.volunteerName}` : ''}`, item: 'rec-processes' }));
+    return hits;
+  }, [magistrates, units, recOv]);
   // Abas que o perfil pode ver e, delas, as que o usuário escolheu esconder na própria tela
   const allowedSubs = SUBS.filter(t => me?.role === 'admin' || (t.id !== 'users' && t.id !== 'backup'));
   const hiddenTabs = (me?.hiddenTabs ?? []).filter(id => allowedSubs.some(t => t.id === id));
@@ -368,6 +384,36 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
   const sortedUnits = units.filter(inScope);
 
   const readOnlyEdition = selected?.status === 'Encerrada';
+  // Dados do menu lateral: pendências, grupos e tela ativa
+  const counts = {
+    pendingMags: magistrates.filter(m => inScope(m) && m.status === 'Aguardando Conferência').length,
+    pendingUnits: units.filter(u => inScope(u) && u.selection === 'Em análise').length,
+    unitsNoMagistrate: units.filter(u => inScope(u) && u.selection === 'Escolhida' && !matches.some(m => m.unitId === u.id)).length,
+    waiting: waiting.length,
+    recPending: recOv?.counts.pending ?? 0,
+    recVolunteers: recOv?.volunteers.filter(v => v.status === 'Aguardando').length ?? 0,
+  };
+  const navGroups = buildNav(counts, me?.role === 'admin');
+  const activeKey = sub === 'matches' ? `link-${linkView}` : sub === 'recursal' ? `rec-${recView}` : (navGroups.flatMap(g => g.items).find(i => i.sub === sub)?.key ?? 'home');
+  const activeGroup = navGroups.find(g => g.items.some(i => i.key === activeKey));
+  const activeItem = activeGroup?.items.find(i => i.key === activeKey);
+  const goKey = (raw: string) => {
+    const [key, unitId] = raw.split('|');
+    const item = navGroups.flatMap(g => g.items).find(i => i.key === key);
+    if (!item) return;
+    setSub(item.sub); if (item.link) setLinkView(item.link); if (item.rec) setRecView(item.rec);
+    if (unitId) setOpenUnitId(unitId);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+  const todos: Todo[] = [
+    ...(counts.unitsNoMagistrate ? [{ tone: 'red' as const, title: `${counts.unitsNoMagistrate} unidade(s) escolhida(s) ainda sem magistrado`, where: 'Vinculações › Vincular unidades', key: 'link-link' }] : []),
+    ...(counts.pendingMags ? [{ tone: 'warn' as const, title: `${counts.pendingMags} inscrição(ões) de magistrados aguardando conferência`, where: 'Magistrados', key: 'magistrates' }] : []),
+    ...(counts.pendingUnits ? [{ tone: 'warn' as const, title: `${counts.pendingUnits} unidade(s) inscrita(s) em análise`, where: 'Unidades', key: 'units' }] : []),
+    ...(counts.waiting ? [{ tone: 'warn' as const, title: `${counts.waiting} magistrado(s) aprovado(s) aguardando vinculação`, where: 'Vinculações › Aguardando vinculação', key: 'link-waiting' }] : []),
+    ...(counts.recVolunteers ? [{ tone: 'warn' as const, title: `${counts.recVolunteers} voluntário(s) da Turma Recursal aguardando aprovação`, where: 'Turma Recursal › Voluntários', key: 'rec-volunteers' }] : []),
+    ...(counts.recPending ? [{ tone: 'warn' as const, title: `${counts.recPending} processo(s) da Turma Recursal pendente(s) de distribuição`, where: 'Turma Recursal › Distribuição', key: 'rec-distribution' }] : []),
+    ...(recOv ? [{ tone: (recOv.window.state === 'open' ? 'ok' : 'red') as 'ok' | 'red', title: `Turma Recursal: ${recOv.window.message}`, where: 'Turma Recursal › Prazo e painel', key: 'rec-panel' }] : []),
+  ];
   const logRows = log.filter(l => !logFilter || l.category === logFilter);
 
   return (
@@ -416,31 +462,38 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
 
       {readOnlyEdition && <Notice tone="danger">Esta janela de inscrição está encerrada. Os dados continuam editáveis aqui, mas o portal público não aceita inscrições nela.</Notice>}
 
-      <div className="flex flex-wrap gap-x-1 border-b border-line">
-        {allowedSubs.filter(t => !hiddenTabs.includes(t.id)).map(t => (
-          <button key={t.id} onClick={() => setSub(t.id)}
-            className={`px-4 py-2.5 text-sm whitespace-nowrap border-b-2 -mb-px transition-colors ${sub === t.id ? 'border-navy text-navy font-medium' : 'border-transparent text-muted hover:text-ink'}`}>
-            {t.label}
-          </button>
-        ))}
-        <button type="button" title="Escolher as abas que aparecem na sua tela" aria-label="Personalizar abas" onClick={() => { setTabsDraft(hiddenTabs); setTabsOpen(true); }}
-          className="ml-auto px-3 py-2.5 text-sm text-muted hover:text-ink flex items-center gap-1.5 whitespace-nowrap"><Settings2 className="w-4 h-4" /> Personalizar abas</button>
-      </div>
+      <div className="lg:grid lg:grid-cols-[16.5rem_minmax(0,1fr)] lg:gap-6">
+      <AdminSidebar groups={navGroups.map(g => ({ ...g, items: g.items.filter(i => allowedSubs.some(a => a.id === i.sub)) }))} activeKey={activeKey} hidden={hiddenTabs} onGo={goKey}
+        onCustomize={() => { setTabsDraft(hiddenTabs); setTabsOpen(true); }} search={searchAll} />
+      <div className="min-w-0 space-y-6">
+      {activeItem && <ScreenHeader group={activeGroup?.label ?? ''} item={activeItem} hiddenHelp={helpHidden.includes(activeItem.key)} onToggleHelp={() => toggleHelp(activeItem.key)} />}
 
       {tabsOpen && (
-        <Modal title="Abas da sua tela" onClose={() => setTabsOpen(false)}>
+        <Modal title="Menu da sua tela" onClose={() => setTabsOpen(false)}>
           <form className="space-y-4" onSubmit={async e => {
             e.preventDefault();
             const r = await run(() => api<{ hiddenTabs: string[] }>('/admin/me/tabs', { method: 'PUT', json: { hidden: tabsDraft } }), 'Abas atualizadas.');
             if (r && me) { setMe({ ...me, hiddenTabs: r.hiddenTabs }); setTabsOpen(false); }
           }}>
-            <p className="text-sm text-muted">Marque as abas que devem aparecer. A escolha vale só para você (em qualquer computador) e não muda o que o seu perfil pode acessar.</p>
-            <div className="grid sm:grid-cols-2 gap-2">
-              {allowedSubs.map(t => (
-                <label key={t.id} className="flex items-center gap-2 text-sm">
-                  <input type="checkbox" checked={!tabsDraft.includes(t.id)} onChange={e => setTabsDraft(e.target.checked ? tabsDraft.filter(x => x !== t.id) : [...tabsDraft, t.id])} /> {t.label}
-                </label>
-              ))}
+            <p className="text-sm text-muted">Marque as telas que devem aparecer no menu. A escolha vale só para você (em qualquer computador) e não muda o que o seu perfil pode acessar.</p>
+            <div className="space-y-3">
+              {navGroups.map(g => {
+                const subs = [...new Set(g.items.map(i => i.sub))].filter(id => allowedSubs.some(a => a.id === id));
+                if (!subs.length) return null;
+                const labelOf = (id: string) => (id === 'matches' ? 'Vinculações (3 telas)' : id === 'recursal' ? 'Turma Recursal (4 telas)' : (allowedSubs.find(a => a.id === id)?.label ?? id));
+                return (
+                  <div key={g.label || 'top'}>
+                    {g.label && <div className="text-[11px] font-semibold uppercase tracking-wider text-muted mb-1">{g.label}</div>}
+                    <div className="grid sm:grid-cols-2 gap-2">
+                      {subs.map(id => (
+                        <label key={id} className="flex items-center gap-2 text-sm">
+                          <input type="checkbox" checked={!tabsDraft.includes(id)} onChange={e => setTabsDraft(e.target.checked ? tabsDraft.filter(x => x !== id) : [...tabsDraft, id])} /> {labelOf(id)}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
             <div className="flex justify-between gap-2">
               <button type="button" className="btn-ghost" onClick={() => setTabsDraft([])}>Mostrar todas</button>
@@ -457,6 +510,8 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       {sub === 'overview' && (
         <div className="space-y-6">
           {backupWarn && <Notice tone="danger">{backupWarn}</Notice>}
+          <TodoList todos={todos} onGo={goKey} />
+          <h2 className="text-xl font-serif font-semibold text-navy">Resumo</h2>
           <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
             {[
               ['Magistrados', magistrates.filter(inScope).length], ['Unidades', units.filter(inScope).length], ['Vinculações', matches.filter(inScope).length],
@@ -664,19 +719,6 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       )}
 
       {/* ---------- Vinculações ---------- */}
-      {sub === 'matches' && (
-        <div className="flex flex-wrap gap-2" role="tablist" aria-label="Seções de vinculações">
-          {([
-            ['panel', 'Vigentes e histórico'],
-            ['link', `Vincular unidades (${units.filter(u => inScope(u) && u.selection === 'Escolhida' && !matches.some(m => m.unitId === u.id)).length} sem magistrado)`],
-            ['waiting', `Aprovados aguardando vinculação (${waiting.length}) e unidades inscritas (${units.filter(inScope).length})`],
-          ] as [LinkView, string][]).map(([id, text]) => (
-            <button key={id} type="button" role="tab" aria-selected={linkView === id} onClick={() => setLinkView(id)}
-              className={`px-3.5 py-2 rounded-md text-sm border transition-colors ${linkView === id ? 'bg-navy text-white border-navy' : 'bg-surface text-muted border-line hover:text-ink'}`}>{text}</button>
-          ))}
-        </div>
-      )}
-
       {sub === 'matches' && linkView === 'link' && (() => {
         const chosenUnits = units.filter(u => inScope(u) && u.selection === 'Escolhida');
         const linkedCount = chosenUnits.filter(u => matches.some(m => m.unitId === u.id)).length;
@@ -784,7 +826,7 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       {sub === 'catalog' && <CatalogAdmin run={run} confirm={confirm} readOnly={me?.role === 'consulta'} onChanged={refresh} />}
       {lotacaoOpen && <LotacaoImport scopeQuery={q} run={run} confirm={confirm} onDone={refresh} onClose={() => setLotacaoOpen(false)} />}
       {sub === 'titulares' && <TitularesAdmin scopeQuery={q} />}
-      {sub === 'recursal' && <RecursalAdmin run={run} confirm={confirm} readOnly={me?.role === 'consulta'} isAdmin={me?.role === 'admin'} />}
+      {sub === 'recursal' && <RecursalAdmin view={recView} onView={setRecView} run={run} confirm={confirm} readOnly={me?.role === 'consulta'} isAdmin={me?.role === 'admin'} />}
       {sub === 'users' && me?.role === 'admin' && <UsersAdmin run={run} confirm={confirm} />}
       {sub === 'backup' && <BackupAdmin run={run} confirm={confirm} onRestored={refresh} />}
       {sub === 'matches' && linkView === 'panel' && <PanelAdmin run={run} confirm={confirm} onChanged={refresh} />}
@@ -947,6 +989,8 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
       )}
       {modal === 'edition-new' && <Modal title="Nova janela de inscrição" onClose={() => setModal(null)}><EditionForm onSubmit={createEdition} /></Modal>}
       {modal === 'edition-edit' && editingEdition && <Modal title="Editar janela de inscrição" onClose={() => setModal(null)}><EditionForm initial={editingEdition} onSubmit={updateEdition} /></Modal>}
+      </div>
+      </div>
     </div>
   );
 }

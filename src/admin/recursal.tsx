@@ -9,20 +9,15 @@ import { type RunFn } from './shared';
 import { Toolbar } from './table';
 
 type View = 'panel' | 'processes' | 'volunteers' | 'distribution';
-const VIEWS: { id: View; label: string }[] = [{ id: 'panel', label: 'Painel' }, { id: 'distribution', label: 'Distribuição' }, { id: 'processes', label: 'Processos' }, { id: 'volunteers', label: 'Voluntários' }];
 
-export function RecursalAdmin({ run, confirm, readOnly, isAdmin }: { run: RunFn; confirm: (m: string, label?: string) => Promise<boolean>; readOnly: boolean; isAdmin: boolean }) {
+export function RecursalAdmin({ view, onView: _onView, run, confirm, readOnly, isAdmin }: { view: View; onView: (v: View) => void; run: RunFn; confirm: (m: string, label?: string) => Promise<boolean>; readOnly: boolean; isAdmin: boolean }) {
   const [data, setData] = useState<RecursalOverview | null>(null);
-  const [view, setView] = useState<View>('panel');
   const load = useCallback(() => api<RecursalOverview>('/recursal/overview').then(setData).catch(() => {}), []);
   useEffect(() => { load(); }, [load]);
   if (!data) return <p className="text-sm text-muted">Carregando…</p>;
   const act = async (fn: () => Promise<unknown>, ok?: string) => { const r = await run(fn, ok); await load(); return r; };
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap gap-1 border-b border-line">
-        {VIEWS.map((v) => <button key={v.id} onClick={() => setView(v.id)} className={`px-4 py-2 text-sm -mb-px border-b-2 ${view === v.id ? 'border-bronze text-navy font-medium' : 'border-transparent text-muted hover:text-ink'}`}>{v.label}</button>)}
-      </div>
       {view === 'panel' && <PanelView data={data} act={act} readOnly={readOnly} />}
       {view === 'distribution' && <Distribution data={data} act={act} confirm={confirm} readOnly={readOnly} />}
       {view === 'processes' && <Processes data={data} act={act} confirm={confirm} readOnly={readOnly} isAdmin={isAdmin} />}
