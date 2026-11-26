@@ -33,7 +33,7 @@ export function register(app: express.Express) {
   // Designações com o histórico de atuação: um período por magistrado e unidade (início, fim e situação)
   app.get('/api/bi/designacoes', (req, res) => {
     if (!biAuthorized(req, res)) return;
-    const situation = { '': 'Ativo', 'Alteração de vinculação': 'Alterado', 'Desistência': 'Desistente', 'Exclusão': 'Excluído' } as const;
+    const situation = { '': 'Ativo', 'Alteração de vinculação': 'Alterado', 'Desistência': 'Desistente', 'Exclusão': 'Excluído', 'Migração para a Turma Recursal': 'Migrado' } as const;
     // Pela data de hoje: período que ainda não terminou continua "Ativo" (ex.: até a véspera de uma sucessão ou até o fim do
     // mês da desistência); período que ainda não começou é "Programado".
     const today = todayYmd();

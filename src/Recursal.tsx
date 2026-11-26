@@ -276,7 +276,7 @@ function VolunteerForm({ closed }: { closed: boolean }) {
 }
 
 export interface RecursalStatus {
-  volunteer: { status: 'Aguardando' | 'Aprovado' | 'Inativo'; turmas: number[]; capacity?: number; processes: number } | null;
+  volunteer: { status: 'Aguardando' | 'Aprovado' | 'Inativo'; startDate?: string; turmas: number[]; capacity?: number; processes: number } | null;
   batches: { id: string; createdAt: string; source: string; fileName?: string; total: number; accepted: number; rejected: number; duplicates: number; distributed: number }[];
 }
 /** "Consultar status": situação no Mutirão - Turma Recursal (sem nome de relator nem números de processos) */
@@ -293,6 +293,7 @@ export function RecursalStatusCard({ r }: { r: RecursalStatus }) {
             <Badge tone={tone}>{v.status === 'Inativo' ? 'Rejeitada' : v.status === 'Aprovado' ? 'Aprovada' : 'Aguardando conferência'}</Badge>
           </div>
           <div className="text-xs text-muted flex items-center gap-1.5 flex-wrap">Atua em: {v.turmas.map((t) => <TurmaChip key={t} turma={t} />)}</div>
+          {v.startDate && <div className="text-xs text-muted">Início na Turma Recursal: {v.startDate.split('-').reverse().join('/')}</div>}
           {v.status === 'Aprovado' && <div className="bg-ok-soft text-ok text-sm rounded-md px-3 py-2.5">Processos designados a você até agora: <strong>{v.processes}</strong>.</div>}
           {v.status === 'Inativo' && <div className="bg-danger-soft text-danger text-sm rounded-md px-3 py-2.5">A inscrição não foi aceita. Somente magistrados lotados ou designados nas Turmas Recursais podem participar.</div>}
         </div>

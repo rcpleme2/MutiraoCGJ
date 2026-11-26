@@ -153,10 +153,10 @@ export function actingPeriods(): ActingPeriod[] {
       start: startOf(t.editionId, t.fromStartDate, { ids: [t.magistrateId], name: t.name }, t.fromUnit, end), end, endReason: 'Alteração de vinculação', ...(t.sei ? { sei: t.sei } : {}) });
   }
   for (const w of S.withdrawals) {
-    const end = w.requestDate ? ymdMonthEnd(w.requestDate) : undefined;
+    const end = w.endDate ?? (w.requestDate ? ymdMonthEnd(w.requestDate) : undefined);
     const held = w.designations ?? [{ editionId: w.editionId, area: w.area, unit: w.unit }];
     held.forEach((h, i) => out.push({ id: `${w.id}:${i}`, name: w.name, editionId: h.editionId, editionTitle: title(h.editionId), area: h.area, unit: h.unit, workType: h.workType ?? '',
-      start: startOf(h.editionId, h.startDate, { ids: w.magistrateIds ?? [], name: w.name }, h.unit, end), end, endReason: 'Desistência', ...(w.sei ? { sei: w.sei } : {}) }));
+      start: startOf(h.editionId, h.startDate, { ids: w.magistrateIds ?? [], name: w.name }, h.unit, end), end, endReason: w.kind === 'migracao' ? 'Migração para a Turma Recursal' : 'Desistência', ...(w.sei ? { sei: w.sei } : {}) }));
   }
   for (const m of S.magistrates) {
     if (m.status !== 'Excluído' || !m.excludedFrom) continue;

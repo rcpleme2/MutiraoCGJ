@@ -151,6 +151,7 @@ export interface Session { id: string; exp: number; userId: string | null; name:
 export interface PanelEntry { id: string; editionId: string; name: string; area: string; unit: string; createdAt: string }
 /** Desistências de participação, com o número do processo SEI em que constam. A atuação vai até o último dia do mês do pedido. */
 export interface Withdrawal { id: string; editionId: string; name: string; area: string; unit: string; sei: string; /** data do pedido de desistência (AAAA-MM-DD) */ requestDate?: string; magistrateIds?: string[]; /** nova inscrição deferida: a desistência vale só até esta data */ endedAt?: string; returnedMagistrateId?: string;
+  /** 'migracao': o magistrado deixou o mutirão normal para o da Turma Recursal (não é desistência) */ kind?: 'migracao'; /** fim do vínculo (AAAA-MM-DD); se ausente, último dia do mês do pedido */ endDate?: string;
   /** Designações que o magistrado tinha ao desistir, uma por unidade (registros antigos não têm: usam area/unit) */
   designations?: { editionId: string; area: string; unit: string; workType?: string; startDate?: string }[]; createdAt: string }
 /** Alteração de vinculação (troca de unidade): a vinculação antiga vale até o dia anterior à data informada; a nova, a partir dela. */
@@ -168,7 +169,7 @@ export interface PanelRow { /** alteração com vigência futura: até a vésper
  *   (até o último dia do mês do pedido) ou por exclusão (até a data da exclusão).
  * Registros antigos sem data de início própria usam a vigência da alteração que levou o magistrado à unidade ou o início da edição.
  */
-export interface ActingPeriod { id: string; name: string; editionId: string; editionTitle: string; area: string; unit: string; workType: string; start?: string; end?: string; endReason: '' | 'Alteração de vinculação' | 'Desistência' | 'Exclusão'; sei?: string; /** comarca pela lista oficial (designações vigentes) */ comarca?: string }
+export interface ActingPeriod { id: string; name: string; editionId: string; editionTitle: string; area: string; unit: string; workType: string; start?: string; end?: string; endReason: '' | 'Alteração de vinculação' | 'Desistência' | 'Exclusão' | 'Migração para a Turma Recursal'; sei?: string; /** comarca pela lista oficial (designações vigentes) */ comarca?: string }
 /** Mesma pessoa: mesmo nome (sem acento, caixa e tratamentos) ou mesmo e-mail informado */
 export type Person = { key: string; email: string };
 
@@ -195,6 +196,10 @@ export interface RecursalVolunteer {
   /** Turmas em que o magistrado já atua (1 a 6): delas não pode receber processos */
   turmas: number[];
   capacity?: number;
+  /** início da atuação na Turma Recursal (AAAA-MM-DD): antes disso não recebe processos */
+  startDate?: string;
+  /** veio do mutirão normal: fim do vínculo anterior e unidades que deixou */
+  migratedFrom?: { endDate: string; units: string; at: string };
   status: 'Aguardando' | 'Aprovado' | 'Inativo';
   note?: string;
   createdAt: string;

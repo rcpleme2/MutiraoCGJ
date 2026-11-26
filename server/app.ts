@@ -26,6 +26,7 @@ import { register as registerMagistrates } from './routes/magistrates.ts';
 import { register as registerMatches } from './routes/matches.ts';
 import { register as registerExports } from './routes/exports.ts';
 import { register as registerRecursal } from './routes/recursal.ts';
+import { register as registerTitulares } from './routes/titulares.ts';
 
 export async function startServer() {
   const app = express();
@@ -183,6 +184,7 @@ export async function startServer() {
   registerMatches(app);
   registerExports(app);
   registerRecursal(app);
+  registerTitulares(app);
 
   if (process.env.NODE_ENV !== 'production') {
     // O Vite só existe como dependência de desenvolvimento: carregado sob demanda, nunca em produção.

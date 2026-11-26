@@ -1,10 +1,11 @@
 // Mutirão da Turma Recursal: envio de processos, voluntários e distribuição aos relatores.
 import express from 'express';
 import XLSX from 'xlsx';
+import { panelRows, undoMatch, unitLabel } from '../links.ts';
 import { saveState } from '../persistence.ts';
 import { log, newId, reqCtx, S } from '../state.ts';
 import { type RecursalProcess, type RecursalVolunteer } from '../types.ts';
-import { BRT, cleanText, csvCell, fmtLocal, freeText } from '../util.ts';
+import { BRT, cleanText, csvCell, fmtLocal, freeText, isYmd, personKey } from '../util.ts';
 import { confirmedWipe, EMAIL_DOMAIN_MESSAGE, EMAIL_RE, emailDomainOk } from '../validation.ts';
 import { TURMAS, cnjCheckDigits, formatCnj, normalizeTurma, turmaLabel } from '../recursal/cnj.ts';
 import { readSheet } from '../recursal/parse.ts';
@@ -171,6 +172,51 @@ export function register(app: express.Express) {
       counts: { processes: S.recursalProcesses.length, pending: S.recursalProcesses.filter((p) => p.status === 'Pendente').length, distributed: S.recursalProcesses.filter((p) => p.status === 'Distribuído').length, volunteers: vols.length, approved: vols.filter((v) => v.status === 'Aprovado').length },
       matrix, volunteers: vols, processes: S.recursalProcesses.map(procView), batches: [...S.recursalBatches].reverse().slice(0, 100),
     });
+  });
+  // Magistrados com designação vigente no mutirão normal, candidatos a migrar para a Turma Recursal
+  app.get('/api/recursal/migration-candidates', (_req, res) => {
+    const by = new Map<string, { name: string; email: string; magistrateIds: string[]; designations: { unit: string; area: string; workType: string; since?: string; edition: string }[] }>();
+    for (const r of panelRows()) {
+      const k = personKey(r.name);
+      const mag = S.magistrates.find((m) => m.id === r.magistrateId);
+      const e = by.get(k) ?? { name: r.name, email: mag?.email ?? '', magistrateIds: [], designations: [] };
+      if (!e.magistrateIds.includes(r.magistrateId)) e.magistrateIds.push(r.magistrateId);
+      e.designations.push({ unit: unitLabel(r), area: r.area, workType: r.workType ?? '', since: r.since, edition: r.editionTitle });
+      by.set(k, e);
+    }
+    res.json([...by.values()].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR')));
+  });
+  // Migra o magistrado do mutirão normal para a Turma Recursal: encerra o vínculo normal na data informada
+  // (fica no histórico como "Migração para a Turma Recursal") e o inscreve como voluntário aprovado a partir da data de início.
+  app.post('/api/recursal/migrate', (req, res) => {
+    const name = typeof req.body?.name === 'string' ? req.body.name : '';
+    const endDate = req.body?.endDate, startDate = req.body?.startDate;
+    if (!isYmd(endDate)) return res.status(400).json({ error: 'Informe a data de encerramento do vínculo no mutirão normal.' });
+    if (!isYmd(startDate)) return res.status(400).json({ error: 'Informe a data de início na Turma Recursal.' });
+    if (startDate <= endDate) return res.status(400).json({ error: 'O início na Turma Recursal deve ser posterior ao encerramento do vínculo no mutirão normal.' });
+    const turmas = [...new Set((Array.isArray(req.body?.turmas) ? req.body.turmas : []).map((t: unknown) => normalizeTurma(t)).filter((t: number | null): t is number => t !== null))].sort() as number[];
+    if (turmas.length === 0) return res.status(400).json({ error: 'Indique em qual(is) Turma(s) Recursal o magistrado atua.' });
+    const rows = panelRows().filter((r) => personKey(r.name) === personKey(name));
+    if (rows.length === 0) return res.status(404).json({ error: 'Este magistrado não tem vínculo vigente no mutirão normal.' });
+    const mag = S.magistrates.find((m) => m.id === rows[0].magistrateId);
+    const email = (typeof req.body?.email === 'string' && req.body.email.trim() ? req.body.email.trim() : mag?.email ?? '').toLowerCase();
+    if (!EMAIL_RE.test(email)) return res.status(400).json({ error: 'O magistrado não tem e-mail cadastrado; informe um e-mail válido.' });
+    const uniq = (xs: string[]) => [...new Set(xs)].join(' / ');
+    const units = uniq(rows.map((r) => unitLabel(r)));
+    const now = new Date().toISOString();
+    S.withdrawals.push({
+      id: newId('wd'), editionId: rows[0].editionId, name: rows[0].name, sei: '', kind: 'migracao', endDate, createdAt: now,
+      area: uniq(rows.map((r) => r.area)), unit: units, magistrateIds: [...new Set(rows.map((r) => r.magistrateId))],
+      designations: rows.map((r) => ({ editionId: r.editionId, area: r.area, unit: unitLabel(r), workType: r.workType ?? '', ...(r.startDate ? { startDate: r.startDate } : {}) })),
+    });
+    rows.forEach((r) => undoMatch(r.id, 'Vinculação encerrada por migração para a Turma Recursal'));
+    S.withdrawals[S.withdrawals.length - 1].magistrateIds!.forEach((id) => { const m = S.magistrates.find((x) => x.id === id); if (m) m.status = 'Desistente'; });
+    const migratedFrom = { endDate, units, at: now };
+    const prev = S.recursalVolunteers.find((v) => v.email === email);
+    if (prev) Object.assign(prev, { turmas, startDate, status: 'Aprovado', migratedFrom });
+    else S.recursalVolunteers.push({ id: newId('rvol'), name: rows[0].name, email, turmas, startDate, status: 'Aprovado', migratedFrom, createdAt: now });
+    log(rows[0].editionId, 'Administração', 'Recursal', `Migração para a Turma Recursal: ${rows[0].name} deixa o mutirão normal em ${endDate.split('-').reverse().join('/')} (${units}) e passa à Turma Recursal em ${startDate.split('-').reverse().join('/')} (atua em ${turmas.map(turmaLabel).join(', ')}).`);
+    res.status(201).json({ success: true });
   });
   app.patch('/api/recursal/volunteers/:id', (req, res) => {
     const v = S.recursalVolunteers.find((x) => x.id === req.params.id);

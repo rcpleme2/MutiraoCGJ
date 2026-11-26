@@ -55,7 +55,7 @@ export function register(app: express.Express) {
         const others = rows.filter((_, j) => j !== i && samePerson(people[i], people[j]));
         return others.length ? { ...r, duplicates: others.map((o) => ({ editionTitle: o.editionTitle, unit: unitLabel(o), area: o.area })) } : r;
       }),
-      withdrawals: [...S.withdrawals].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+      withdrawals: S.withdrawals.filter((w) => w.kind !== 'migracao').sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
       transfers: [...S.transfers].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
       periods: actingPeriods(),
       initialEdition: { id: ensureInitialEdition().id, title: INITIAL_EDITION_TITLE },

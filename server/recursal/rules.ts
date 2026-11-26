@@ -1,4 +1,5 @@
 // Regra de ouro e sugestão de distribuição: o relator NUNCA pode integrar a Turma de origem do processo.
+import { todayYmd } from '../links.ts';
 import { S } from '../state.ts';
 import { type RecursalProcess, type RecursalVolunteer } from '../types.ts';
 import { turmaLabel } from './cnj.ts';
@@ -9,6 +10,7 @@ export const hasRoom = (v: RecursalVolunteer, extra = 0) => v.capacity == null |
 /** Motivo de impedimento (null = pode). Não considera capacidade. */
 export function blockReason(p: Pick<RecursalProcess, 'turma'>, v: RecursalVolunteer): string | null {
   if (v.status !== 'Aprovado') return 'Voluntário ainda não aprovado.';
+  if (v.startDate && todayYmd() < v.startDate) return `A atuação na Turma Recursal começa em ${v.startDate.split('-').reverse().join('/')}.`;
   if (v.turmas.includes(p.turma)) return `Atua na ${turmaLabel(p.turma)}, a mesma do processo: designação vedada.`;
   return null;
 }

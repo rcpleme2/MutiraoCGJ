@@ -66,7 +66,7 @@ export function register(app: express.Express) {
       if (wanted.split(' ').length < 2 || wanted.length < 6) return res.status(400).json({ error: 'Informe o nome completo do magistrado.' });
       const mine = panelRows().filter((r) => fold(r.name) === wanted);
       const active = mine.length > 0;
-      const withdrawal = S.withdrawals.find((w) => !w.endedAt && fold(w.name) === wanted);
+      const withdrawal = S.withdrawals.find((w) => !w.endedAt && w.kind !== 'migracao' && fold(w.name) === wanted);
       const situation = active ? 'ativa' : withdrawal ? 'revogada' : 'nao_consta';
       // Nova inscrição feita depois da desistência e ainda não analisada
       const pending = withdrawal && S.magistrates.find((m) => m.status === 'Aguardando Conferência' && fold(m.name) === wanted && m.createdAt > withdrawal.createdAt);
@@ -91,7 +91,7 @@ export function register(app: express.Express) {
     const vol = S.recursalVolunteers.find((v) => v.email.toLowerCase() === emailQuery);
     const myBatches = S.recursalBatches.filter((b) => b.submitterEmail.toLowerCase() === emailQuery);
     const recursal = vol || myBatches.length ? {
-      volunteer: vol ? { status: vol.status, turmas: vol.turmas, ...(vol.capacity ? { capacity: vol.capacity } : {}), processes: S.recursalProcesses.filter((p) => p.assignedVolunteerId === vol.id).length } : null,
+      volunteer: vol ? { status: vol.status, turmas: vol.turmas, ...(vol.startDate ? { startDate: vol.startDate } : {}), ...(vol.capacity ? { capacity: vol.capacity } : {}), processes: S.recursalProcesses.filter((p) => p.assignedVolunteerId === vol.id).length } : null,
       batches: myBatches.map((b) => ({ id: b.id, createdAt: b.createdAt, source: b.source, ...(b.fileName ? { fileName: b.fileName } : {}), total: b.total, accepted: b.accepted, rejected: b.rejected, duplicates: b.duplicates, distributed: S.recursalProcesses.filter((p) => p.batchId === b.id && p.assignedVolunteerId).length })).reverse(),
     } : undefined;
 
