@@ -173,6 +173,11 @@ test('Migração para a Turma Recursal e cruzamento de titulares voluntários', 
     const tit = await (await fetch(base + '/titulares-voluntarios?edition=all')).json();
     assert.equal(tit.length, 1);
     assert.match(tit[0].represents[0].unit, /1ª Vara Cível/); assert.equal(tit[0].represents[0].by, 'responsável'); // lotação em branco: usa o responsável
+    assert.equal(tit[0].represents[0].designatedHere[0].name, 'FULANO TAL'); // magistrado designado para a unidade do titular
+    const xl = await fetch(base + '/titulares-voluntarios/export.xlsx?edition=all'); assert.equal(xl.status, 200);
+    assert.match(xl.headers.get('content-type') ?? '', /spreadsheetml/); assert.ok((await xl.arrayBuffer()).byteLength > 1000);
+    const pdf = await fetch(base + '/titulares-voluntarios/export.pdf?edition=all'); assert.equal(pdf.status, 200);
+    assert.equal(Buffer.from(await pdf.arrayBuffer()).subarray(0, 4).toString(), '%PDF');
     // lotação preenchida tem prioridade: aponta a 1ª Vara Cível de Curitiba, ainda que o responsável cadastrado seja outro
     S.units[0].judgeName = 'Outra Pessoa';
     assert.equal((await (await fetch(base + '/titulares-voluntarios?edition=all')).json()).length, 0); // sem lotação e sem responsável igual
