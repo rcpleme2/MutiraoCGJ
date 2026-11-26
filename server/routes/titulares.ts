@@ -9,13 +9,15 @@ export function register(app: express.Express) {
   app.get('/api/titulares-voluntarios', (req, res) => {
     const scope = scopeOf(req);
     if (!scope) return res.status(404).json({ error: 'Janela de inscrição não encontrada.' });
-    const units = S.units.filter((u) => scope.has(u) && u.judgeName?.trim());
+    // Só unidades com pedido escolhido e com magistrado vinculado atualmente
+    const linkedUnits = new Set(S.matches.map((m) => m.unitId));
+    const units = S.units.filter((u) => scope.has(u) && u.selection === 'Escolhida' && linkedUnits.has(u.id) && u.judgeName?.trim());
     const rows = panelRows();
     const out = new Map<string, any>();
     for (const u of units) {
       const key = personKey(u.judgeName);
       if (!key) continue;
-      const mags = S.magistrates.filter((m) => scope.has(m) && m.status !== 'Excluído' && personKey(m.name) === key);
+      const mags = S.magistrates.filter((m) => scope.has(m) && m.status !== 'Excluído' && m.status !== 'Rejeitado' && personKey(m.name) === key);
       if (mags.length === 0) continue;
       const e = out.get(key) ?? {
         name: mags[0].name, email: mags[0].email, status: magistrateStatusLabel(mags[0].status),
