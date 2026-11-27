@@ -264,7 +264,8 @@ export default function Admin({ onEditionsChanged }: { onEditionsChanged: () => 
     await run(() => api(`/magistrates/${m.id}/restore`, { method: 'POST' }), 'Exclusão desfeita.'); refresh();
   };
   const del = async (kind: 'magistrates' | 'units' | 'matches', id: string, what: string) => {
-    if (!(await confirm(`Excluir ${what}? Esta ação ficará registrada.`, 'Excluir'))) return;
+    const linked = kind === 'units' ? matches.filter(m => m.unitId === id).length : 0;
+    if (!(await confirm(`Excluir ${what}? ${linked ? `As ${linked} vinculação(ões) dela serão retiradas (quem tinha alteração agendada para ela volta à unidade anterior). ` : ''}Esta ação ficará registrada.`, 'Excluir'))) return;
     await run(() => api(`/${kind}/${id}`, { method: 'DELETE' }), 'Registro excluído.');
     refresh();
   };

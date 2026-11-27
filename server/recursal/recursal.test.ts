@@ -304,3 +304,39 @@ test('Alteração agendada: a unidade anterior continua vigente no painel, ao la
     assert.equal(actingPeriods().filter((p) => p.name === 'ANA LIMA').length, 2);
   } finally { server.close(); }
 });
+
+test('Excluir a unidade de destino de uma alteração agendada não deixa o magistrado sem vinculação', async () => {
+  const express = (await import('express')).default;
+  const { register: regMatches } = await import('../routes/matches.ts');
+  const { register: regUnits } = await import('../routes/units.ts');
+  const { register: regPanel } = await import('../routes/panel.ts');
+  const { panelRows, orphanTransfers } = await import('../links.ts');
+  const app = express(); app.use(express.json()); regMatches(app); regUnits(app); regPanel(app);
+  const server = app.listen(0); const base = `http://localhost:${(server.address() as any).port}/api`;
+  const send = (m: string, p: string, b?: object) => fetch(base + p, { method: m, headers: { 'Content-Type': 'application/json' }, body: b ? JSON.stringify(b) : undefined });
+  const ymd = (d: number) => new Date(Date.now() + d * 86400_000 - 3 * 3600_000).toISOString().slice(0, 10);
+  const unit = (id: string, name: string) => ({ id, editionId: 'e1', unitName: name, judgeName: 'X', email: 'a', comarca: 'C', separator: 'de', areas: ['Cível'], supportNeeded: '', createdAt: '', status: 'Pendente', selection: 'Escolhida', slots: 1 } as any);
+  const reset = () => {
+    S.editions = [{ id: 'e1', title: 'J1', openingDate: '', closingDate: '', isRegistrationOpen: true, status: 'Em andamento', createdAt: '', startDate: '2026-02-01' } as any];
+    S.units = [unit('u1', 'Vara 1'), unit('u2', 'Vara 2')];
+    S.magistrates = [{ id: 'm1', editionId: 'e1', name: 'ANA LIMA', email: 'a@x', status: 'Atribuído', createdAt: '' } as any];
+    S.matches = [{ id: 'mt1', editionId: 'e1', magistrateId: 'm1', unitId: 'u1', assignedArea: 'Cível', workType: 'Sentença', status: 'Vinculado', startDate: '2026-06-15', createdAt: '' } as any];
+    S.withdrawals = []; S.transfers = [];
+  };
+  try {
+    reset();
+    assert.equal((await send('PUT', '/matches/mt1', { unitId: 'u2', effectiveDate: ymd(30) })).status, 200);
+    assert.equal(S.matches[0].unitId, 'u2');
+    assert.equal((await send('DELETE', '/units/u2')).status, 200); // exclui o destino
+    const rows = panelRows(); assert.equal(rows.length, 1); assert.match(rows[0].unit, /Vara 1/); assert.equal(rows[0].startDate, '2026-06-15'); // voltou à anterior
+    assert.equal(S.transfers.length, 0); assert.equal(S.magistrates[0].status, 'Atribuído');
+    // situação já existente nos dados (destino excluído antes da correção): alteração órfã pode ser restaurada
+    reset();
+    await send('PUT', '/matches/mt1', { unitId: 'u2', effectiveDate: ymd(30) });
+    S.matches = []; S.units = S.units.filter((u) => u.id !== 'u2'); S.magistrates[0].status = 'Lista de Espera';
+    assert.equal(orphanTransfers().length, 1);
+    const adm = await (await send('GET', '/panel/admin')).json(); assert.equal(adm.orphans.length, 1); assert.equal(adm.orphans[0].canRestore, true);
+    assert.equal((await send('POST', `/panel/transfers/${S.transfers[0].id}/restore`)).status, 200);
+    assert.equal(panelRows().length, 1); assert.equal(orphanTransfers().length, 0);
+  } finally { server.close(); }
+});

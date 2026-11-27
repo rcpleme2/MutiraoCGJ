@@ -3,7 +3,7 @@ import { comarcaInText, resolveCatalog, tokens as nameTokens } from '../src/cata
 import { catalogById, canonicalComarca, fullUnitName, CATALOG_SEPARATOR } from '../src/catalogo-tjpr';
 import { editionById, ensureInitialEdition, INITIAL_EDITION_TITLE } from './editions.ts';
 import { log, newId, S } from './state.ts';
-import { type ActingPeriod, type Magistrate, type Match, MATCH_WORK_TYPES, type PanelRow, type Person, type Unit, type WorkType } from './types.ts';
+import { type ActingPeriod, type Magistrate, type Match, MATCH_WORK_TYPES, type PanelRow, type Person, type Transfer, type Unit, type WorkType } from './types.ts';
 import { BRT, canonicalPersonName, cleanCell, cleanText, isYmd, norm, normName, personKey, ymdBrt, ymdDayBefore, ymdMonthEnd } from './util.ts';
 
 /** Modalidade padrão da vinculação, conforme o auxílio pedido pela unidade e a disposição do magistrado */
@@ -330,5 +330,54 @@ export function finalizeDueWithdrawals() {
     ids.forEach((id) => { const m = S.magistrates.find((x) => x.id === id); if (m) m.status = 'Desistente'; });
     w.scheduled = false;
     log(w.editionId, 'Sistema', 'Magistrado', `Desistência de ${w.name}: atuação encerrada em ${w.endDate.split('-').reverse().join('/')}; vinculações retiradas.`);
+  }
+}
+
+/**
+ * Alterações agendadas (data futura) cuja vinculação de destino foi perdida (ex.: a unidade de destino foi excluída):
+ * o magistrado ficou sem designação, embora ainda atue na unidade anterior até a véspera da data.
+ */
+export function orphanTransfers(): Transfer[] {
+  const today = todayYmd();
+  return S.transfers.filter((t) => {
+    if (t.effectiveDate <= today) return false;
+    const mag = S.magistrates.find((m) => m.id === t.magistrateId);
+    if (!mag || ['Rejeitado', 'Excluído', 'Desistente'].includes(mag.status)) return false;
+    if (S.matches.some((m) => m.magistrateId === t.magistrateId)) return false;
+    // só a alteração mais recente da pessoa
+    return !S.transfers.some((x) => x.id !== t.id && x.magistrateId === t.magistrateId && x.effectiveDate > t.effectiveDate);
+  });
+}
+/** Unidade anterior de uma alteração (pelo nome completo gravado na alteração) */
+export const fromUnitOf = (t: Transfer) => S.units.find((u) => norm(fullUnitName(u)) === norm(t.fromUnit));
+/** Desfaz uma alteração agendada: devolve o magistrado à unidade anterior, com o início original, e apaga o registro da alteração. */
+export function restoreTransfer(t: Transfer): { ok: true } | { ok: false; error: string } {
+  const old = fromUnitOf(t);
+  const mag = S.magistrates.find((m) => m.id === t.magistrateId);
+  if (!old) return { ok: false, error: `A unidade anterior (${t.fromUnit}) não existe mais. Vincule o magistrado manualmente.` };
+  if (!mag || ['Rejeitado', 'Excluído', 'Desistente'].includes(mag.status)) return { ok: false, error: 'O magistrado não está apto a ser vinculado.' };
+  if (S.matches.some((m) => m.magistrateId === mag.id)) return { ok: false, error: 'O magistrado já tem vinculação vigente.' };
+  if (linkedCount(old.id) >= (old.slots || 1)) old.slots = linkedCount(old.id) + 1; // a vaga dele já existia antes da alteração
+  S.matches.unshift({ id: newId('match'), editionId: t.editionId, magistrateId: mag.id, unitId: old.id, assignedArea: t.area, workType: (t.fromWorkType || defaultWorkType(old, mag)) as WorkType, ...(t.fromStartDate ? { startDate: t.fromStartDate } : {}), status: 'Vinculado', createdAt: new Date().toISOString() });
+  mag.status = 'Atribuído';
+  S.transfers = S.transfers.filter((x) => x.id !== t.id);
+  refreshUnitStatus(old.id);
+  log(t.editionId, 'Administração', 'Vinculação', `Alteração agendada desfeita: ${mag.name} volta à unidade ${fullUnitName(old)} (a alteração para ${t.toUnit} a partir de ${t.effectiveDate.split('-').reverse().join('/')} foi cancelada).`);
+  return { ok: true };
+}
+/**
+ * Retira as vinculações de uma unidade que vai ser excluída. Quem tinha alteração agendada para ela (ainda atua na unidade anterior)
+ * volta à unidade anterior em vez de ficar sem designação; as demais vinculações são desfeitas e registradas.
+ */
+export function releaseUnitMatches(unit: Unit) {
+  const today = todayYmd();
+  for (const m of S.matches.filter((x) => x.unitId === unit.id)) {
+    S.matches = S.matches.filter((x) => x.id !== m.id);
+    const t = S.transfers.filter((x) => x.magistrateId === m.magistrateId && x.effectiveDate === m.startDate && x.effectiveDate > today && norm(x.toUnit) === norm(fullUnitName(unit)))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+    const r = t ? restoreTransfer(t) : undefined;
+    if (r?.ok) continue;
+    log(m.editionId, 'Administração', 'Vinculação', `Vinculação desfeita pela exclusão da unidade: ${describeMatch(m)}${r && !r.ok ? ` (não foi possível voltar à unidade anterior: ${r.error})` : ''}.`);
+    releaseIfUnlinked(m.magistrateId);
   }
 }

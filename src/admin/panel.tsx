@@ -9,7 +9,7 @@ import { ExcludeModal } from './forms';
 import { dmy, monthEnd, type RunFn, unitOption } from './shared';
 import { SmartTable, Toolbar } from './table';
 
-export interface PanelAdminData { rows: PanelRow[]; withdrawals: Withdrawal[]; transfers: Transfer[]; periods: ActingPeriod[]; initialEdition: { id: string; title: string } }
+export interface PanelAdminData { rows: PanelRow[]; withdrawals: Withdrawal[]; transfers: Transfer[]; orphans?: (Transfer & { canRestore: boolean })[]; periods: ActingPeriod[]; initialEdition: { id: string; title: string } }
 
 export interface PanelPreview { total: number; duplicates: number; errorCount: number; errors: { line: number; message: string }[]; preview: { name: string; area: string; unit: string }[] }
 
@@ -263,6 +263,20 @@ export function PanelAdmin({ run, confirm, onChanged }: {
           ]} />
         {rows.length > 0 && <p className="px-4 py-2.5 text-xs text-muted border-t border-line">{rows.length} de {data.rows.length} designações</p>}
       </div>
+      )}
+
+      {(data.orphans?.length ?? 0) > 0 && (
+        <div className="rounded-md border border-danger/30 bg-danger-soft px-4 py-3 text-sm space-y-3" role="alert">
+          <div className="font-medium text-danger">{data.orphans!.length} alteração(ões) agendada(s) ficaram sem vinculação</div>
+          <p className="text-muted">Esses magistrados não aparecem em Vigentes porque a unidade de destino foi excluída. Restaure a vinculação na unidade anterior ou descarte o registro.</p>
+          {data.orphans!.map(o => (
+            <div key={o.id} className="flex flex-wrap items-center gap-3 border-t border-danger/20 pt-3">
+              <div className="flex-1 min-w-[16rem]"><strong className="text-ink">{o.name}</strong><div className="text-xs text-muted">{o.fromUnit} → {o.toUnit} · a partir de {dmy(o.effectiveDate)}</div></div>
+              <button className="btn-secondary btn-sm" disabled={!o.canRestore} title={o.canRestore ? '' : 'A unidade anterior não existe mais'} onClick={async () => { if (await run(() => api(`/panel/transfers/${o.id}/restore`, { method: 'POST' }), 'Vinculação restaurada na unidade anterior.')) { await load(); onChanged(); } }}>Restaurar na unidade anterior</button>
+              <button className="btn-ghost btn-sm" onClick={async () => { if (await confirm(`Descartar o registro da alteração de ${o.name}? A vinculação não será recriada.`, 'Descartar')) { await run(() => api(`/panel/transfers/${o.id}/discard`, { method: 'POST' }), 'Registro descartado.'); await load(); onChanged(); } }}>Descartar registro</button>
+            </div>
+          ))}
+        </div>
       )}
 
       {pview === 'alteracoes' && (data.transfers.length > 0 ? (

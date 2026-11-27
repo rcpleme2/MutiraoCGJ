@@ -2,7 +2,7 @@
 import express from 'express';
 import { mergeCatalogDuplicates } from '../catalog.ts';
 import { carryUnitTo, editionById, nextEditionAfter, registrationMessage, registrationState, resolveEdition, scopeOf } from '../editions.ts';
-import { linkedCount, refreshUnitStatus, releaseIfUnlinked } from '../links.ts';
+import { linkedCount, refreshUnitStatus, releaseIfUnlinked, releaseUnitMatches } from '../links.ts';
 import { log, newId, S } from '../state.ts';
 import { type Unit } from '../types.ts';
 import { clientIp, freeText } from '../util.ts';
@@ -23,9 +23,9 @@ export function register(app: express.Express) {
 
     const ids = new Set(S.units.filter((u) => u.editionId === edition.id).map((u) => u.id));
     const removed = S.matches.filter((m) => ids.has(m.unitId));
+    S.units.filter((u) => ids.has(u.id)).forEach(releaseUnitMatches); // quem tinha alteração agendada para a unidade volta à anterior
     S.units = S.units.filter((u) => !ids.has(u.id));
     S.matches = S.matches.filter((m) => !ids.has(m.unitId));
-    removed.forEach((m) => releaseIfUnlinked(m.magistrateId)); // quem atua em outra unidade continua vinculado
     log(edition.id, 'Administração', 'Unidade',
       `EXCLUSÃO EM LOTE: ${ids.size} unidade(s) excluída(s)${removed.length ? `, com ${removed.length} vinculação(ões)` : ''}.`);
     res.json({ success: true, count: ids.size, removedMatches: removed.length });
@@ -148,11 +148,10 @@ export function register(app: express.Express) {
   app.delete('/api/units/:id', (req, res) => {
     const { id } = req.params;
     const unit = S.units.find((u) => u.id === id);
-    const freed = S.matches.filter((m) => m.unitId === id).map((m) => m.magistrateId);
-    if (unit) log(unit.editionId, 'Administração', 'Unidade', `Inscrição da unidade "${unit.unitName}" excluída.`);
+    const had = S.matches.filter((m) => m.unitId === id).length;
+    if (unit) { releaseUnitMatches(unit); log(unit.editionId, 'Administração', 'Unidade', `Inscrição da unidade "${unit.unitName}" excluída${had ? ` (${had} vinculação(ões) retirada(s))` : ''}.`); }
     S.units = S.units.filter((u) => u.id !== id);
     S.matches = S.matches.filter((m) => m.unitId !== id);
-    freed.forEach(releaseIfUnlinked);
     res.json({ success: true, id });
   });
 }

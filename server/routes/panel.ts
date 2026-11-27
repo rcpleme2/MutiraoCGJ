@@ -7,7 +7,7 @@ import fs from 'fs';
 import PDFDocument from 'pdfkit';
 import { sameUnit, unitResolver } from '../catalog.ts';
 import { editionById, ensureInitialEdition, INITIAL_EDITION_TITLE } from '../editions.ts';
-import { actingPeriods, createInitialLink, panelRowsAll, finalizeDueWithdrawals, todayYmd, describeMatch, isHeaderRow, panelKey, panelRows, periodDays, personOf, preferenceText, samePerson, undoMatch, unitLabel } from '../links.ts';
+import { actingPeriods, createInitialLink, fromUnitOf, orphanTransfers, panelRowsAll, restoreTransfer, finalizeDueWithdrawals, todayYmd, describeMatch, isHeaderRow, panelKey, panelRows, periodDays, personOf, preferenceText, samePerson, undoMatch, unitLabel } from '../links.ts';
 import { saveState } from '../persistence.ts';
 import { log, newId, S } from '../state.ts';
 import { type Withdrawal } from '../types.ts';
@@ -60,6 +60,7 @@ export function register(app: express.Express) {
       rows: [...flagged, ...withPrev].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR') || a.unit.localeCompare(b.unit, 'pt-BR')),
       withdrawals: S.withdrawals.filter((w) => w.kind !== 'migracao').sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
       transfers: [...S.transfers].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+      orphans: orphanTransfers().map((t) => ({ ...t, canRestore: !!fromUnitOf(t) })),
       periods: actingPeriods(),
       initialEdition: { id: ensureInitialEdition().id, title: INITIAL_EDITION_TITLE },
     });
@@ -106,6 +107,22 @@ export function register(app: express.Express) {
     valid.forEach(createInitialLink);
     log(ensureInitialEdition().id, 'Administração', 'Vinculação', `Painel de vinculações: ${valid.length} designação(ões) importada(s) de planilha para a edição "${INITIAL_EDITION_TITLE}"${errors.length ? `; ${errors.length} linha(s) ignorada(s)` : ''}.`);
     res.json({ success: true, imported: valid.length, duplicates, ignored: errors.length });
+  });
+  // Alteração agendada que ficou sem vinculação de destino: devolve o magistrado à unidade anterior ou descarta o registro
+  app.post('/api/panel/transfers/:id/restore', (req, res) => {
+    const t = S.transfers.find((x) => x.id === req.params.id);
+    if (!t) return res.status(404).json({ error: 'Alteração não encontrada.' });
+    const r = restoreTransfer(t);
+    if (!r.ok) return res.status(422).json({ error: r.error });
+    res.json({ success: true });
+  });
+  app.post('/api/panel/transfers/:id/discard', (req, res) => {
+    const t = S.transfers.find((x) => x.id === req.params.id);
+    if (!t) return res.status(404).json({ error: 'Alteração não encontrada.' });
+    if (!orphanTransfers().some((x) => x.id === t.id)) return res.status(409).json({ error: 'Só é possível descartar alteração agendada que ficou sem vinculação.' });
+    S.transfers = S.transfers.filter((x) => x.id !== t.id);
+    log(t.editionId, 'Administração', 'Vinculação', `Registro de alteração agendada descartado: ${t.name} (${t.fromUnit} → ${t.toUnit}, a partir de ${t.effectiveDate.split('-').reverse().join('/')}).`);
+    res.json({ success: true });
   });
   // Exclui uma designação do painel = desfaz a vinculação.
   app.delete('/api/panel/rows/:id', (req, res) => {
