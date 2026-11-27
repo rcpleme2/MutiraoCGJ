@@ -10,6 +10,7 @@ import { confirmedWipe, EMAIL_DOMAIN_MESSAGE, EMAIL_RE, emailDomainOk } from '..
 import { TURMAS, cnjCheckDigits, formatCnj, normalizeTurma, turmaLabel } from '../recursal/cnj.ts';
 import { readSheet } from '../recursal/parse.ts';
 import { checkRows } from '../recursal/rows.ts';
+import { distributionReport, reportPdf, reportXlsx } from '../recursal/report.ts';
 import { blockReason, canAssign, hasRoom, loadOf, suggestDistribution } from '../recursal/rules.ts';
 
 const MAX_MANUAL_ROWS = 5000;
@@ -317,7 +318,37 @@ export function register(app: express.Express) {
       p.status = 'Distribuído'; p.assignedVolunteerId = v.id; p.assignedAt = now; if (by) p.assignedBy = by; n++;
     }
     log(null, 'Administração', 'Recursal', `Distribuição automática do Mutirão Recursal: ${n} processo(s) designado(s); ${r.unassignable.length} sem relator possível.`);
-    res.json({ success: true, assigned: n, unassignable: r.unassignable.length });
+    const rep = distributionReport();
+    res.json({ success: true, assigned: n, unassignable: r.unassignable.length, report: { total: rep.total, distributed: rep.distributed.length, notDistributed: rep.notDistributed.length, byReason: Object.entries(rep.notDistributed.reduce((a: Record<string, number>, d) => { a[d.motivo] = (a[d.motivo] ?? 0) + 1; return a; }, {})).map(([motivo, n]) => ({ motivo, n })) } });
+  });
+
+  // Limite de processos por relator, para todos os aprovados de uma vez (em branco/null = sem limite)
+  app.post('/api/recursal/volunteers/capacity', (req, res) => {
+    const raw = req.body?.capacity;
+    const cap = raw === null || raw === undefined || raw === '' ? undefined : Number(raw);
+    if (cap !== undefined && (!Number.isInteger(cap) || cap < 1 || cap > 1000)) return res.status(400).json({ error: 'O limite deve ser um número inteiro de 1 a 1000.' });
+    const targets = S.recursalVolunteers.filter((v) => v.status === 'Aprovado');
+    targets.forEach((v) => { if (cap === undefined) delete v.capacity; else v.capacity = cap; });
+    log(null, 'Administração', 'Recursal', `Limite de processos por relator ${cap === undefined ? 'removido' : `definido em ${cap}`} para ${targets.length} voluntário(s) aprovado(s).`);
+    res.json({ success: true, updated: targets.length });
+  });
+  // Relatório da distribuição: distribuídos e não distribuídos (com o motivo), carga por relator
+  app.get('/api/recursal/report', (_req, res) => res.json(distributionReport()));
+  app.get('/api/recursal/report.xlsx', async (_req, res) => {
+    const r = distributionReport();
+    log(null, 'Administração', 'Exportação', `Relatório de distribuição do Mutirão Recursal (XLSX): ${r.distributed.length} distribuído(s), ${r.notDistributed.length} não distribuído(s).`);
+    if (!(await saveState())) return res.status(503).json({ error: 'Não foi possível registrar a exportação. Tente novamente.' });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename=relatorio-distribuicao-${Date.now()}.xlsx`);
+    res.send(reportXlsx(r));
+  });
+  app.get('/api/recursal/report.pdf', async (_req, res) => {
+    const r = distributionReport();
+    log(null, 'Administração', 'Exportação', `Relatório de distribuição do Mutirão Recursal (PDF): ${r.distributed.length} distribuído(s), ${r.notDistributed.length} não distribuído(s).`);
+    if (!(await saveState())) return res.status(503).json({ error: 'Não foi possível registrar a exportação. Tente novamente.' });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename=relatorio-distribuicao-${Date.now()}.pdf`);
+    reportPdf(r, res);
   });
 
   // Exportação em tabela: número do processo, Turma em que tramita e relator designado

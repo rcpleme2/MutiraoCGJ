@@ -39,3 +39,15 @@ export function suggestDistribution(): { pairs: { processId: string; volunteerId
   }
   return { pairs, unassignable, loads: extra };
 }
+
+/** Por que um processo pendente não foi (ou não pode ser) distribuído. */
+export function explainPending(p: Pick<RecursalProcess, 'turma'>): string {
+  const vols = S.recursalVolunteers.filter((v) => v.status === 'Aprovado');
+  if (vols.length === 0) return 'Não há voluntários aprovados.';
+  const outside = vols.filter((v) => !v.turmas.includes(p.turma));
+  if (outside.length === 0) return `Nenhum voluntário aprovado fora da ${turmaLabel(p.turma as number)}.`;
+  const started = outside.filter((v) => canAssign(p, v));
+  if (started.length === 0) return 'Os relatores aptos ainda não iniciaram a atuação na Turma Recursal.';
+  if (!started.some((v) => hasRoom(v))) return 'Todos os relatores aptos atingiram o limite de processos.';
+  return 'Aguardando distribuição.';
+}

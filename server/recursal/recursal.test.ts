@@ -381,3 +381,39 @@ test('Edição de alteração de vinculação: data, unidade, área, tipo e SEI,
     assert.equal((await send('PUT', `/panel/transfers/${older.id}`, { effectiveDate: ymd(95) })).status, 400); // passaria da alteração seguinte
   } finally { server.close(); }
 });
+
+test('Limite de processos por voluntário e relatório de distribuídos e não distribuídos', async () => {
+  const express = (await import('express')).default;
+  const { register } = await import('../routes/recursal.ts');
+  const app = express(); app.use(express.json()); register(app);
+  const server = app.listen(0); const base = `http://localhost:${(server.address() as any).port}/api/recursal`;
+  const send = (m: string, p: string, b?: object) => fetch(base + p, { method: m, headers: { 'Content-Type': 'application/json' }, body: b ? JSON.stringify(b) : undefined });
+  try {
+    S.recursalVolunteers = [
+      { id: 'a', name: 'Ana', email: 'a@x', turmas: [1], status: 'Aprovado', createdAt: '' },
+      { id: 'b', name: 'Beto', email: 'b@x', turmas: [2], status: 'Aprovado', createdAt: '' },
+    ];
+    S.recursalProcesses = [3, 3, 3, 3, 3, 1, 2].map((t, i) => ({ id: `p${i}`, cnj: mk(700 + i), turma: t, batchId: 'b', submitterName: '', submitterEmail: '', createdAt: '', status: 'Pendente' as const }));
+    // limite em lote para todos os aprovados
+    assert.equal((await send('POST', '/volunteers/capacity', { capacity: 2 })).status, 200);
+    assert.deepEqual(S.recursalVolunteers.map((v) => v.capacity), [2, 2]);
+    assert.equal((await send('POST', '/volunteers/capacity', { capacity: 0 })).status, 400);
+    // limite individual
+    assert.equal((await send('PATCH', '/volunteers/a', { capacity: 3 })).status, 200);
+    // atribuição manual acima do limite é recusada
+    assert.equal((await send('POST', '/assign', { volunteerId: 'b', processIds: ['p0', 'p1', 'p2'] })).status, 422); // limite 2
+    // distribuição automática respeita os limites: Ana 3 + Beto 2 = 5 dos 5 da Turma 3 + p5 (Turma 1, só Beto) + p6 (Turma 2, só Ana)
+    const ap = await (await send('POST', '/auto-apply', {})).json();
+    const per = (id: string) => S.recursalProcesses.filter((p) => p.assignedVolunteerId === id).length;
+    assert.ok(per('a') <= 3 && per('b') <= 2);
+    assert.equal(ap.report.total, 7); assert.equal(ap.report.distributed + ap.report.notDistributed, 7);
+    assert.ok(ap.report.notDistributed >= 2); // 7 processos, capacidade total 5
+    const rep = await (await send('GET', '/report')).json();
+    assert.equal(rep.distributed.length + rep.notDistributed.length, 7);
+    assert.ok(rep.notDistributed.every((d: any) => /limite|atingiram/i.test(d.motivo) || d.motivo));
+    assert.ok(rep.notDistributed.some((d: any) => /limite de processos/i.test(d.motivo)));
+    assert.equal(rep.loads.length, 2);
+    const xl = await send('GET', '/report.xlsx'); assert.equal(xl.status, 200); assert.ok((await xl.arrayBuffer()).byteLength > 1000);
+    const pdf = await send('GET', '/report.pdf'); assert.equal(pdf.status, 200); assert.equal(Buffer.from(await pdf.arrayBuffer()).subarray(0, 4).toString(), '%PDF');
+  } finally { server.close(); }
+});

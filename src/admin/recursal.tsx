@@ -71,6 +71,7 @@ function Distribution({ data, act, confirm, readOnly }: { data: RecursalOverview
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [turma, setTurma] = useState(0); const [q, setQ] = useState(''); const [volId, setVolId] = useState('');
   const [preview, setPreview] = useState<any>(null);
+  const [result, setResult] = useState<any>(null);
   const pending = useMemo(() => data.processes.filter((p) => p.status === 'Pendente' && (!turma || p.turma === turma) && (!q || p.formatted.includes(q) || p.cnj.includes(q.replace(/\D/g, '') || '\u0000'))), [data, turma, q]);
   const selected = data.processes.filter((p) => sel.has(p.id));
   const selTurmas = new Set(selected.map((p) => p.turma));
@@ -83,13 +84,15 @@ function Distribution({ data, act, confirm, readOnly }: { data: RecursalOverview
   };
   const distributed = data.processes.filter((p) => p.status === 'Distribuído');
   const doPreview = async () => { const r = await api('/recursal/auto-preview', { method: 'POST', json: {} }).catch((e) => { act(async () => { throw e; }); return null; }); if (r) setPreview(r); };
-  const apply = async () => { await act(() => api('/recursal/auto-apply', { method: 'POST', json: {} }), 'Distribuição aplicada.'); setPreview(null); };
+  const apply = async () => { const r = await act(() => api('/recursal/auto-apply', { method: 'POST', json: {} }), 'Distribuição aplicada.'); setPreview(null); if (r) setResult(r); };
   const undo = async (ids: string[]) => { if (await confirm(`Desfazer a designação de ${ids.length} processo(s)?`, 'Desfazer')) await act(() => api('/recursal/unassign', { method: 'POST', json: { processIds: ids } }), 'Designação desfeita.'); };
   return (
     <div className="space-y-5">
       <Toolbar title="Distribuição de processos">
         {!readOnly && <button className="btn-secondary btn-sm" onClick={doPreview}><Wand2 className="w-4 h-4 inline mr-1" />Sugerir distribuição automática</button>}
         {exportBtns()}
+        <button className="btn-secondary btn-sm" onClick={() => download('/recursal/report.pdf', 'relatorio-distribuicao.pdf')}><Download className="w-4 h-4 inline mr-1" />Relatório da distribuição (PDF)</button>
+        <button className="btn-secondary btn-sm" onClick={() => download('/recursal/report.xlsx', 'relatorio-distribuicao.xlsx')}><Download className="w-4 h-4 inline mr-1" />Relatório (XLSX)</button>
       </Toolbar>
       <div className="grid lg:grid-cols-2 gap-5">
         <div className="card p-4 space-y-3">
@@ -120,6 +123,24 @@ function Distribution({ data, act, confirm, readOnly }: { data: RecursalOverview
         <div className="overflow-x-auto max-h-96 overflow-y-auto"><table className="w-full text-sm"><thead><tr><th className="th">Processo</th><th className="th">Turma</th><th className="th">Relator designado</th><th className="th">Atua em</th><th className="th" /></tr></thead>
           <tbody>{distributed.length === 0 ? <EmptyRow cols={5}>Nada distribuído ainda.</EmptyRow> : distributed.slice(0, 1000).map((p) => <tr key={p.id}><td className="td font-mono text-xs">{p.formatted}</td><td className="td"><TurmaChip turma={p.turma} /></td><td className="td">{p.volunteerName}</td><td className="td"><span className="flex gap-1">{p.volunteerTurmas.map((t) => <TurmaChip key={t} turma={t} />)}</span></td><td className="td text-right">{!readOnly && <button className="btn-ghost btn-sm" aria-label="Desfazer designação" onClick={() => undo([p.id])}><Undo2 className="w-4 h-4" /></button>}</td></tr>)}</tbody></table></div>
       </div>
+      {result && (
+        <Modal title="Resultado da distribuição" onClose={() => setResult(null)}>
+          <div className="space-y-4 text-sm">
+            <p><strong>{result.assigned}</strong> processo(s) foram distribuídos agora. No total, <strong>{result.report.distributed}</strong> de {result.report.total} estão distribuídos e <strong className={result.report.notDistributed ? 'text-danger' : ''}>{result.report.notDistributed}</strong> não.</p>
+            {result.report.byReason?.length > 0 && (
+              <div className="rounded-md bg-warn-soft text-warn p-3 space-y-1">
+                <div className="font-medium">Não distribuídos, por motivo</div>
+                {result.report.byReason.map((r: any) => <div key={r.motivo} className="text-xs">{r.n} · {r.motivo}</div>)}
+              </div>
+            )}
+            <p className="text-muted text-xs">O relatório lista cada processo distribuído, com o relator, e cada processo não distribuído, com o motivo, além da carga por relator.</p>
+            <div className="flex flex-wrap justify-end gap-2">
+              <button className="btn-secondary" onClick={() => download('/recursal/report.xlsx', 'relatorio-distribuicao.xlsx')}><Download className="w-4 h-4 inline mr-1" />Relatório XLSX</button>
+              <button className="btn-primary" onClick={() => download('/recursal/report.pdf', 'relatorio-distribuicao.pdf')}><Download className="w-4 h-4 inline mr-1" />Relatório PDF</button>
+            </div>
+          </div>
+        </Modal>
+      )}
       {preview && (
         <Modal title="Prévia da distribuição automática" wide onClose={() => setPreview(null)}>
           <div className="space-y-4 text-sm">
@@ -151,20 +172,30 @@ function Processes({ data, act, confirm, readOnly, isAdmin }: { data: RecursalOv
 
 function Volunteers({ data, act, confirm, readOnly, isAdmin }: { data: RecursalOverview; act: Act; confirm: Confirm; readOnly: boolean; isAdmin: boolean }) {
   const [migrating, setMigrating] = useState(false);
+  const [bulk, setBulk] = useState('');
   const patch = (v: RecursalVolunteerView, body: object, ok?: string) => act(() => api(`/recursal/volunteers/${v.id}`, { method: 'PATCH', json: body }), ok);
   const toggleTurma = (v: RecursalVolunteerView, t: number) => patch(v, { turmas: v.turmas.includes(t) ? v.turmas.filter((x) => x !== t) : [...v.turmas, t] });
   return (
     <div className="space-y-4">
       <Toolbar title={`Voluntários (${data.volunteers.length})`}>
+        {!readOnly && (
+          <span className="inline-flex items-center gap-1.5">
+            <input type="number" min={1} max={1000} className="input !w-24 !py-1.5 text-sm" placeholder="Limite" aria-label="Limite de processos para todos os aprovados" value={bulk} onChange={(e) => setBulk(e.target.value)} />
+            <button className="btn-secondary btn-sm" onClick={async () => { await act(() => api('/recursal/volunteers/capacity', { method: 'POST', json: { capacity: bulk ? Number(bulk) : null } }), bulk ? 'Limite aplicado aos aprovados.' : 'Limite removido dos aprovados.'); }}>{bulk ? 'Aplicar limite a todos os aprovados' : 'Remover limite de todos'}</button>
+          </span>
+        )}
         {!readOnly && <button className="btn-primary btn-sm" onClick={() => setMigrating(true)}>Migrar do mutirão normal</button>}
       </Toolbar>
       {migrating && <MigrateModal act={act} onClose={() => setMigrating(false)} />}
       <p className="text-sm text-warn bg-warn-soft rounded-md px-4 py-3">Somente magistrados lotados ou designados nas Turmas Recursais podem participar. Rejeite (situação “Inativo”) as inscrições de quem não se enquadrar nessas condições.</p>
-      <div className="card overflow-x-auto"><table className="w-full text-sm"><thead><tr><th className="th">Magistrado</th><th className="th">Atua em</th><th className="th">Carga</th><th className="th">Situação</th><th className="th" /></tr></thead>
+      <div className="card overflow-x-auto"><table className="w-full text-sm"><thead><tr><th className="th">Magistrado</th><th className="th">Atua em</th><th className="th">Limite de processos</th><th className="th">Recebidos</th><th className="th">Situação</th><th className="th" /></tr></thead>
         <tbody>{data.volunteers.length === 0 ? <EmptyRow cols={5}>Nenhum voluntário inscrito.</EmptyRow> : data.volunteers.map((v) => (
           <tr key={v.id}><td className="td">{v.name}<div className="text-xs text-muted">{v.email}{v.note ? ` · ${v.note}` : ''}</div>{v.migratedFrom && <div className="text-[11px] text-bronze">Migrado do mutirão normal (vínculo até {dmyStr(v.migratedFrom.endDate)}): {v.migratedFrom.units}</div>}{v.startDate && <div className="text-[11px] text-muted">Início na Turma Recursal: {dmyStr(v.startDate)}</div>}</td>
             <td className="td"><span className="flex gap-1 flex-wrap">{TURMAS.map((t) => <button key={t} disabled={readOnly} aria-pressed={v.turmas.includes(t)} aria-label={`${t}ª Turma`} onClick={() => toggleTurma(v, t)}><TurmaChip turma={t} dim={!v.turmas.includes(t)} /></button>)}</span></td>
-            <td className="td">{v.load}{v.capacity ? ` / ${v.capacity}` : ''}</td>
+            <td className="td"><input type="number" min={1} max={1000} className="input !w-24 !py-1.5 text-sm" placeholder="Sem limite" aria-label={`Limite de processos de ${v.name}`} disabled={readOnly} defaultValue={v.capacity ?? ''} key={`${v.id}:${v.capacity ?? ''}`}
+              onBlur={(e) => { const val = e.target.value.trim(); if (val === String(v.capacity ?? '')) return; patch(v, { capacity: val === '' ? null : Number(val) }, val === '' ? 'Limite removido.' : 'Limite atualizado.'); }} />
+              {v.capacity ? <div className="text-[11px] text-muted mt-1">Restam {Math.max(0, v.capacity - v.load)}</div> : null}</td>
+            <td className="td">{v.load}</td>
             <td className="td"><select className="input w-32" aria-label="Situação" disabled={readOnly} value={v.status} onChange={(e) => patch(v, { status: e.target.value }, 'Situação atualizada.')}><option>Aguardando</option><option>Aprovado</option><option>Inativo</option></select></td>
             <td className="td text-right">{isAdmin && !readOnly && <button className="btn-ghost btn-sm" aria-label="Excluir voluntário" onClick={async () => { if (await confirm(`Excluir o voluntário ${v.name}?`, 'Excluir')) act(() => api(`/recursal/volunteers/${v.id}`, { method: 'DELETE' })); }}><Trash2 className="w-4 h-4" /></button>}</td></tr>))}</tbody></table></div>
     </div>
