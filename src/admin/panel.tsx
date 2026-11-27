@@ -63,6 +63,7 @@ export function PanelAdmin({ run, confirm, onChanged }: {
   const [areaFilter, setAreaFilter] = useState<string[]>([]);
   const [onlyDup, setOnlyDup] = useState(false);
   const [dropping, setDropping] = useState<PanelRow | null>(null);
+  const [editingTr, setEditingTr] = useState<null | { t: Transfer; reflects: boolean; units: Unit[]; unitId: string; area: string; work: string; sei: string; date: string }>(null);
   const [pview, setPview] = useState<'vigentes' | 'alteracoes' | 'desistentes' | 'historico' | 'importar'>('vigentes');
   const [editingWd, setEditingWd] = useState<Withdrawal | null>(null);
   const [excludingRow, setExcludingRow] = useState<PanelRow | null>(null);
@@ -115,6 +116,22 @@ export function PanelAdmin({ run, confirm, onChanged }: {
     if (!editingWd) return;
     const r = await run(() => api(`/panel/withdrawals/${editingWd.id}`, { method: 'PUT', json: { sei: editingWd.sei, requestDate: editingWd.requestDate ?? '', endDate: editingWd.endDate ?? '' } }), 'Desistência atualizada.');
     if (r) { setEditingWd(null); await load(); }
+  };
+  const openEditTransfer = async (t: Transfer) => {
+    const list = await run(() => api<Unit[]>('/units?edition=all'));
+    if (!list) return;
+    const cur = data?.rows.find(r => !r.readOnly && r.magistrateId === t.magistrateId && r.since === t.effectiveDate);
+    setEditingTr({ t, reflects: !!cur, units: list.filter(u => u.selection === 'Escolhida').sort((a, b) => a.unitName.localeCompare(b.unitName, 'pt-BR')), unitId: cur?.unitId ?? '', area: t.toArea || t.area, work: t.toWorkType, sei: t.sei ?? '', date: t.effectiveDate });
+  };
+  const submitEditTransfer = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingTr) return;
+    const { t, reflects, unitId, area, work, sei: s2, date } = editingTr;
+    const cur = data?.rows.find(r => !r.readOnly && r.magistrateId === t.magistrateId && r.since === t.effectiveDate);
+    const body: Record<string, string> = { sei: s2, effectiveDate: date };
+    if (reflects) { if (unitId && unitId !== cur?.unitId) body.unitId = unitId; body.assignedArea = area; body.workType = work; }
+    const r = await run(() => api(`/panel/transfers/${t.id}`, { method: 'PUT', json: body }), 'Alteração atualizada.');
+    if (r) { setEditingTr(null); await load(); onChanged(); }
   };
   const openMove = async (r: PanelRow) => {
     const list = await run(() => api<Unit[]>('/units?edition=all'));
@@ -287,6 +304,7 @@ export function PanelAdmin({ run, confirm, onChanged }: {
             { id: 'from', label: 'Vinculação anterior', sort: t => t.fromUnit, render: t => { const d = new Date(`${t.effectiveDate}T00:00:00Z`); d.setUTCDate(d.getUTCDate() - 1); return <>{t.fromUnit}<div className="text-xs text-muted">{t.area} · {t.fromWorkType === 'Audiência' ? 'Audiências' : t.fromWorkType} · até {d.toISOString().slice(0, 10).split('-').reverse().join('/')}</div></>; } },
             { id: 'to', label: 'Nova vinculação', sort: t => t.toUnit, render: t => <>{t.toUnit}<div className="text-xs text-bronze">{t.toArea || t.area}{t.toArea && t.toArea.trim() !== t.area.trim() ? ' (alterada)' : ''} · {t.toWorkType === 'Audiência' ? 'Audiências' : t.toWorkType}{t.toWorkType !== t.fromWorkType ? ' (alterado)' : ''} · a partir de {t.effectiveDate.split('-').reverse().join('/')}{t.kind === 'sucessao' ? ' (sucessão: nova janela)' : ''}</div>{t.sei && <div className="text-xs text-muted font-mono">SEI {t.sei}</div>}</> },
             { id: 'date', label: 'Vigência', sort: t => t.effectiveDate, tdClass: 'text-xs text-muted whitespace-nowrap', render: t => t.effectiveDate.split('-').reverse().join('/') },
+            { id: 'actions', label: '', align: 'right', render: t => <button className="btn-secondary btn-sm" onClick={() => openEditTransfer(t)}><Pencil className="w-3.5 h-3.5" /> Editar</button> },
           ]} />
         </div>
       ) : <div className="card p-8 text-center text-sm text-muted">Nenhuma alteração de vinculação registrada.</div>)}
@@ -435,6 +453,38 @@ export function PanelAdmin({ run, confirm, onChanged }: {
               <button type="button" className="btn-ghost" onClick={() => setMoving(null)}>Cancelar</button>
               <button className="btn-primary" disabled={(!moveUnit && !moveNewName.trim() && moveArea.trim() === moving.row.area.trim() && moveWork === (moving.row.workType ?? '')) || !moveArea.trim() || !moveDate}>Registrar alteração</button>
             </div>
+          </form>
+        </Modal>
+      )}
+
+      {editingTr && (
+        <Modal title="Editar alteração de vinculação" onClose={() => setEditingTr(null)}>
+          <form onSubmit={submitEditTransfer} className="space-y-4">
+            <p className="text-sm text-muted"><strong className="text-ink">{editingTr.t.name}</strong>: {editingTr.t.fromUnit} → {editingTr.t.toUnit}.</p>
+            <div className="text-xs bg-bronze-soft rounded-md px-3 py-2">As mudanças valem para a vinculação, o histórico de atuação, a situação das unidades e os relatórios. {editingTr.reflects ? 'Esta é a alteração vigente: unidade, área e tipo também podem ser alterados.' : 'Esta não é a alteração mais recente: só data e SEI podem ser alterados.'}</div>
+            {editingTr.reflects && (
+              <>
+                <Field label="Unidade de destino">
+                  <select className="input" value={editingTr.unitId} onChange={e => setEditingTr({ ...editingTr, unitId: e.target.value })}>
+                    {editingTr.units.map(u => <option key={u.id} value={u.id}>{fullUnitName({ unitName: u.unitName, comarca: u.comarca, separator: u.separator })}</option>)}
+                  </select>
+                </Field>
+                <Field label="Área de atuação">
+                  <select className="input" value={editingTr.area} onChange={e => setEditingTr({ ...editingTr, area: e.target.value })}>
+                    {!PREFERENCE_AREAS.includes(editingTr.area) && editingTr.area && <option value={editingTr.area}>{editingTr.area} (fora da lista)</option>}
+                    {PREFERENCE_AREAS.map(a => <option key={a} value={a}>{a}</option>)}
+                  </select>
+                </Field>
+                <Field label="Tipo de atuação">
+                  <select className="input" value={editingTr.work} onChange={e => setEditingTr({ ...editingTr, work: e.target.value })}>
+                    {WORK_TYPES.map(w => <option key={w} value={w}>{w === 'Audiência' ? 'Audiências' : w}</option>)}
+                  </select>
+                </Field>
+              </>
+            )}
+            <Field label="Processo SEI da alteração (opcional)"><input className="input" maxLength={100} value={editingTr.sei} onChange={e => setEditingTr({ ...editingTr, sei: e.target.value })} /></Field>
+            <Field label="Valerá a partir de"><input className="input" type="date" required value={editingTr.date} onChange={e => setEditingTr({ ...editingTr, date: e.target.value })} /></Field>
+            <div className="flex justify-end gap-2"><button type="button" className="btn-ghost" onClick={() => setEditingTr(null)}>Cancelar</button><button className="btn-primary">Salvar</button></div>
           </form>
         </Modal>
       )}

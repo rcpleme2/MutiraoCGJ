@@ -45,7 +45,7 @@ export function titularesData(scope: Scope) {
       }
       if (found.length === 0) continue;
       const e = out.get(key) ?? {
-        name: m.name, email: m.email, status: magistrateStatusLabel(m.status), represents: [] as any[],
+        name: m.name, email: m.email, status: magistrateStatusLabel(m.status), group: m.status === 'Atribuído' ? 'ativo' : m.status === 'Desistente' ? 'inativo' : 'outros', represents: [] as any[],
         designated: rows.filter((r) => personKey(r.name) === key).map((r) => ({ unit: unitLabel(r), area: r.area, workType: r.workType ?? '', since: r.since ?? null, edition: r.editionTitle })),
       };
       for (const { unit: u, by } of found) {
@@ -53,14 +53,16 @@ export function titularesData(scope: Scope) {
       }
       out.set(key, e);
     }
-    return [...out.values()].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR')) as TitularRow[];
+    const order = { ativo: 0, inativo: 1, outros: 2 } as const;
+    return [...out.values()].sort((a, b) => order[a.group as keyof typeof order] - order[b.group as keyof typeof order] || a.name.localeCompare(b.name, 'pt-BR')) as TitularRow[];
 }
 
 export interface TitularRow {
-  name: string; email: string; status: string;
+  name: string; email: string; status: string; group: 'ativo' | 'inativo' | 'outros';
   represents: { unit: string; edition: string; selection: string; status: string; by: 'lotação' | 'responsável'; designatedHere: { name: string; area: string; workType: string; since: string | null }[] }[];
   designated: { unit: string; area: string; workType: string; since: string | null; edition: string }[];
 }
+const groupLabel = (r: TitularRow) => (r.group === 'ativo' ? 'Ativo' : r.group === 'inativo' ? 'Inativo' : r.status);
 const dmy = (ymd: string | null) => (ymd ? ymd.split('-').reverse().join('/') : '');
 /** Uma linha por unidade representada (e por magistrado designado a ela) */
 function flat(rows: TitularRow[]) {
@@ -71,8 +73,8 @@ function flat(rows: TitularRow[]) {
       const des = u.designatedHere.length ? u.designatedHere : [null];
       for (const d of des) {
         out.push({
-          'Magistrado(a) voluntário(a)': r.name, 'E-mail': r.email, 'Inscrição': r.status,
-          'Unidade que representa': u.unit, 'Janela': u.edition, 'Situação da unidade': u.selection === 'Escolhida' ? `Escolhida · ${u.status}` : u.selection, 'Identificada pela': u.by,
+          'Magistrado(a) voluntário(a)': r.name, 'E-mail': r.email, 'Situação': groupLabel(r),
+          'Unidade que representa': u.unit, 'Situação da unidade': u.selection === 'Escolhida' ? `Escolhida · ${u.status}` : u.selection,
           'Magistrado designado para a unidade': d ? d.name : '', 'Área': d?.area ?? '', 'Atuação': d?.workType ?? '', 'Desde': d ? dmy(d.since) : '',
           'Unidade em que o voluntário está designado': own,
         });
@@ -92,9 +94,9 @@ export function register(app: express.Express) {
     const scope = scopeOf(req);
     if (!scope) return res.status(404).json({ error: 'Janela de inscrição não encontrada.' });
     const data = flat(titularesData(scope));
-    const header = ['Magistrado(a) voluntário(a)', 'E-mail', 'Inscrição', 'Unidade que representa', 'Janela', 'Situação da unidade', 'Identificada pela', 'Magistrado designado para a unidade', 'Área', 'Atuação', 'Desde', 'Unidade em que o voluntário está designado'];
+    const header = ['Magistrado(a) voluntário(a)', 'E-mail', 'Situação', 'Unidade que representa', 'Situação da unidade', 'Magistrado designado para a unidade', 'Área', 'Atuação', 'Desde', 'Unidade em que o voluntário está designado'];
     const sheet = XLSX.utils.json_to_sheet(data.map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, /^[=+\-@]/.test(v) ? `'${v}` : v]))), { header });
-    sheet['!cols'] = [{ wch: 34 }, { wch: 28 }, { wch: 18 }, { wch: 50 }, { wch: 24 }, { wch: 20 }, { wch: 14 }, { wch: 34 }, { wch: 24 }, { wch: 12 }, { wch: 12 }, { wch: 50 }];
+    sheet['!cols'] = [{ wch: 34 }, { wch: 28 }, { wch: 14 }, { wch: 50 }, { wch: 20 }, { wch: 34 }, { wch: 24 }, { wch: 12 }, { wch: 12 }, { wch: 50 }];
     const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, sheet, 'Titulares voluntários');
     log(null, 'Administração', 'Exportação', `Relatório de titulares voluntários (XLSX) exportado: ${data.length} linha(s).`);
     if (!(await saveState())) return res.status(503).json({ error: 'Não foi possível registrar a exportação. Tente novamente.' });
@@ -125,8 +127,8 @@ export function register(app: express.Express) {
     doc.font('Helvetica').fontSize(9).fillColor('#5f6b7a').text(`${scope.title} · ${new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })} · ${rows.length} magistrado(s). Unidades escolhidas com magistrado vinculado; inscrições rejeitadas ou excluídas não entram.`, L, doc.y + 2, { width: W });
     doc.moveDown(0.8); doc.fillColor('#000000'); head();
     for (const r of rows) {
-      const c1 = `${r.name}\n${r.email}\nInscrição: ${r.status}`;
-      const c2 = r.represents.map((u) => `${u.unit}\n${u.edition} · ${u.selection}${u.selection === 'Escolhida' ? ` · ${u.status}` : ''} · pela ${u.by}`).join('\n\n');
+      const c1 = `${r.name}\n${r.email}\nSituação: ${groupLabel(r)}`;
+      const c2 = r.represents.map((u) => `${u.unit}\n${u.selection}${u.selection === 'Escolhida' ? ` · ${u.status}` : ''}`).join('\n\n');
       const c3 = r.represents.map((u) => (u.designatedHere.length ? u.designatedHere.map((d) => `${d.name}\n${d.area}${d.workType ? ` · ${d.workType}` : ''}${d.since ? ` · desde ${dmy(d.since)}` : ''}`).join('\n') : 'Sem magistrado designado')).join('\n\n');
       const c4 = r.designated.length ? r.designated.map((d) => `${d.unit}\n${d.area}${d.workType ? ` · ${d.workType}` : ''}${d.since ? ` · desde ${dmy(d.since)}` : ''}`).join('\n\n') : 'Aguardando vinculação (sem designação)';
       doc.font('Helvetica').fontSize(8);

@@ -7,10 +7,10 @@ import fs from 'fs';
 import PDFDocument from 'pdfkit';
 import { sameUnit, unitResolver } from '../catalog.ts';
 import { editionById, ensureInitialEdition, INITIAL_EDITION_TITLE } from '../editions.ts';
-import { actingPeriods, createInitialLink, fromUnitOf, orphanTransfers, panelRowsAll, restoreTransfer, finalizeDueWithdrawals, todayYmd, describeMatch, isHeaderRow, panelKey, panelRows, periodDays, personOf, preferenceText, samePerson, undoMatch, unitLabel } from '../links.ts';
+import { actingPeriods, createInitialLink, fromUnitOf, linkedCount, refreshUnitStatus, orphanTransfers, panelRowsAll, restoreTransfer, finalizeDueWithdrawals, todayYmd, describeMatch, isHeaderRow, panelKey, panelRows, periodDays, personOf, preferenceText, samePerson, undoMatch, unitLabel } from '../links.ts';
 import { saveState } from '../persistence.ts';
 import { log, newId, S } from '../state.ts';
-import { type Withdrawal } from '../types.ts';
+import { MATCH_WORK_TYPES, type Withdrawal } from '../types.ts';
 import { cleanCell, dmyOf, norm, parseSheetText, personKey, validYmd, ymdMonthEnd } from '../util.ts';
 
 // Arte da capa e da contracapa do modelo de relatório do TJPR (assets/relatorio); sem o arquivo, usa fundo azul-marinho.
@@ -107,6 +107,69 @@ export function register(app: express.Express) {
     valid.forEach(createInitialLink);
     log(ensureInitialEdition().id, 'Administração', 'Vinculação', `Painel de vinculações: ${valid.length} designação(ões) importada(s) de planilha para a edição "${INITIAL_EDITION_TITLE}"${errors.length ? `; ${errors.length} linha(s) ignorada(s)` : ''}.`);
     res.json({ success: true, imported: valid.length, duplicates, ignored: errors.length });
+  });
+  // Edita uma alteração de vinculação, com as repercussões: data de vigência (e o início da vinculação atual), SEI e,
+  // quando é a alteração mais recente (a que a vinculação vigente reflete), unidade de destino, área e tipo de atuação.
+  app.put('/api/panel/transfers/:id', (req, res) => {
+    const t = S.transfers.find((x) => x.id === req.params.id);
+    if (!t) return res.status(404).json({ error: 'Alteração não encontrada.' });
+    const b = req.body ?? {};
+    const mine = S.transfers.filter((x) => x.magistrateId === t.magistrateId && x.id !== t.id);
+    const latest = !mine.some((x) => x.effectiveDate > t.effectiveDate || (x.effectiveDate === t.effectiveDate && x.createdAt > t.createdAt));
+    const mt = S.matches.find((m) => m.magistrateId === t.magistrateId);
+    const reflects = !!mt && latest && mt.startDate === t.effectiveDate; // a vinculação vigente é a desta alteração
+    const dmyS = (d?: string) => (d ? d.split('-').reverse().join('/') : 'não informado');
+    const changes: string[] = [];
+
+    // SEI
+    let sei = t.sei ?? '';
+    if (typeof b.sei === 'string') {
+      sei = cleanCell(b.sei);
+      if (sei && (sei.length < 3 || sei.length > 100)) return res.status(400).json({ error: 'Número do processo SEI inválido.' });
+    }
+    // Data de vigência: entre a alteração anterior e a seguinte da mesma pessoa
+    let date = t.effectiveDate;
+    if (typeof b.effectiveDate === 'string' && b.effectiveDate.trim() && b.effectiveDate.trim() !== t.effectiveDate) {
+      date = b.effectiveDate.trim();
+      if (!validYmd(date)) return res.status(400).json({ error: 'Data de vigência inválida.' });
+      const before = mine.filter((x) => x.effectiveDate < t.effectiveDate).map((x) => x.effectiveDate).sort().pop();
+      const after = mine.filter((x) => x.effectiveDate > t.effectiveDate).map((x) => x.effectiveDate).sort()[0];
+      if (before && date <= before) return res.status(400).json({ error: `A vigência deve ser posterior à da alteração anterior (${dmyS(before)}).` });
+      if (after && date >= after) return res.status(400).json({ error: `A vigência deve ser anterior à da alteração seguinte (${dmyS(after)}).` });
+      if (t.fromStartDate && date <= t.fromStartDate) return res.status(400).json({ error: `A vigência deve ser posterior ao início da vinculação anterior (${dmyS(t.fromStartDate)}).` });
+    }
+    // Unidade, área e tipo: só na alteração que a vinculação vigente reflete
+    const wantsUnit = typeof b.unitId === 'string' && b.unitId && b.unitId !== mt?.unitId;
+    const wantsArea = typeof b.assignedArea === 'string' && b.assignedArea.trim() && b.assignedArea.trim() !== (t.toArea ?? t.area);
+    const wantsWork = typeof b.workType === 'string' && b.workType && b.workType !== t.toWorkType;
+    if ((wantsUnit || wantsArea || wantsWork) && !reflects) return res.status(409).json({ error: 'Só a alteração mais recente, que a vinculação vigente reflete, pode mudar unidade, área ou tipo. Nas demais, edite a data e o SEI.' });
+    if (wantsWork && !MATCH_WORK_TYPES.includes(b.workType)) return res.status(400).json({ error: 'Modalidade inválida.' });
+    let nextUnit: (typeof S.units)[number] | undefined;
+    if (wantsUnit) {
+      nextUnit = S.units.find((u) => u.id === b.unitId);
+      if (!nextUnit) return res.status(404).json({ error: 'Unidade não encontrada.' });
+      if (nextUnit.selection !== 'Escolhida') return res.status(400).json({ error: 'Só é possível vincular unidades escolhidas para o mutirão.' });
+      if (norm(fullUnitName(nextUnit)) === norm(t.fromUnit)) return res.status(400).json({ error: 'A nova unidade não pode ser a mesma da vinculação anterior.' });
+      if (linkedCount(nextUnit.id) >= (nextUnit.slots || 1)) return res.status(409).json({ error: `Todas as ${nextUnit.slots || 1} vaga(s) da unidade de destino já estão preenchidas.` });
+    }
+
+    // Aplica (tudo validado)
+    if (sei !== (t.sei ?? '')) { changes.push(`SEI de "${t.sei || 'não informado'}" para "${sei || 'não informado'}"`); if (sei) t.sei = sei; else delete t.sei; }
+    if (date !== t.effectiveDate) {
+      changes.push(`vigência de ${dmyS(t.effectiveDate)} para ${dmyS(date)}`);
+      if (reflects && mt) mt.startDate = date; // o início da vinculação vigente acompanha a vigência da alteração
+      t.effectiveDate = date;
+    }
+    if (nextUnit && mt) {
+      const oldDest = mt.unitId;
+      changes.push(`unidade de destino de "${t.toUnit}" para "${fullUnitName(nextUnit)}"`);
+      mt.unitId = nextUnit.id; t.toUnit = fullUnitName(nextUnit);
+      refreshUnitStatus(oldDest); refreshUnitStatus(nextUnit.id);
+    }
+    if (wantsArea && mt) { const a = b.assignedArea.trim().slice(0, 150); changes.push(`área de "${t.toArea ?? t.area}" para "${a}"`); t.toArea = a; mt.assignedArea = a; }
+    if (wantsWork && mt) { changes.push(`tipo de atuação de "${t.toWorkType}" para "${b.workType}"`); t.toWorkType = b.workType; mt.workType = b.workType; }
+    if (changes.length) log(t.editionId, 'Administração', 'Vinculação', `Alteração de vinculação de ${t.name} editada: ${changes.join('; ')}.`);
+    res.json({ success: true, transfer: t });
   });
   // Alteração agendada que ficou sem vinculação de destino: devolve o magistrado à unidade anterior ou descarta o registro
   app.post('/api/panel/transfers/:id/restore', (req, res) => {

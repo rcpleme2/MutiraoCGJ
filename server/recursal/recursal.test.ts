@@ -174,6 +174,7 @@ test('Migração para a Turma Recursal e cruzamento de titulares voluntários', 
     assert.equal(tit.length, 1);
     assert.match(tit[0].represents[0].unit, /1ª Vara Cível/); assert.equal(tit[0].represents[0].by, 'responsável'); // lotação em branco: usa o responsável
     assert.equal(tit[0].represents[0].designatedHere[0].name, 'FULANO TAL'); // magistrado designado para a unidade do titular
+    assert.equal(tit[0].group, 'ativo'); // inscrição Atribuído = ativo
     const xl = await fetch(base + '/titulares-voluntarios/export.xlsx?edition=all'); assert.equal(xl.status, 200);
     assert.match(xl.headers.get('content-type') ?? '', /spreadsheetml/); assert.ok((await xl.arrayBuffer()).byteLength > 1000);
     const pdf = await fetch(base + '/titulares-voluntarios/export.pdf?edition=all'); assert.equal(pdf.status, 200);
@@ -338,5 +339,45 @@ test('Excluir a unidade de destino de uma alteração agendada não deixa o magi
     const adm = await (await send('GET', '/panel/admin')).json(); assert.equal(adm.orphans.length, 1); assert.equal(adm.orphans[0].canRestore, true);
     assert.equal((await send('POST', `/panel/transfers/${S.transfers[0].id}/restore`)).status, 200);
     assert.equal(panelRows().length, 1); assert.equal(orphanTransfers().length, 0);
+  } finally { server.close(); }
+});
+
+test('Edição de alteração de vinculação: data, unidade, área, tipo e SEI, com as repercussões', async () => {
+  const express = (await import('express')).default;
+  const { register: regMatches } = await import('../routes/matches.ts');
+  const { register: regPanel } = await import('../routes/panel.ts');
+  const { panelRows, actingPeriods } = await import('../links.ts');
+  const app = express(); app.use(express.json()); regMatches(app); regPanel(app);
+  const server = app.listen(0); const base = `http://localhost:${(server.address() as any).port}/api`;
+  const send = (m: string, p: string, b?: object) => fetch(base + p, { method: m, headers: { 'Content-Type': 'application/json' }, body: b ? JSON.stringify(b) : undefined });
+  const ymd = (d: number) => new Date(Date.now() + d * 86400_000 - 3 * 3600_000).toISOString().slice(0, 10);
+  const unit = (id: string, name: string) => ({ id, editionId: 'e1', unitName: name, judgeName: 'X', email: 'a', comarca: 'C', separator: 'de', areas: ['Cível'], supportNeeded: '', createdAt: '', status: 'Pendente', selection: 'Escolhida', slots: 1 } as any);
+  try {
+    S.editions = [{ id: 'e1', title: 'J1', openingDate: '', closingDate: '', isRegistrationOpen: true, status: 'Em andamento', createdAt: '', startDate: '2026-02-01' } as any];
+    S.units = [unit('u1', 'Vara 1'), unit('u2', 'Vara 2'), unit('u3', 'Vara 3')];
+    S.magistrates = [{ id: 'm1', editionId: 'e1', name: 'ANA LIMA', email: 'a@x', status: 'Atribuído', createdAt: '' } as any];
+    S.matches = [{ id: 'mt1', editionId: 'e1', magistrateId: 'm1', unitId: 'u1', assignedArea: 'Cível e Fazenda Pública', workType: 'Sentença', status: 'Vinculado', startDate: '2026-06-15', createdAt: '' } as any];
+    S.withdrawals = []; S.transfers = [];
+    assert.equal((await send('PUT', '/matches/mt1', { unitId: 'u2', effectiveDate: ymd(30) })).status, 200);
+    const t = S.transfers[0];
+    // datas incoerentes
+    assert.equal((await send('PUT', `/panel/transfers/${t.id}`, { effectiveDate: '2026-06-15' })).status, 400); // não pode ser anterior ao início da vinculação anterior
+    // edita tudo
+    const newDate = ymd(45);
+    const r = await send('PUT', `/panel/transfers/${t.id}`, { effectiveDate: newDate, unitId: 'u3', assignedArea: 'Crime', workType: 'Audiência', sei: '00.999/2026' });
+    assert.equal(r.status, 200);
+    assert.equal(S.matches[0].unitId, 'u3'); assert.equal(S.matches[0].startDate, newDate); assert.equal(S.matches[0].assignedArea, 'Crime'); assert.equal(S.matches[0].workType, 'Audiência');
+    assert.match(S.transfers[0].toUnit, /Vara 3/); assert.equal(S.transfers[0].effectiveDate, newDate); assert.equal(S.transfers[0].sei, '00.999/2026');
+    assert.equal(S.units.find((u) => u.id === 'u2')!.status, 'Pendente'); assert.equal(S.units.find((u) => u.id === 'u3')!.status, 'Atendida'); // status das unidades acompanham
+    const row = panelRows()[0]; assert.match(row.unit, /Vara 3/); assert.match(row.previous!.unit, /Vara 1/);
+    const old = actingPeriods().find((p) => /Vara 1/.test(p.unit))!; assert.equal(old.end, new Date(Date.parse(`${newDate}T00:00:00Z`) - 86400_000).toISOString().slice(0, 10)); // período anterior vai até a véspera da nova vigência
+    // vaga ocupada na unidade de destino
+    S.units[1].slots = 1; S.matches.push({ id: 'mt2', editionId: 'e1', magistrateId: 'mx', unitId: 'u2', assignedArea: 'Cível', workType: 'Sentença', status: 'Vinculado', createdAt: '' } as any);
+    assert.equal((await send('PUT', `/panel/transfers/${t.id}`, { unitId: 'u2' })).status, 409);
+    // alteração mais antiga: só data e SEI
+    assert.equal((await send('PUT', `/matches/mt1`, { unitId: 'u1', effectiveDate: ymd(90) })).status, 200);
+    const older = S.transfers.find((x) => x.id === t.id)!;
+    assert.equal((await send('PUT', `/panel/transfers/${older.id}`, { unitId: 'u3' })).status, 409);
+    assert.equal((await send('PUT', `/panel/transfers/${older.id}`, { effectiveDate: ymd(95) })).status, 400); // passaria da alteração seguinte
   } finally { server.close(); }
 });
