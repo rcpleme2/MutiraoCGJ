@@ -275,3 +275,32 @@ test('Importação de lotações: conferência antes, só vazias ou também pree
     assert.ok(S.activityLog.some((l) => /Lotação de ADRIANA BENINI alterada/.test(l.description)));
   } finally { server.close(); }
 });
+
+test('Alteração agendada: a unidade anterior continua vigente no painel, ao lado da nova', async () => {
+  const express = (await import('express')).default;
+  const { register } = await import('../routes/matches.ts');
+  const { register: regPanel } = await import('../routes/panel.ts');
+  const { panelRows, panelRowsAll, actingPeriods } = await import('../links.ts');
+  const app = express(); app.use(express.json()); register(app); regPanel(app);
+  const server = app.listen(0); const base = `http://localhost:${(server.address() as any).port}/api`;
+  const send = (m: string, p: string, b?: object) => fetch(base + p, { method: m, headers: { 'Content-Type': 'application/json' }, body: b ? JSON.stringify(b) : undefined });
+  const ymd = (d: number) => new Date(Date.now() + d * 86400_000 - 3 * 3600_000).toISOString().slice(0, 10);
+  const unit = (id: string, name: string) => ({ id, editionId: 'e1', unitName: name, judgeName: 'X', email: 'a', comarca: 'C', separator: 'de', areas: ['Cível'], supportNeeded: '', createdAt: '', status: 'Pendente', selection: 'Escolhida', slots: 1 } as any);
+  try {
+    S.editions = [{ id: 'e1', title: 'J1', openingDate: '', closingDate: '', isRegistrationOpen: true, status: 'Em andamento', createdAt: '', startDate: '2026-02-01' } as any];
+    S.units = [unit('u1', 'Vara 1'), unit('u2', 'Vara 2')];
+    S.magistrates = [{ id: 'm1', editionId: 'e1', name: 'ANA LIMA', email: 'a@x', status: 'Atribuído', createdAt: '' } as any];
+    S.matches = [{ id: 'mt1', editionId: 'e1', magistrateId: 'm1', unitId: 'u1', assignedArea: 'Cível', workType: 'Sentença', status: 'Vinculado', createdAt: '' } as any];
+    S.withdrawals = []; S.transfers = [];
+    const when = ymd(20);
+    assert.equal((await send('PUT', '/matches/mt1', { unitId: 'u2', effectiveDate: when })).status, 200);
+    assert.equal(panelRows().length, 1); // uma vinculação, já na nova unidade
+    const all = panelRowsAll();
+    assert.equal(all.length, 2); // a anterior segue vigente até a véspera
+    const old = all.find((r) => r.readOnly)!;
+    assert.match(old.unit, /Vara 1/); assert.equal(old.leavingUntil, ymd(19)); assert.match(old.changeTo!.unit, /Vara 2/);
+    const admin = await (await send('GET', '/panel/admin')).json();
+    assert.equal(admin.rows.length, 2); assert.ok(admin.rows.some((r: any) => r.readOnly && /Vara 1/.test(r.unit)));
+    assert.equal(actingPeriods().filter((p) => p.name === 'ANA LIMA').length, 2);
+  } finally { server.close(); }
+});

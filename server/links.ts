@@ -131,6 +131,25 @@ export function panelRows(): PanelRow[] {
   }
   return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR') || a.unit.localeCompare(b.unit, 'pt-BR'));
 }
+/**
+ * Todas as designações vigentes. Quando há alteração agendada (data futura), a unidade anterior continua vigente até a véspera:
+ * entra como linha própria (somente leitura) ao lado da linha da nova unidade, que vale a partir da data. Ninguém some do painel.
+ */
+export function panelRowsAll(): PanelRow[] {
+  const base = panelRows();
+  const out: PanelRow[] = [...base];
+  for (const r of base) {
+    if (!r.previous) continue;
+    const tr = S.transfers.filter((t) => t.magistrateId === r.magistrateId && t.effectiveDate === r.since).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+    out.push({
+      id: `${r.id}:anterior`, editionId: r.editionId, editionTitle: r.editionTitle, magistrateId: r.magistrateId, unitId: r.unitId, name: r.name,
+      area: r.previous.area, unit: r.previous.unit, workType: r.previous.workType, since: tr?.fromStartDate ?? editionById(r.editionId)?.startDate,
+      leavingUntil: r.previous.until, readOnly: true, changeTo: { unit: unitLabel(r), from: r.since ?? r.previous.until },
+      firstPreference: r.firstPreference, secondPreference: r.secondPreference,
+    });
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR') || a.unit.localeCompare(b.unit, 'pt-BR'));
+}
 export function actingPeriods(): ActingPeriod[] {
   const title = (id: string) => editionById(id)?.title ?? '';
   // Início não registrado: vigência da última alteração que levou a pessoa a esta unidade (até a data final), senão o início da edição

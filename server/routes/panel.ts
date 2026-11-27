@@ -7,7 +7,7 @@ import fs from 'fs';
 import PDFDocument from 'pdfkit';
 import { sameUnit, unitResolver } from '../catalog.ts';
 import { editionById, ensureInitialEdition, INITIAL_EDITION_TITLE } from '../editions.ts';
-import { actingPeriods, createInitialLink, finalizeDueWithdrawals, todayYmd, describeMatch, isHeaderRow, panelKey, panelRows, periodDays, personOf, preferenceText, samePerson, undoMatch, unitLabel } from '../links.ts';
+import { actingPeriods, createInitialLink, panelRowsAll, finalizeDueWithdrawals, todayYmd, describeMatch, isHeaderRow, panelKey, panelRows, periodDays, personOf, preferenceText, samePerson, undoMatch, unitLabel } from '../links.ts';
 import { saveState } from '../persistence.ts';
 import { log, newId, S } from '../state.ts';
 import { type Withdrawal } from '../types.ts';
@@ -50,11 +50,14 @@ export function register(app: express.Express) {
     // Duplicidade: a mesma pessoa com mais de uma designação vigente (na mesma edição ou em edições diferentes)
     const rows = panelRows();
     const people = rows.map((r) => personOf(r.magistrateId, r.name));
+    const flagged = rows.map((r, i) => {
+      const others = rows.filter((_, j) => j !== i && samePerson(people[i], people[j]));
+      return others.length ? { ...r, duplicates: others.map((o) => ({ editionTitle: o.editionTitle, unit: unitLabel(o), area: o.area })) } : r;
+    });
+    // inclui a vigência anterior das alterações agendadas (sem entrar na conta de duplicidades)
+    const withPrev = panelRowsAll().filter((r) => r.readOnly);
     res.json({
-      rows: rows.map((r, i) => {
-        const others = rows.filter((_, j) => j !== i && samePerson(people[i], people[j]));
-        return others.length ? { ...r, duplicates: others.map((o) => ({ editionTitle: o.editionTitle, unit: unitLabel(o), area: o.area })) } : r;
-      }),
+      rows: [...flagged, ...withPrev].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR') || a.unit.localeCompare(b.unit, 'pt-BR')),
       withdrawals: S.withdrawals.filter((w) => w.kind !== 'migracao').sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
       transfers: [...S.transfers].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
       periods: actingPeriods(),
@@ -190,15 +193,15 @@ export function register(app: express.Express) {
   app.get('/api/panel/export.xlsx', async (req, res) => {
     const ed = typeof req.query.edition === 'string' && req.query.edition ? editionById(req.query.edition) : undefined;
     const onlyAreas = typeof req.query.areas === 'string' && req.query.areas ? new Set(req.query.areas.split('|').map((a) => norm(a))) : null;
-    const data = panelRows()
+    const data = panelRowsAll()
       .filter((r) => (!ed || r.editionId === ed.id) && (!onlyAreas || onlyAreas.has(norm(r.area))))
       .sort((a, b) => a.area.localeCompare(b.area, 'pt-BR') || a.name.localeCompare(b.name, 'pt-BR'))
       .map((r) => ({
         'Magistrado(a)': r.name, 'Área de atuação': r.area, 'Unidade': unitLabel(r), 'Comarca': r.comarca ?? '',
-        'Preferência atendida': preferenceText(r), '1ª preferência': r.firstPreference ?? '', '2ª preferência': r.secondPreference ?? '', 'Atuação': r.workType ?? '', 'A partir de': r.since ? r.since.split('-').reverse().join('/') : '', 'Edição': r.editionTitle, 'Observação': r.note ?? '',
+        'Preferência atendida': preferenceText(r), '1ª preferência': r.firstPreference ?? '', '2ª preferência': r.secondPreference ?? '', 'Atuação': r.workType ?? '', 'A partir de': r.since ? r.since.split('-').reverse().join('/') : '', 'Situação': r.changeTo ? `Vigente até ${r.leavingUntil!.split('-').reverse().join('/')}; alterada para ${r.changeTo.unit}` : r.previous ? `Nova vinculação a partir de ${r.since!.split('-').reverse().join('/')}` : '', 'Edição': r.editionTitle, 'Observação': r.note ?? '',
       }));
-    const sheet = XLSX.utils.json_to_sheet(data, { header: ['Magistrado(a)', 'Área de atuação', 'Preferência atendida', '1ª preferência', '2ª preferência', 'Unidade', 'Comarca', 'Atuação', 'A partir de', 'Edição', 'Observação'] });
-    sheet['!cols'] = [{ wch: 34 }, { wch: 26 }, { wch: 20 }, { wch: 24 }, { wch: 24 }, { wch: 56 }, { wch: 22 }, { wch: 12 }, { wch: 12 }, { wch: 28 }, { wch: 30 }];
+    const sheet = XLSX.utils.json_to_sheet(data, { header: ['Magistrado(a)', 'Área de atuação', 'Preferência atendida', '1ª preferência', '2ª preferência', 'Unidade', 'Comarca', 'Atuação', 'A partir de', 'Situação', 'Edição', 'Observação'] });
+    sheet['!cols'] = [{ wch: 34 }, { wch: 26 }, { wch: 20 }, { wch: 24 }, { wch: 24 }, { wch: 56 }, { wch: 22 }, { wch: 12 }, { wch: 12 }, { wch: 40 }, { wch: 28 }, { wch: 30 }];
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, sheet, 'Designações');
     const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
@@ -232,7 +235,7 @@ export function register(app: express.Express) {
     const onlyAreas = typeof req.query.areas === 'string' && req.query.areas ? new Set(req.query.areas.split('|').map((a) => norm(a))) : null;
     const ed = typeof req.query.edition === 'string' && req.query.edition ? editionById(req.query.edition) : undefined; // relatório de uma só edição
     if (req.query.edition && !ed) return res.status(404).json({ error: 'Janela de inscrição não encontrada.' });
-    const rows = panelRows().filter((r) => (!ed || r.editionId === ed.id) && (!byArea || !onlyAreas || onlyAreas.has(norm(r.area))));
+    const rows = panelRowsAll().filter((r) => (!ed || r.editionId === ed.id) && (!byArea || !onlyAreas || onlyAreas.has(norm(r.area))));
     const drops = S.withdrawals.filter((w) => !ed || w.editionId === ed.id).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
     // Excluídos pela administração (de qualquer situação), com as designações que tinham na data da exclusão
     const excluded = S.magistrates.filter((m) => m.status === 'Excluído' && (!ed || m.editionId === ed.id || m.excludedFrom?.some((h) => h.editionId === ed.id)))
@@ -245,7 +248,7 @@ export function register(app: express.Express) {
     const dayBefore = (ymd: string) => { const d = new Date(`${ymd}T00:00:00Z`); d.setUTCDate(d.getUTCDate() - 1); return d.toISOString().slice(0, 10); };
     const day = (iso: string) => new Date(iso).toLocaleDateString('pt-BR', { timeZone: tz });
     const acting = (w?: string) => (w === 'Audiência' ? 'Audiências' : w === 'Sentença' ? 'Sentença' : w === 'Audiência e Sentença' ? 'Audiência e sentença' : '—');
-    const unitCell = (r: { unit: string; comarca?: string; separator?: string; startDate?: string; note?: string }) => unitLabel(r) + (r.note ? `\nObs.: ${r.note}` : '') + (r.startDate ? `\na partir de ${dmy(r.startDate)}` : '');
+    const unitCell = (r: { unit: string; comarca?: string; separator?: string; startDate?: string; note?: string; leavingUntil?: string; changeTo?: { unit: string } }) => unitLabel(r) + (r.note ? `\nObs.: ${r.note}` : '') + (r.startDate ? `\na partir de ${dmy(r.startDate)}` : '') + (r.leavingUntil && r.changeTo ? `\nvigente até ${dmy(r.leavingUntil)}; alterada para ${r.changeTo.unit}` : '');
     // A fonte padrão do PDF cobre o alfabeto latino; troca o que estiver fora dele para não gerar lixo.
     const t = (x: string) => x.replace(/[^\n -~ -ÿ–—‘’“”…•]/g, '?');
 

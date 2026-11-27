@@ -63,6 +63,7 @@ export function PanelAdmin({ run, confirm, onChanged }: {
   const [areaFilter, setAreaFilter] = useState<string[]>([]);
   const [onlyDup, setOnlyDup] = useState(false);
   const [dropping, setDropping] = useState<PanelRow | null>(null);
+  const [pview, setPview] = useState<'vigentes' | 'alteracoes' | 'desistentes' | 'historico' | 'importar'>('vigentes');
   const [editingWd, setEditingWd] = useState<Withdrawal | null>(null);
   const [excludingRow, setExcludingRow] = useState<PanelRow | null>(null);
   const [moving, setMoving] = useState<{ row: PanelRow; units: Unit[] } | null>(null);
@@ -163,6 +164,8 @@ export function PanelAdmin({ run, confirm, onChanged }: {
   const areas = [...areaMap.entries()].sort((a, b) => a[1].label.localeCompare(b[1].label, 'pt-BR'));
   const selected = areaFilter.filter(k => areaMap.has(k));
   const dupCount = data.rows.filter(r => r.duplicates).length;
+  const futureCount = data.rows.filter(r => !r.readOnly && r.since && r.since > todayYmd()).length;
+  const vigentesCount = data.rows.length - futureCount;
   const rows = data.rows.filter(r => (!onlyDup || r.duplicates) && (selected.length === 0 || selected.includes(fold(r.area.trim()))) && (!term || fold(`${r.name} ${r.area} ${r.unit} ${r.comarca ?? ''} ${r.postit ?? ''}`).includes(term)));
 
   return (
@@ -177,9 +180,17 @@ export function PanelAdmin({ run, confirm, onChanged }: {
         Ao desfazer uma vinculação, a linha sai daqui automaticamente. Para trocar a vara, a área ou o tipo de atuação de alguém, use "Alterar vara/área/tipo" (informa a partir de quando atua na nova unidade; a anterior fica registrada até o dia anterior).
       </p>
 
+      <div className="flex flex-wrap gap-2" role="tablist" aria-label="Seções de vinculações vigentes">
+        {([['vigentes', `Vigentes (${vigentesCount})`], ['alteracoes', `Alterações de vinculação (${data.transfers.length})`], ['desistentes', `Desistentes (${data.withdrawals.length})`], ['historico', 'Histórico de atuação'], ['importar', 'Importar planilha']] as const).map(([id, text]) => (
+          <button key={id} type="button" role="tab" aria-selected={pview === id} onClick={() => setPview(id)}
+            className={`px-3.5 py-2 rounded-md text-sm border transition-colors ${pview === id ? 'bg-navy text-white border-navy' : 'bg-surface text-muted border-line hover:text-ink'}`}>{text}</button>
+        ))}
+      </div>
+
+      {pview === 'vigentes' && (
       <div className="card overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-3 p-4 border-b border-line">
-          <h4 className="font-semibold text-navy">Vinculações vigentes <span className="text-muted font-normal">({data.rows.length})</span></h4>
+          <h4 className="font-semibold text-navy">Vinculações vigentes <span className="text-muted font-normal">({vigentesCount}{futureCount > 0 ? ` · ${futureCount} com início futuro` : ''})</span></h4>
           <div className="flex flex-wrap items-center gap-2">
             {dupCount > 0 && (
               <button type="button" aria-pressed={onlyDup} onClick={() => setOnlyDup(!onlyDup)}
@@ -213,7 +224,7 @@ export function PanelAdmin({ run, confirm, onChanged }: {
           empty={data.rows.length === 0 ? 'Nenhuma vinculação vigente.' : 'Nenhum resultado para o filtro escolhido.'} cols={[
             { id: 'name', label: 'Magistrado(a)', sort: r => r.name, tdClass: 'font-medium', render: r => <>
               {r.name}
-              {r.leavingUntil && <div className="text-[11px] font-normal text-warn mt-0.5">Desistência registrada: vinculado(a) até {dmy(r.leavingUntil)}</div>}
+              {r.leavingUntil && !r.changeTo && <div className="text-[11px] font-normal text-warn mt-0.5">Desistência registrada: vinculado(a) até {dmy(r.leavingUntil)}</div>}
               {r.duplicates && <div className="text-[11px] font-normal text-danger mt-0.5 leading-snug" title={r.duplicates.map(d => `${d.editionTitle} — ${d.unit} (${d.area})`).join('\n')}>
                 ◦ Duplicidade: {r.duplicates.length + 1} vinculações vigentes
                 {r.duplicates.map((d, i) => <div key={i} className="text-muted">também em {d.unit} ({d.area}) · {d.editionTitle}</div>)}
@@ -224,7 +235,11 @@ export function PanelAdmin({ run, confirm, onChanged }: {
               <Badge tone={r.preference === 1 ? 'ok' : r.preference === 2 ? 'info' : 'warn'}>{r.preference === 1 ? '1ª preferência' : r.preference === 2 ? '2ª preferência' : 'Fora das preferências'}</Badge>
               <div className="text-[11px] text-muted mt-1 leading-snug">1ª: {r.firstPreference || '—'}{r.secondPreference ? <><br />2ª: {r.secondPreference}</> : null}</div>
             </> },
-            { id: 'unit', label: 'Unidade', filter: r => fullUnitName({ unitName: r.unit, comarca: r.comarca, separator: r.separator }), sort: r => fullUnitName({ unitName: r.unit, comarca: r.comarca, separator: r.separator }), render: r => <>
+            { id: 'unit', label: 'Unidade', filter: r => fullUnitName({ unitName: r.unit, comarca: r.comarca, separator: r.separator }), sort: r => fullUnitName({ unitName: r.unit, comarca: r.comarca, separator: r.separator }), render: r => r.readOnly && r.changeTo ? <>
+              {fullUnitName({ unitName: r.unit, comarca: r.comarca, separator: r.separator })}
+              <div className="mt-1"><Badge tone="warn">Vigente até {dmy(r.leavingUntil!)}</Badge></div>
+              <div className="text-[11px] text-muted mt-1">Alterada para <strong className="text-ink">{r.changeTo.unit}</strong> a partir de {dmy(r.changeTo.from)}</div>
+            </> : <>
               {r.previous && <div className="text-xs text-ink mb-1">Atual: <strong>{r.previous.unit}</strong> <span className="text-muted">até {dmy(r.previous.until)}</span></div>}
               {r.previous && <div className="text-[11px] uppercase tracking-wide text-bronze">A partir de {dmy(r.since!)}:</div>}
               {fullUnitName({ unitName: r.unit, comarca: r.comarca, separator: r.separator })}
@@ -236,8 +251,8 @@ export function PanelAdmin({ run, confirm, onChanged }: {
             { id: 'comarca', label: 'Comarca', optional: true, hidden: true, sort: r => r.comarca ?? '', filter: r => r.comarca ?? '', tdClass: 'text-xs', render: r => r.comarca || '—' },
             { id: 'work', label: 'Atuação', optional: true, filter: r => r.workType ?? '', sort: r => r.workType ?? '', tdClass: 'text-xs', render: r => (r.workType === 'Audiência' ? 'Audiências' : r.workType === 'Sentença' ? 'Sentença' : r.workType) },
             { id: 'edition', label: 'Janela', optional: true, sort: r => r.editionTitle, filter: r => r.editionTitle, tdClass: 'text-xs text-muted', render: r => r.editionTitle },
-            { id: 'postit', label: 'Observações', optional: true, sort: r => r.postit ?? '', filter: r => (r.postit ? 'Com observação' : 'Sem observação'), render: r => <PostIt key={`${r.id}:${r.postit ?? ''}`} row={r} run={run} onSaved={load} /> },
-            { id: 'actions', label: '', align: 'right', render: r => (
+            { id: 'postit', label: 'Observações', optional: true, sort: r => r.postit ?? '', filter: r => (r.postit ? 'Com observação' : 'Sem observação'), render: r => (r.readOnly ? <span className="text-xs text-muted">—</span> : <PostIt key={`${r.id}:${r.postit ?? ''}`} row={r} run={run} onSaved={load} />) },
+            { id: 'actions', label: '', align: 'right', render: r => r.readOnly ? <span className="text-[11px] text-muted">Use a linha da nova unidade</span> : (
               <div className="flex flex-wrap justify-end gap-1">
                 <button className="btn-secondary btn-sm" onClick={() => openMove(r)}>Alterar vara/área/tipo</button>
                 <button className="btn-secondary btn-sm" onClick={() => setExcludingRow(r)}>Excluir</button>
@@ -248,8 +263,9 @@ export function PanelAdmin({ run, confirm, onChanged }: {
           ]} />
         {rows.length > 0 && <p className="px-4 py-2.5 text-xs text-muted border-t border-line">{rows.length} de {data.rows.length} designações</p>}
       </div>
+      )}
 
-      {data.transfers.length > 0 && (
+      {pview === 'alteracoes' && (data.transfers.length > 0 ? (
         <div className="card overflow-hidden">
           <div className="p-4 border-b border-line"><h4 className="font-semibold text-navy">Alterações de vinculação <span className="text-muted font-normal">({data.transfers.length})</span></h4></div>
           <SmartTable bare picker={false} id="alteracoes" rows={data.transfers} rowKey={t => t.id} empty="" defaultSort={{ key: 'date', dir: 'desc' }} cols={[
@@ -259,8 +275,9 @@ export function PanelAdmin({ run, confirm, onChanged }: {
             { id: 'date', label: 'Vigência', sort: t => t.effectiveDate, tdClass: 'text-xs text-muted whitespace-nowrap', render: t => t.effectiveDate.split('-').reverse().join('/') },
           ]} />
         </div>
-      )}
+      ) : <div className="card p-8 text-center text-sm text-muted">Nenhuma alteração de vinculação registrada.</div>)}
 
+      {pview === 'desistentes' && (
       <div className="card overflow-hidden">
         <div className="p-4 border-b border-line"><h4 className="font-semibold text-navy">Desistentes <span className="text-muted font-normal">({data.withdrawals.length})</span></h4></div>
         {data.withdrawals.length === 0 ? <p className="p-8 text-center text-sm text-muted">Nenhuma desistência registrada.</p> : (
@@ -276,7 +293,9 @@ export function PanelAdmin({ run, confirm, onChanged }: {
           ]} />
         )}
       </div>
+      )}
 
+      {pview === 'historico' && (
       <div className="card overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-3 p-4 border-b border-line">
           <h4 className="font-semibold text-navy">Histórico de atuação <span className="text-muted font-normal">({data.periods.length} períodos)</span></h4>
@@ -301,9 +320,11 @@ export function PanelAdmin({ run, confirm, onChanged }: {
           );
         })()}
       </div>
+      )}
 
-      <details className="card p-5">
-        <summary className="cursor-pointer font-semibold text-navy">Importar de uma planilha</summary>
+      {pview === 'importar' && (
+      <div className="card p-5">
+        <h4 className="font-semibold text-navy">Importar de uma planilha</h4>
         <div className="space-y-4 mt-4">
           <p className="text-sm text-muted">
             No Excel, selecione as colunas <strong className="text-ink">Nome</strong>, <strong className="text-ink">Área</strong> e <strong className="text-ink">Designado Para</strong> (com ou sem a linha de cabeçalho),
@@ -342,7 +363,8 @@ export function PanelAdmin({ run, confirm, onChanged }: {
             </div>
           )}
         </div>
-      </details>
+      </div>
+      )}
 
       {moving && (
         <Modal title="Alterar vara, área ou tipo de atuação" onClose={() => setMoving(null)}>
